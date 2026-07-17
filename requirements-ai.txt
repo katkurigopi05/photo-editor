@@ -1,0 +1,6 @@
+# Optional dependencies for the ai_tools/ package (see PRO_DEVELOPMENT.md, Phase 5).
+# Not required by the core editor (photo_editor.py). Install with:
+#   pip install -r requirements-ai.txt
+ultralytics>=8.3
+transformers>=4.45
+torch>=2.4

@@ -90,7 +90,50 @@ Relative to the apps above, the current MVP is missing:
   layers/masks need real canvas compositing and better widgets than Tkinter
   offers.
 
-## 6. Sources
+## 6. AI Tools Design (Phase 5 Detail)
+
+A prototype `ai_tools/` package has been scaffolded to make Phase 5 concrete.
+It is deliberately **kept out of the core app's dependency graph**: nothing in
+`photo_editor.py` imports it, and each function inside it defers its heavy
+imports (`ultralytics`, `transformers`, `torch`) until called, raising a clear
+`ImportError` pointing at `requirements-ai.txt` if they're missing. This keeps
+the base editor lightweight (Pillow + Tkinter only) while letting AI features
+be installed and enabled opt-in — matching how Phase 4's plugin architecture
+is meant to work.
+
+| Capability | Model / Library | Function | Powers |
+|---|---|---|---|
+| Object detection | YOLOv8n (`ultralytics`) | `ai_tools.detect_objects(image)` | "Smart select" (auto-select a subject for masking/local edits, à la Luminar Neo/Photoshop) and auto-crop suggestions |
+| Background removal | `briaai/RMBG-1.4` via `transformers` `image-segmentation` pipeline | `ai_tools.remove_background(image)` | One-click background removal/isolation, a building block for compositing and for Luminar's GenErase-style masked edits |
+
+**Why these models:** YOLOv8n is the smallest/fastest YOLO variant — good
+enough for interactive bounding-box detection on CPU, which matters since the
+core app has no GPU requirement today. `briaai/RMBG-1.4` is a segmentation
+model distributed through the `transformers` `pipeline("image-segmentation")`
+API, so background removal doesn't need a bespoke inference loop. Both are
+swappable behind their function signatures (`weights=`, `model_name=`
+parameters) as better/lighter models emerge.
+
+**How this plugs into the architecture in section 5:** once the
+`Document`/operation model exists, `detect_objects` and `remove_background`
+become the implementation behind new operation classes (e.g.
+`SmartSelectOperation`, `RemoveBackgroundOperation`) rather than being called
+directly from the GUI — same pattern as the Pillow-based operations, just
+backed by a model call instead of a `PIL.ImageFilter`.
+
+**Performance note (ties to Phase 6):** background removal via a transformer
+pipeline is noticeably heavier than YOLOv8n detection. Both should run on a
+worker thread/process with progress feedback rather than blocking the
+Tkinter mainloop, and GPU acceleration (`torch` CUDA/MPS) should be
+auto-detected and used when available.
+
+**Files added:**
+- `ai_tools/__init__.py` — public API (`detect_objects`, `remove_background`, `Detection`)
+- `ai_tools/detection.py` — YOLO wrapper
+- `ai_tools/segmentation.py` — transformer background-removal wrapper
+- `requirements-ai.txt` — optional dependencies, install with `pip install -r requirements-ai.txt`
+
+## 7. Sources
 
 - [The best photo editing software in 2026 — Digital Camera World](https://www.digitalcameraworld.com/buying-guides/the-best-photo-editing-software)
 - [Best Photo Editing Software 2026: A Pro Photographer's Picks — Finding the Universe](https://www.findingtheuniverse.com/best-photo-editing-software/)
