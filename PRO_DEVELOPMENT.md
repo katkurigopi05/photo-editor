@@ -59,14 +59,14 @@ Relative to the apps above, the current MVP is missing:
 
 ## 4. Proposed "Pro" Feature Roadmap
 
-| Phase | Goal | Representative Features |
-|---|---|---|
-| **Phase 1 — Non-destructive core** | Replace the pixel-snapshot undo stack with an adjustment graph | Crop, Levels, Curves, Rotate/Flip as reorderable, editable, re-toggleable operations over an immutable base image |
-| **Phase 2 — Layers & masking** | Introduce compositing | Layer stack (image/adjustment layers), brush-based masks for local/selective edits (Snapseed-style) |
-| **Phase 3 — RAW support** | Handle camera RAW formats | Integrate `rawpy`/`libraw` for `.CR2`/`.NEF`/`.ARW`/`.DNG` ingestion |
-| **Phase 4 — Extensibility** | Let the tool grow like GIMP/Photoshop | Plugin/filter registry (entry-point based) so new filters/tools don't require editing the core class |
-| **Phase 5 — AI-assisted tools** | Match Luminar Neo/Lightroom's generative tools | Optional integrations for background removal, object removal/generative fill, and upscaling (e.g. via an external model API or ONNX runtime), kept opt-in so the core app stays lightweight |
-| **Phase 6 — Performance & batch** | Scale beyond a single small image on the UI thread | Move processing off the Tkinter mainloop (worker thread/process + progress feedback), add batch import/export across multiple files |
+| Phase | Goal | Representative Features | Status |
+|---|---|---|---|
+| **Phase 1 — Non-destructive core** | Replace the pixel-snapshot undo stack with an adjustment graph | Crop, Levels, Curves, Rotate/Flip as reorderable, editable, re-toggleable operations over an immutable base image | ✅ Done — `core/` package: serializable `Operation` classes + `Document` with pointer-based undo/redo and JSON recipes (Levels/Curves still TODO) |
+| **Phase 2 — Layers & masking** | Introduce compositing | Layer stack (image/adjustment layers), brush-based masks for local/selective edits (Snapseed-style) | 🔶 Partial — `MaskedOperation` applies any op inside a feathered rect/ellipse region (core only; brush-mask UI and full layer stack still TODO) |
+| **Phase 3 — RAW support** | Handle camera RAW formats | Integrate `rawpy`/`libraw` for `.CR2`/`.NEF`/`.ARW`/`.DNG` ingestion | ✅ Done — `Document.open` decodes RAW extensions via optional `rawpy` (`requirements-raw.txt`) |
+| **Phase 4 — Extensibility** | Let the tool grow like GIMP/Photoshop | Plugin/filter registry (entry-point based) so new filters/tools don't require editing the core class | ✅ Done — `core/plugins.py` loads `Operation` subclasses from `plugins/` at startup; GUI builds their buttons dynamically (see `plugins/invert.py`) |
+| **Phase 5 — AI-assisted tools** | Match Luminar Neo/Lightroom's generative tools | Optional integrations for background removal, object removal/generative fill, and upscaling (e.g. via an external model API or ONNX runtime), kept opt-in so the core app stays lightweight | 🔶 Partial — `ai_tools/operations.py` provides `RemoveBackground` and `AutoCrop` as registry operations; generative fill/upscaling still TODO |
+| **Phase 6 — Performance & batch** | Scale beyond a single small image on the UI thread | Move processing off the Tkinter mainloop (worker thread/process + progress feedback), add batch import/export across multiple files | ✅ Done — GUI renders on a worker thread with a busy state; `batch_export.py` applies a saved recipe to a folder |
 
 ## 5. Suggested Architecture Changes
 

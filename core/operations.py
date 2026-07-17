@@ -6,14 +6,24 @@ through a plain dict (to_dict / operation_from_dict), so a Document's edit
 PRO_DEVELOPMENT.md. Replaces the if/elif chain of the old
 SimpleImageEditor.apply_filter.
 """
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 _REGISTRY = {}
 
 
-def _register(cls):
+def register(cls):
+    """Class decorator adding an Operation to the registry.
+
+    Public so plugins (see core/plugins.py) and optional packages like
+    ai_tools can contribute operations without editing this module.
+    """
     _REGISTRY[cls.__name__] = cls
     return cls
+
+
+def registered_operations() -> dict:
+    """Name -> Operation class for everything currently registered."""
+    return dict(_REGISTRY)
 
 
 class Operation:
@@ -38,7 +48,7 @@ def operation_from_dict(data: dict) -> Operation:
     return cls(**data.get("params", {}))
 
 
-@_register
+@register
 class Grayscale(Operation):
     label = "Grayscale"
 
@@ -46,7 +56,7 @@ class Grayscale(Operation):
         return ImageOps.grayscale(image).convert("RGB")
 
 
-@_register
+@register
 class Sepia(Operation):
     label = "Sepia"
 
@@ -60,7 +70,7 @@ class Sepia(Operation):
         return image.convert("RGB", self._MATRIX)
 
 
-@_register
+@register
 class GaussianBlur(Operation):
     label = "Blur"
 
@@ -74,7 +84,7 @@ class GaussianBlur(Operation):
         return image.filter(ImageFilter.GaussianBlur(self.radius))
 
 
-@_register
+@register
 class Rotate90(Operation):
     label = "Rotate 90°"
 
@@ -82,7 +92,7 @@ class Rotate90(Operation):
         return image.rotate(90, expand=True)
 
 
-@_register
+@register
 class FlipHorizontal(Operation):
     label = "Flip Horizontal"
 
@@ -90,7 +100,7 @@ class FlipHorizontal(Operation):
         return ImageOps.mirror(image)
 
 
-@_register
+@register
 class FlipVertical(Operation):
     label = "Flip Vertical"
 
@@ -98,7 +108,7 @@ class FlipVertical(Operation):
         return ImageOps.flip(image)
 
 
-@_register
+@register
 class Brightness(Operation):
     label = "Brightness"
 
@@ -112,7 +122,7 @@ class Brightness(Operation):
         return ImageEnhance.Brightness(image).enhance(self.factor)
 
 
-@_register
+@register
 class Resize(Operation):
     label = "Resize"
 
@@ -125,3 +135,51 @@ class Resize(Operation):
 
     def apply(self, image):
         return image.resize((self.width, self.height))
+
+
+@register
+class MaskedOperation(Operation):
+    """Apply another operation only inside a region (selective/local edit).
+
+    The region is a rectangle or ellipse in image coordinates, optionally
+    feathered by blurring the mask, so e.g. MaskedOperation(Brightness(1.4),
+    region, shape="ellipse", feather=20) brightens just a subject. A brush
+    mask UI can later produce arbitrary masks; the compositing path is the
+    same. The wrapped operation must not change image dimensions — geometric
+    ops (Rotate90, Resize) can't be masked and are applied unmasked.
+    """
+
+    label = "Masked"
+
+    def __init__(self, operation, region, shape: str = "rectangle", feather: float = 0):
+        if isinstance(operation, dict):
+            operation = operation_from_dict(operation)
+        if shape not in ("rectangle", "ellipse"):
+            raise ValueError(f"Unknown mask shape: {shape!r}")
+        self.operation = operation
+        self.region = tuple(region)  # (x1, y1, x2, y2)
+        self.shape = shape
+        self.feather = feather
+
+    def params(self):
+        return {
+            "operation": self.operation.to_dict(),
+            "region": list(self.region),
+            "shape": self.shape,
+            "feather": self.feather,
+        }
+
+    def apply(self, image):
+        edited = self.operation.apply(image)
+        if edited.size != image.size:
+            return edited
+
+        mask = Image.new("L", image.size, 0)
+        draw = ImageDraw.Draw(mask)
+        if self.shape == "ellipse":
+            draw.ellipse(self.region, fill=255)
+        else:
+            draw.rectangle(self.region, fill=255)
+        if self.feather:
+            mask = mask.filter(ImageFilter.GaussianBlur(self.feather))
+        return Image.composite(edited, image, mask)

@@ -15,6 +15,16 @@ from .operations import Operation, operation_from_dict
 
 RECIPE_VERSION = 1
 
+RAW_EXTENSIONS = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2"}
+
+
+def operations_from_recipe(path: str) -> list[Operation]:
+    """Load just the operation list from a recipe JSON (used by batch export,
+    which applies one recipe to many images and ignores the recipe's source)."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return [operation_from_dict(d) for d in data.get("operations", [])]
+
 
 class Document:
     def __init__(self, base_image: Image.Image, source_path: str | None = None):
@@ -28,6 +38,18 @@ class Document:
 
     @classmethod
     def open(cls, path: str) -> "Document":
+        ext = os.path.splitext(path)[1].lower()
+        if ext in RAW_EXTENSIONS:
+            try:
+                import rawpy
+            except ImportError as e:
+                raise ImportError(
+                    "RAW support requires the optional 'rawpy' package. "
+                    "Install it with: pip install -r requirements-raw.txt"
+                ) from e
+            with rawpy.imread(path) as raw:
+                rgb = raw.postprocess()
+            return cls(Image.fromarray(rgb), source_path=path)
         return cls(Image.open(path), source_path=path)
 
     # --- editing -----------------------------------------------------------
@@ -44,6 +66,14 @@ class Document:
         self._applied -= 1
         self._rendered = None
         return True
+
+    def remove_last_operation(self) -> None:
+        """Drop the most recent operation entirely (no redo), e.g. after it
+        failed to render."""
+        if self._applied:
+            self._applied -= 1
+            del self._operations[self._applied:]
+            self._rendered = None
 
     def redo(self) -> bool:
         if self._applied == len(self._operations):

@@ -15,8 +15,12 @@ from .operations import (
     FlipVertical,
     Brightness,
     Resize,
+    MaskedOperation,
     operation_from_dict,
+    register,
+    registered_operations,
 )
+from .plugins import load_plugins
 
 __all__ = [
     "Document",
@@ -29,5 +33,9 @@ __all__ = [
     "FlipVertical",
     "Brightness",
     "Resize",
+    "MaskedOperation",
     "operation_from_dict",
+    "register",
+    "registered_operations",
+    "load_plugins",
 ]

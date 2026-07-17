@@ -1,3 +1,4 @@
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import ImageTk
@@ -12,7 +13,15 @@ from core import (
     FlipVertical,
     Brightness,
     Resize,
+    load_plugins,
+    registered_operations,
 )
+from ai_tools import AutoCrop, RemoveBackground
+
+OPEN_FILETYPES = [
+    ("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp"),
+    ("RAW Files", "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2"),
+]
 
 # =============================
 # --- GUI Implementation using Tkinter ---
@@ -24,6 +33,7 @@ class AppGUI:
         master.title("Advanced Photo Editor")
 
         self.document = None
+        self._buttons = []
 
         self.main_frame = tk.Frame(master, padx=10, pady=10)
         self.main_frame.pack(fill="both", expand=True)
@@ -31,55 +41,126 @@ class AppGUI:
         self.image_label = tk.Label(self.main_frame, bg="grey", text="Open an image to start editing", width=100, height=30)
         self.image_label.pack(pady=10, padx=10, fill="both", expand=True)
 
-        # Toolbar for file operations
-        self.file_frame = tk.Frame(master, padx=10, pady=5)
-        self.file_frame.pack(fill="x")
+        self.status_var = tk.StringVar(value="Ready")
+        tk.Label(master, textvariable=self.status_var, anchor="w", padx=10).pack(fill="x", side=tk.BOTTOM)
 
-        tk.Button(self.file_frame, text="📂 Open Image", command=self.select_file).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.file_frame, text="💾 Save Image", command=self.save_action).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.file_frame, text="↩ Undo", command=self.undo_action).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.file_frame, text="↪ Redo", command=self.redo_action).pack(side=tk.LEFT, padx=5)
+        # Toolbar for file operations
+        file_frame = self._toolbar_row()
+        self._button(file_frame, "📂 Open Image", self.select_file)
+        self._button(file_frame, "💾 Save Image", self.save_action)
+        self._button(file_frame, "📋 Save Recipe", self.save_recipe_action)
+        self._button(file_frame, "📥 Load Recipe", self.load_recipe_action)
+        self._button(file_frame, "↩ Undo", self.undo_action)
+        self._button(file_frame, "↪ Redo", self.redo_action)
 
         # Toolbar for filters
-        self.filter_frame = tk.Frame(master, padx=10, pady=5)
-        self.filter_frame.pack(fill="x")
-
-        tk.Label(self.filter_frame, text="Filters:").pack(side=tk.LEFT, padx=5)
-        tk.Button(self.filter_frame, text="Grayscale", command=lambda: self.apply_and_refresh(Grayscale())).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.filter_frame, text="Sepia", command=lambda: self.apply_and_refresh(Sepia())).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.filter_frame, text="Blur", command=lambda: self.apply_and_refresh(GaussianBlur(radius=3))).pack(side=tk.LEFT, padx=5)
+        filter_frame = self._toolbar_row("Filters:")
+        self._op_button(filter_frame, "Grayscale", Grayscale)
+        self._op_button(filter_frame, "Sepia", Sepia)
+        self._op_button(filter_frame, "Blur", lambda: GaussianBlur(radius=3))
 
         # Toolbar for adjustments
-        self.adj_frame = tk.Frame(master, padx=10, pady=5)
-        self.adj_frame.pack(fill="x")
+        adj_frame = self._toolbar_row("Adjustments:")
+        self._op_button(adj_frame, "Rotate 90°", Rotate90)
+        self._op_button(adj_frame, "Flip Horiz", FlipHorizontal)
+        self._op_button(adj_frame, "Flip Vert", FlipVertical)
+        self._op_button(adj_frame, "Brighten (+)", lambda: Brightness(factor=1.2))
+        self._op_button(adj_frame, "Darken (-)", lambda: Brightness(factor=0.8))
+        self._op_button(adj_frame, "Resize (800x600)", lambda: Resize(width=800, height=600))
 
-        tk.Label(self.adj_frame, text="Adjustments:").pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Rotate 90°", command=lambda: self.apply_and_refresh(Rotate90())).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Flip Horiz", command=lambda: self.apply_and_refresh(FlipHorizontal())).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Flip Vert", command=lambda: self.apply_and_refresh(FlipVertical())).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Brighten (+)", command=lambda: self.apply_and_refresh(Brightness(factor=1.2))).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Darken (-)", command=lambda: self.apply_and_refresh(Brightness(factor=0.8))).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Resize (800x600)", command=lambda: self.apply_and_refresh(Resize(width=800, height=600))).pack(side=tk.LEFT, padx=5)
+        # Toolbar for AI tools (heavy deps load on first use; a clear install
+        # hint is shown if requirements-ai.txt isn't installed)
+        ai_frame = self._toolbar_row("AI:")
+        self._op_button(ai_frame, "Remove Background", RemoveBackground)
+        self._op_button(ai_frame, "Auto Crop", AutoCrop)
+
+        # Toolbar for plugins, built dynamically from the plugins/ directory
+        plugin_names = load_plugins()
+        if plugin_names:
+            plugin_frame = self._toolbar_row("Plugins:")
+            registry = registered_operations()
+            for name in plugin_names:
+                cls = registry[name]
+                try:
+                    cls()  # only zero-arg-constructible ops get a button
+                except TypeError:
+                    continue
+                self._op_button(plugin_frame, cls.label, cls)
+        for error in getattr(load_plugins, "errors", []):
+            messagebox.showwarning("Plugin Error", f"Skipped broken plugin — {error}")
+
+    # --- toolbar helpers ---------------------------------------------------
+
+    def _toolbar_row(self, label=None):
+        frame = tk.Frame(self.master, padx=10, pady=5)
+        frame.pack(fill="x")
+        if label:
+            tk.Label(frame, text=label).pack(side=tk.LEFT, padx=5)
+        return frame
+
+    def _button(self, frame, text, command):
+        button = tk.Button(frame, text=text, command=command)
+        button.pack(side=tk.LEFT, padx=5)
+        self._buttons.append(button)
+        return button
+
+    def _op_button(self, frame, text, op_factory):
+        self._button(frame, text, lambda: self.apply_and_refresh(op_factory()))
+
+    def _set_busy(self, busy, message="Processing…"):
+        self.status_var.set(message if busy else "Ready")
+        state = tk.DISABLED if busy else tk.NORMAL
+        for button in self._buttons:
+            button.config(state=state)
+
+    # --- rendering ---------------------------------------------------------
 
     def display_image(self):
         if not self.document:
             return
 
-        max_display_width = 800
-        max_display_height = 600
-
         display_img = self.document.render().copy()
-        display_img.thumbnail((max_display_width, max_display_height))
+        display_img.thumbnail((800, 600))
 
         tk_img = ImageTk.PhotoImage(display_img)
         self.image_label.config(image=tk_img, text="", width=display_img.width, height=display_img.height)
         self.image_label.image = tk_img
 
+    def apply_and_refresh(self, operation):
+        if not self.document:
+            return
+        self.document.add_operation(operation)
+        self._render_async(rollback_on_error=True)
+
+    def _render_async(self, rollback_on_error=False):
+        """Render on a worker thread so slow filters (AI ops especially)
+        don't freeze the Tkinter mainloop."""
+        self._set_busy(True)
+        document = self.document
+
+        def work():
+            try:
+                document.render()
+                error = None
+            except Exception as e:
+                error = e
+            self.master.after(0, lambda: self._render_done(error, rollback_on_error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_done(self, error, rollback_on_error):
+        self._set_busy(False)
+        if error:
+            if rollback_on_error:
+                self.document.remove_last_operation()
+            messagebox.showerror("Processing Error", f"Filter application failed: {error}")
+            return
+        self.display_image()
+
+    # --- actions -----------------------------------------------------------
+
     def select_file(self):
-        path = filedialog.askopenfilename(
-            title="Select an Image File",
-            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")]
-        )
+        path = filedialog.askopenfilename(title="Select an Image File", filetypes=OPEN_FILETYPES)
         if path:
             try:
                 self.document = Document.open(path)
@@ -102,6 +183,30 @@ class AppGUI:
             except Exception as e:
                 messagebox.showerror("Save Error", f"Failed to save image: {e}")
 
+    def save_recipe_action(self):
+        if not self.document:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            title="Save Edit Recipe As",
+            filetypes=[("Recipe files", "*.json")]
+        )
+        if path:
+            try:
+                self.document.save_recipe(path)
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save recipe: {e}")
+
+    def load_recipe_action(self):
+        path = filedialog.askopenfilename(title="Load Edit Recipe", filetypes=[("Recipe files", "*.json")])
+        if path:
+            try:
+                self.document = Document.load_recipe(path)
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load recipe: {e}")
+                return
+            self._render_async()
+
     def undo_action(self):
         if self.document and self.document.undo():
             self.display_image()
@@ -110,21 +215,9 @@ class AppGUI:
 
     def redo_action(self):
         if self.document and self.document.redo():
-            self.display_image()
+            self._render_async()
         else:
             messagebox.showinfo("Redo", "Nothing to redo.")
-
-    def apply_and_refresh(self, operation):
-        if not self.document:
-            return
-        try:
-            self.document.add_operation(operation)
-            self.document.render()
-        except Exception as e:
-            self.document.undo()
-            messagebox.showerror("Processing Error", f"Filter application failed: {e}")
-            return
-        self.display_image()
 
 if __name__ == "__main__":
     root = tk.Tk()
