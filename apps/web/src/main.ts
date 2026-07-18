@@ -510,10 +510,16 @@ function addAssetToTimeline(
       },
     }),
   );
-  if (added) {
-    selectedClipId = clipId;
-    updateUI();
-  }
+  if (added) selectClip(clipId);
+}
+
+/** Select a clip and move the playhead onto it, so the preview shows the clip
+ * you are editing (effects/adjustments become visible immediately). */
+function selectClip(clipId: string | null): void {
+  selectedClipId = clipId;
+  const loc = locateClip(clipId);
+  if (loc) playback = seek(playback, loc.clip.timelineStartUs);
+  updateUI();
 }
 
 // ==========================================================================
@@ -867,8 +873,7 @@ function startClipDrag(
   track: Track,
 ): void {
   e.preventDefault();
-  selectedClipId = clip.id;
-  updateUI();
+  selectClip(clip.id);
   const startX = e.clientX;
   let moved = false;
 
@@ -1114,13 +1119,17 @@ function addEffectByType(type: EffectType): void {
     enabled: true,
     params: defaultParams(spec),
   } as unknown as EffectInstance;
-  commit(
-    buildAddEffect(nextCtx(), {
-      sequenceId: SEQUENCE_ID,
-      clipId: selectedClipId,
-      effect,
-    }),
-  );
+  if (
+    commit(
+      buildAddEffect(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: selectedClipId,
+        effect,
+      }),
+    )
+  ) {
+    toast(`Added ${spec.label}. Adjust it in the Inspector →`);
+  }
 }
 
 function renderEffectsPalette(): void {
@@ -1304,13 +1313,9 @@ function bindEvents(): void {
 
   $("btn-delete").addEventListener("click", () => {
     if (!selectedClipId) return;
-    commit(
-      buildDeleteClip(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
-        clipId: selectedClipId,
-      }),
-    );
+    const id = selectedClipId;
     selectedClipId = null;
+    commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId: id }));
   });
 
   $("btn-split").addEventListener("click", splitSelectedClip);
