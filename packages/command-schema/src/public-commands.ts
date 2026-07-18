@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  audioGainDbSchema,
+  audioPanSchema,
   effectInstanceSchema,
   jsonObjectSchema,
   mediaAssetSchema,
@@ -92,7 +94,13 @@ export const addTrackCommandSchema = command(
  * `timelineDurationUs` (derived from the source range), and no `effects`
  * (a clip is created with an empty effect stack; effects are added by command). */
 export const clipInputSchema = timelineClipSchema
-  .omit({ trackId: true, timelineDurationUs: true, effects: true })
+  .omit({
+    trackId: true,
+    timelineDurationUs: true,
+    effects: true,
+    audioGainDb: true,
+    audioPan: true,
+  })
   .extend({ playbackRate: unitPlaybackRateSchema })
   .strict();
 
@@ -221,6 +229,36 @@ export const reorderEffectsCommandSchema = command(
   reorderEffectsPayloadSchema,
 );
 
+// --- timeline.set_clip_audio_gain -------------------------------------------
+
+export const setClipAudioGainPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    gainDb: audioGainDbSchema,
+  })
+  .strict();
+
+export const setClipAudioGainCommandSchema = command(
+  "timeline.set_clip_audio_gain",
+  setClipAudioGainPayloadSchema,
+);
+
+// --- timeline.set_clip_audio_pan --------------------------------------------
+
+export const setClipAudioPanPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    pan: audioPanSchema,
+  })
+  .strict();
+
+export const setClipAudioPanCommandSchema = command(
+  "timeline.set_clip_audio_pan",
+  setClipAudioPanPayloadSchema,
+);
+
 // --- discriminated union ----------------------------------------------------
 
 export const projectCommandSchema = z.discriminatedUnion("commandType", [
@@ -236,6 +274,8 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   updateEffectParamsCommandSchema,
   removeEffectCommandSchema,
   reorderEffectsCommandSchema,
+  setClipAudioGainCommandSchema,
+  setClipAudioPanCommandSchema,
 ]);
 
 export type ProjectCommand = z.infer<typeof projectCommandSchema>;
@@ -253,6 +293,12 @@ export type UpdateEffectParamsCommand = z.infer<
 >;
 export type RemoveEffectCommand = z.infer<typeof removeEffectCommandSchema>;
 export type ReorderEffectsCommand = z.infer<typeof reorderEffectsCommandSchema>;
+export type SetClipAudioGainCommand = z.infer<
+  typeof setClipAudioGainCommandSchema
+>;
+export type SetClipAudioPanCommand = z.infer<
+  typeof setClipAudioPanCommandSchema
+>;
 
 export type PublicCommandType = ProjectCommand["commandType"];
 
@@ -269,4 +315,6 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.update_effect_params",
   "timeline.remove_effect",
   "timeline.reorder_effects",
+  "timeline.set_clip_audio_gain",
+  "timeline.set_clip_audio_pan",
 ];

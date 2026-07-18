@@ -86,3 +86,19 @@ export const unitPlaybackRateSchema = z
 
 export type Rational = z.infer<typeof rationalSchema>;
 export type UnitPlaybackRate = z.infer<typeof unitPlaybackRateSchema>;
+
+const finiteNumberSchema = z
+  .number()
+  .refine((n) => Number.isFinite(n), { message: "must be a finite number" });
+
+/** Per-clip audio gain in decibels; `0` is unity. Bounded to a sane range. */
+export const audioGainDbSchema = finiteNumberSchema.refine(
+  (n) => n >= -60 && n <= 12,
+  { message: "audio gain must be within [-60, 12] dB" },
+);
+
+/** Per-clip stereo pan; `-1` hard left, `0` center, `1` hard right. */
+export const audioPanSchema = finiteNumberSchema.refine(
+  (n) => n >= -1 && n <= 1,
+  { message: "audio pan must be within [-1, 1]" },
+);

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { effectInstanceSchema } from "./effects.js";
 import {
+  audioGainDbSchema,
+  audioPanSchema,
   canonicalDecimalStringSchema,
   checksumSchema,
   isoInstantSchema,
@@ -52,6 +54,8 @@ export const timelineClipSchema = z
     sourceInUs: microsecondStringSchema,
     sourceOutUs: microsecondStringSchema,
     playbackRate: unitPlaybackRateSchema,
+    audioGainDb: audioGainDbSchema,
+    audioPan: audioPanSchema,
     effects: z.array(effectInstanceSchema),
   })
   .strict();

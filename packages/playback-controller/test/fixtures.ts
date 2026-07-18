@@ -16,6 +16,8 @@ export function clip(
     sourceInUs,
     sourceOutUs: (BigInt(sourceInUs) + BigInt(timelineDurationUs)).toString(),
     playbackRate: { numerator: 1, denominator: 1 },
+    audioGainDb: 0,
+    audioPan: 0,
     effects: [],
   };
 }

@@ -33,6 +33,7 @@ codebase in this workspace.
 - [[Crates/media-core|media-core]]
 - [[Crates/timeline-engine|timeline-engine]]
 - [[Crates/project-store|project-store]]
+- [[Crates/audio-engine|audio-engine]]
 
 ## Phases
 
@@ -40,6 +41,7 @@ codebase in this workspace.
 - [[Phases/Phase 1 Media Decoding|Phase 1 — Media Decoding]] 🟡 image decode built
 - [[Phases/Phase 2 Effects|Phase 2 — Effects]] 🟡 state layer built
 - [[Phases/Phase 3 Playback|Phase 3 — Playback]] 🟡 transport core built
+- [[Phases/Phase 4 Audio|Phase 4 — Audio]] 🟡 DSP core + state built
 
 ## Decisions
 
@@ -48,5 +50,5 @@ codebase in this workspace.
 
 ## Status
 
-- TypeScript: format ✅ lint ✅ typecheck ✅ 96 tests ✅ build ✅
-- Rust: fmt ✅ clippy ✅ 16 tests ✅
+- TypeScript: format ✅ lint ✅ typecheck ✅ 147 tests ✅ build ✅
+- Rust: fmt ✅ clippy ✅ 22 tests ✅

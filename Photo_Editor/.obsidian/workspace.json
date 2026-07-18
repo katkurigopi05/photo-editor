@@ -198,6 +198,8 @@
   },
   "active": "10dd8e8235d4557b",
   "lastOpenFiles": [
+    "Phases/Phase 4 Audio.md",
+    "Crates/audio-engine.md",
     "Phases/Phase 3 Playback.md",
     "Packages/playback-controller.md",
     "Project Director.md",
@@ -227,8 +229,6 @@
     "Data Model/Sequence.md",
     "Data Model/Rational.md",
     "Data Model/Project.md",
-    "Data Model/Microseconds.md",
-    "Data Model/MediaAsset.md",
     "Data Model",
     "Concepts"
   ]

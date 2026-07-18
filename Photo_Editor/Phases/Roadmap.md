@@ -13,7 +13,7 @@ contract with the same rigor as the Foundation; phases are not built all at once
 | [[Phases/Phase 1 Media Decoding\|1 — Media Decoding]] | decode source media to pixels/samples | 🟡 image decode built |
 | [[Phases/Phase 2 Effects\|2 — Effects]] | render + effect stack | 🟡 state layer built |
 | [[Phases/Phase 3 Playback\|3 — Playback & Scrubbing]] | transport, frame-accurate seek | 🟡 transport core built |
-| 4 — Audio Engine | mixing, waveform | ⬜ future |
+| [[Phases/Phase 4 Audio\|4 — Audio Engine]] | mixing, waveform | 🟡 DSP core + state built |
 | 5 — Editing UI | timeline, viewer, inspector | ⬜ future |
 | 6 — Export | encode + mux | ⬜ future |
 
