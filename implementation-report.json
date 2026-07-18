@@ -1,0 +1,127 @@
+{
+  "task": "Project Director Foundation — Phase 0 (FOUNDATION_BENCHMARK_PROMPT.v2.md)",
+  "date": "2026-07-17",
+  "summary": "Initial monorepo foundation with a deterministic, validated, reversible, replayable project-operation engine. TypeScript (pnpm) + Rust (Cargo) workspaces. All quality gates pass.",
+  "assumptions": [
+    "The required-reading files (AGENTS.md, docs/product/product-spec.md, docs/architecture/system-architecture.md, docs/architecture/project-document.md) did not exist and were authored as part of this foundation.",
+    ".benchmark-lock.json is absent; per the prompt its absence is treated as out of scope and it was NOT created.",
+    "Cross-project error 'asset.projectId does not match current project' is reported as VALIDATION_ERROR (no dedicated code exists in the required error enum).",
+    "Range/duration violations (including sourceOutUs > durationUs and missing durationUs) return INVALID_TIME_RANGE; OUT_OF_BOUNDS is reserved for insertionIndex bounds.",
+    "Internal inverse commands are modeled as { commandType, payload } (no envelope); each is a pure function of prior state so replay can recompute and byte-compare them.",
+    "Each inverse carries restoreUpdatedAt (and insertionIndex where array position matters) so undo restores exact prior state without a full-project snapshot.",
+    "The legacy photo_editor.py at the repo root is unrelated and excluded from lint/format.",
+    "TypeScript packages are bundled with tsup (esbuild) so dist/index.js is a self-contained importable ESM entry; workspace deps stay external.",
+    "The Rust crates (media-core, timeline-engine, project-store) are honest minimal scaffolds with real domain primitives and unit tests; no media decoding or fake behavior."
+  ],
+  "filesChanged": {
+    "root": [
+      "package.json",
+      "pnpm-workspace.yaml",
+      "tsconfig.base.json",
+      "tsconfig.json",
+      "eslint.config.mjs",
+      ".prettierrc.json",
+      ".prettierignore",
+      ".gitignore",
+      "vitest.config.ts",
+      "Cargo.toml",
+      ".github/workflows/ci.yml",
+      "AGENTS.md",
+      "README.md",
+      "implementation-report.json"
+    ],
+    "packages": [
+      "packages/canonical-json/{package.json,tsconfig.json,src/index.ts,test/canonical.test.ts}",
+      "packages/project-schema/{package.json,tsconfig.json,src/primitives.ts,src/entities.ts,src/index.ts}",
+      "packages/command-schema/{package.json,tsconfig.json,src/envelope.ts,src/public-commands.ts,src/internal-commands.ts,src/operation.ts,src/index.ts}",
+      "packages/editor-state/{package.json,tsconfig.json,src/types.ts,src/errors.ts,src/reducers.ts,src/engine.ts,src/persistence.ts,src/index.ts,test/fixtures.ts,test/commands.test.ts,test/validation.test.ts,test/history.test.ts,test/replay.test.ts,test/persistence.test.ts}"
+    ],
+    "apps": [
+      "apps/api/{package.json,tsconfig.json,src/index.ts}",
+      "apps/web/{package.json,tsconfig.json,src/index.ts}",
+      "apps/desktop/{package.json,tsconfig.json,src/index.ts}"
+    ],
+    "crates": [
+      "crates/media-core/{Cargo.toml,src/lib.rs}",
+      "crates/timeline-engine/{Cargo.toml,src/lib.rs}",
+      "crates/project-store/{Cargo.toml,src/lib.rs}"
+    ],
+    "docs": [
+      "docs/product/product-spec.md",
+      "docs/architecture/system-architecture.md",
+      "docs/architecture/project-document.md",
+      "docs/architecture/data-model.md",
+      "docs/architecture/command-model.md",
+      "docs/architecture/history-and-replay.md",
+      "docs/architecture/canonical-json.md",
+      "docs/adr/0001-decimal-string-microseconds.md",
+      "docs/adr/0002-deterministic-command-driven-state.md",
+      "docs/setup.md"
+    ]
+  },
+  "testsAdded": {
+    "typescript": {
+      "files": 6,
+      "cases": 81,
+      "coverage": [
+        "every valid public command",
+        "malformed envelopes and payloads",
+        "canonical microsecond string rejection (negatives, decimals, exponents, whitespace, leading zeros, empty, non-string)",
+        "version conflicts",
+        "duplicate ids incl duplicate track indices",
+        "missing entities and incompatible tracks",
+        "source ranges outside asset duration incl missing durationUs",
+        "half-open overlap rules and valid adjacency",
+        "failed-command atomicity and input immutability (deep-frozen inputs)",
+        "JSON serialization round-trip",
+        "deterministic replay after JSON round trip",
+        "replay rejection for tampered id/baseVersion/resultingVersion/command/inverse",
+        "undo and redo for every command",
+        "delete-then-undo restoring exact clip order and values",
+        "new edit after undo clearing redo",
+        "undo/redo on empty history (HISTORY_EMPTY)",
+        "two independent executions producing identical canonical JSON",
+        "in-memory persistence defensive copying",
+        "validation precedence (higher-precedence code returned)",
+        "non-reduced playback rate 2/2 rejection",
+        "insertionIndex out of bounds"
+      ]
+    },
+    "rust": {
+      "cases": 10,
+      "crates": ["media-core (2)", "timeline-engine (4)", "project-store (4)"]
+    }
+  },
+  "commandsRun": [
+    {
+      "command": "pnpm format:check",
+      "outcome": "PASS — all files match Prettier"
+    },
+    {
+      "command": "pnpm lint",
+      "outcome": "PASS — ESLint clean (typescript-eslint recommended)"
+    },
+    {
+      "command": "pnpm typecheck",
+      "outcome": "PASS — tsc --noEmit, strict + exactOptionalPropertyTypes + noUncheckedIndexedAccess"
+    },
+    { "command": "pnpm test", "outcome": "PASS — 6 files, 81 tests" },
+    {
+      "command": "pnpm build",
+      "outcome": "PASS — 7 workspace projects built dist/ (incl. packages/editor-state/dist/index.js)"
+    },
+    { "command": "cargo fmt --check", "outcome": "PASS" },
+    {
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "outcome": "PASS — no warnings"
+    },
+    { "command": "cargo test --workspace", "outcome": "PASS — 10 tests" }
+  ],
+  "failures": [],
+  "limitations": [
+    "Rust crates are honest scaffolds: pixel/color type declarations, pure Rational/interval math, and canonical-microsecond + in-memory store primitives. Media decoding, render, playback, audio, and export are later roadmap phases.",
+    "Apps are minimal buildable scaffolds that boot the real editor-state engine; they implement no UI, transport, or media behavior.",
+    "Rust toolchain was installed during this session (rustup, stable + clippy + rustfmt) to run the cargo gates.",
+    "The persistence contract is in-memory only, per the prompt (no database)."
+  ]
+}

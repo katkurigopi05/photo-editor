@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/media-core",
+    "crates/timeline-engine",
+    "crates/project-store",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }

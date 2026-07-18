@@ -1,0 +1,238 @@
+{
+  "main": {
+    "id": "0f323781037a9a43",
+    "type": "split",
+    "children": [
+      {
+        "id": "593ae072a1862a31",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "623a50a58109a338",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "create a link.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "create a link"
+            }
+          }
+        ]
+      },
+      {
+        "id": "379dbfe83c252ebc",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "10dd8e8235d4557b",
+            "type": "leaf",
+            "state": {
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "b69e952fbfb52d46",
+    "type": "split",
+    "children": [
+      {
+        "id": "387c967154c50465",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "712765cf6dab832a",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "079291063f1de7f9",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "b18b99084bbd43f4",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "7314860bb07dca6f",
+    "type": "split",
+    "children": [
+      {
+        "id": "830eb4a2f840fb57",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "fb7b7d2237715a0d",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "create a link.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for create a link"
+            }
+          },
+          {
+            "id": "af093ae73064211d",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "create a link.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from create a link"
+            }
+          },
+          {
+            "id": "9379273b3e83aeac",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "2b905fa610ad526e",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "574671c8bc05da06",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "create a link.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of create a link"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "623a50a58109a338",
+  "lastOpenFiles": [
+    "How this vault works.md",
+    "Project Director.md",
+    "Rules/Non-negotiables.md",
+    "Rules",
+    "Decisions/ADR 0002 Deterministic Command Driven State.md",
+    "Decisions/ADR 0001 Decimal String Microseconds.md",
+    "Decisions",
+    "Phases/Roadmap.md",
+    "Phases/Phase 2 Effects.md",
+    "Phases/Phase 1 Media Decoding.md",
+    "Phases/Phase 0 Foundation.md",
+    "Phases",
+    "Crates/timeline-engine.md",
+    "Crates/project-store.md",
+    "Crates/media-core.md",
+    "Crates",
+    "Packages/project-schema.md",
+    "Packages/editor-state.md",
+    "Packages/command-schema.md",
+    "Packages/canonical-json.md",
+    "Packages",
+    "Data Model/Track.md",
+    "Data Model/TimelineClip.md",
+    "Data Model/Sequence.md",
+    "Data Model/Rational.md",
+    "Data Model/Project.md",
+    "Data Model/Microseconds.md",
+    "Data Model/MediaAsset.md",
+    "Data Model/EffectInstance.md",
+    "Data Model",
+    "Concepts/Validation Precedence.md",
+    "Concepts/Undo Redo Replay.md",
+    "Concepts"
+  ]
+}
