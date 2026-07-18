@@ -444,3 +444,37 @@ select {
 .toast.hidden {
   display: none;
 }
+
+/* ---- drag & drop ---- */
+.media-item {
+  user-select: none;
+}
+.media-item[draggable="true"] {
+  cursor: grab;
+}
+.track-lane.dragover {
+  background: rgba(124, 92, 255, 0.16);
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+}
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 11, 15, 0.72);
+  pointer-events: none;
+}
+.drop-overlay.hidden {
+  display: none;
+}
+.drop-card {
+  padding: 28px 44px;
+  border: 2px dashed var(--accent);
+  border-radius: 14px;
+  background: var(--panel);
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+}

@@ -476,14 +476,22 @@ async function importFile(file: File): Promise<void> {
   if (registered) addAssetToTimeline(assetId, kind, durationUs);
 }
 
+async function importFiles(files: FileList | File[]): Promise<void> {
+  for (const file of Array.from(files)) {
+    if (/^(image|video|audio)\//.test(file.type)) await importFile(file);
+  }
+}
+
 function addAssetToTimeline(
   assetId: string,
   kind: MediaAsset["kind"],
   durationUs: string,
+  preferredTrackId?: string,
 ): void {
   const seq = activeSequence();
   if (!seq) return;
-  const trackId = kind === "audio" ? AUDIO_TRACK : VIDEO_TRACK;
+  const trackId =
+    preferredTrackId ?? (kind === "audio" ? AUDIO_TRACK : VIDEO_TRACK);
   const track = seq.tracks.find((t) => t.id === trackId);
   if (!track) return;
   const startUs = trackEndUs(track).toString();
@@ -800,6 +808,30 @@ function renderTimeline(): void {
     const lane = document.createElement("div");
     lane.className = "track-lane";
     lane.style.minWidth = `${laneWidth}px`;
+    lane.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      lane.classList.add("dragover");
+    });
+    lane.addEventListener("dragleave", () => lane.classList.remove("dragover"));
+    lane.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lane.classList.remove("dragover");
+      const assetId = e.dataTransfer?.getData("application/x-asset-id");
+      if (assetId) {
+        const asset = findAsset(assetId);
+        if (asset) {
+          addAssetToTimeline(
+            asset.id,
+            asset.kind,
+            asset.metadata.durationUs ?? "5000000",
+            track.id,
+          );
+        }
+      } else if (e.dataTransfer?.files.length) {
+        void importFiles(e.dataTransfer.files);
+      }
+    });
 
     for (const clip of track.clips) {
       const el = document.createElement("div");
@@ -1111,6 +1143,11 @@ function renderMedia(): void {
   for (const asset of session.getProject()?.assets ?? []) {
     const el = document.createElement("div");
     el.className = "media-item";
+    el.draggable = true;
+    el.addEventListener("dragstart", (e) => {
+      e.dataTransfer?.setData("application/x-asset-id", asset.id);
+      e.dataTransfer?.setData("text/plain", asset.id);
+    });
     const kind = document.createElement("span");
     kind.className = "media-kind";
     kind.textContent =
@@ -1307,6 +1344,34 @@ function bindEvents(): void {
   });
 
   window.addEventListener("resize", drawPreview);
+
+  // External file drag & drop anywhere in the window.
+  const overlay = $<HTMLDivElement>("drop-overlay");
+  const hasFiles = (e: DragEvent): boolean =>
+    e.dataTransfer?.types.includes("Files") ?? false;
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth += 1;
+    overlay.classList.remove("hidden");
+  });
+  window.addEventListener("dragover", (e) => {
+    if (hasFiles(e)) e.preventDefault();
+  });
+  window.addEventListener("dragleave", (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) overlay.classList.add("hidden");
+  });
+  window.addEventListener("drop", (e) => {
+    dragDepth = 0;
+    overlay.classList.add("hidden");
+    if (e.dataTransfer?.files.length) {
+      e.preventDefault();
+      void importFiles(e.dataTransfer.files);
+    }
+  });
 }
 
 function splitSelectedClip(): void {
