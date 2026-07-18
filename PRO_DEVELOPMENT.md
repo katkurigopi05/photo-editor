@@ -37,6 +37,42 @@ stored as instructions/metadata over an unmodified base image), a layer or node
 model, native RAW support, and — increasingly — AI-assisted local tools
 (object/background removal, generative fill/expand).
 
+## 2b. Editing Toolset Research → Implemented Operations
+
+Surveying the per-slider toolsets of Lightroom, Snapseed, Pixlr, GIMP and
+Photoshop, the common "adjustment" vocabulary — and how much of it now ships in
+`core/operations.py` — is:
+
+| Category | Tool (as seen in Lightroom/Snapseed/Pixlr) | Operation class |
+|---|---|---|
+| Light/tone | Brightness / Exposure | `Brightness` |
+| Light/tone | Contrast | `Contrast` |
+| Light/tone | Highlights (recover/brighten) | `Highlights` |
+| Light/tone | Shadows (lift/deepen) | `Shadows` |
+| Light/tone | Levels (black/white/gamma) | `Levels` |
+| Light/tone | Curves (control-point tone curve) | `Curves` |
+| Light/tone | Auto Contrast / Auto Levels | `AutoContrast` |
+| Light/tone | Histogram equalize | `Equalize` |
+| Color | Saturation | `Saturation` |
+| Color | Vibrance (protects skin/vivid tones) | `Vibrance` |
+| Color | Temperature (warm/cool) | `Temperature` |
+| Color | Tint (green/magenta) | `Tint` |
+| Color | Auto White Balance (gray-world) | `AutoWhiteBalance` |
+| Detail | Sharpen | `Sharpen` |
+| Detail | Blur | `GaussianBlur` |
+| Effects | Vignette | `Vignette` |
+| Effects | Posterize | `Posterize` |
+| Effects | Solarize | `Solarize` |
+| Effects | Grayscale / Sepia / Invert | `Grayscale` / `Sepia` / `Invert` (plugin) |
+| Geometry | Crop | `Crop` |
+| Geometry | Straighten / arbitrary rotate | `Rotate` |
+| Geometry | Rotate 90° / Flip / Resize | `Rotate90` / `FlipHorizontal` / `FlipVertical` / `Resize` |
+
+All are Pillow-only (no new core dependency), serializable into recipes, and can
+be wrapped in `MaskedOperation` for local/selective application. Still on the
+roadmap: a true interactive Curves widget, per-channel curves, and a brush-mask
+UI (the compositing path already exists).
+
 ## 3. Gap Analysis
 
 Relative to the apps above, the current MVP is missing:
@@ -145,3 +181,8 @@ auto-detected and used when available.
 - [6 Best Photopea Alternatives — Mockup Generator](https://mockupgenerator.ai/blog/photopea-alternatives/)
 - [Non-destructive editing and how it works — Life After Photoshop](https://lifeafterphotoshop.com/non-destructive-editing-and-how-it-works/)
 - [Pillow (PIL Fork) Documentation](https://pillow.readthedocs.io/en/stable/handbook/overview.html)
+- [Basic Image Adjustments in Lightroom — PHLEARN](https://phlearn.com/tutorial/30-days-lightroom-day-4/)
+- [Light & Contrast, Lightroom Essentials — Adobe](https://lightroom.adobe.com/academy/editing/lightroom-essentials/light-contrast)
+- [Photography Basics: Editing with Snapseed — Britton Perelman](http://bybrittonperelman.com/writing/2018/4/16/photography-basics-editing-with-snapseed)
+- [Where Is Vibrance In Snapseed — Snapseed Online](https://snapseed-online.com/where-is-vibrance-in-snapseed/)
+- [Pixlr Editor Adjustment menu (Levels, Curves, Posterize, Color balance) — Wikibooks](https://en.wikibooks.org/wiki/Pixlr_Editor/Menus/Adjustment)

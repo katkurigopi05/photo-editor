@@ -1,6 +1,6 @@
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from PIL import ImageTk
 
 from core import (
@@ -13,6 +13,22 @@ from core import (
     FlipVertical,
     Brightness,
     Resize,
+    Contrast,
+    Highlights,
+    Shadows,
+    Levels,
+    AutoContrast,
+    Equalize,
+    Saturation,
+    Vibrance,
+    Temperature,
+    Tint,
+    AutoWhiteBalance,
+    Sharpen,
+    Posterize,
+    Solarize,
+    Vignette,
+    Rotate,
     load_plugins,
     registered_operations,
 )
@@ -59,14 +75,39 @@ class AppGUI:
         self._op_button(filter_frame, "Sepia", Sepia)
         self._op_button(filter_frame, "Blur", lambda: GaussianBlur(radius=3))
 
-        # Toolbar for adjustments
-        adj_frame = self._toolbar_row("Adjustments:")
-        self._op_button(adj_frame, "Rotate 90°", Rotate90)
-        self._op_button(adj_frame, "Flip Horiz", FlipHorizontal)
-        self._op_button(adj_frame, "Flip Vert", FlipVertical)
-        self._op_button(adj_frame, "Brighten (+)", lambda: Brightness(factor=1.2))
-        self._op_button(adj_frame, "Darken (-)", lambda: Brightness(factor=0.8))
-        self._op_button(adj_frame, "Resize (800x600)", lambda: Resize(width=800, height=600))
+        # Toolbar for light/tone adjustments
+        light_frame = self._toolbar_row("Light:")
+        self._op_button(light_frame, "Brighten (+)", lambda: Brightness(factor=1.2))
+        self._op_button(light_frame, "Darken (-)", lambda: Brightness(factor=0.8))
+        self._slider_button(light_frame, "Contrast", lambda v: Contrast(v), 1.3, "Contrast factor (1.0 = none)")
+        self._slider_button(light_frame, "Highlights", lambda v: Highlights(v), -50, "Highlights (-100..100)")
+        self._slider_button(light_frame, "Shadows", lambda v: Shadows(v), 50, "Shadows (-100..100)")
+        self._slider_button(light_frame, "Levels γ", lambda v: Levels(0, 255, v), 1.2, "Gamma (>0, 1.0 = none)")
+        self._op_button(light_frame, "Auto Contrast", AutoContrast)
+        self._op_button(light_frame, "Equalize", Equalize)
+
+        # Toolbar for color adjustments
+        color_frame = self._toolbar_row("Color:")
+        self._slider_button(color_frame, "Saturation", lambda v: Saturation(v), 1.4, "Saturation factor (1.0 = none)")
+        self._slider_button(color_frame, "Vibrance", lambda v: Vibrance(v), 40, "Vibrance (-100..100)")
+        self._slider_button(color_frame, "Temperature", lambda v: Temperature(v), 30, "Temperature (-100 cool..100 warm)")
+        self._slider_button(color_frame, "Tint", lambda v: Tint(v), 0, "Tint (-100 green..100 magenta)")
+        self._op_button(color_frame, "Auto WB", AutoWhiteBalance)
+
+        # Toolbar for detail, effects and geometry
+        fx_frame = self._toolbar_row("Detail/FX:")
+        self._slider_button(fx_frame, "Sharpen", lambda v: Sharpen(v), 2.0, "Sharpness factor (1.0 = none)")
+        self._slider_button(fx_frame, "Posterize", lambda v: Posterize(int(v)), 3, "Bits (1..8)")
+        self._slider_button(fx_frame, "Solarize", lambda v: Solarize(int(v)), 128, "Threshold (0..255)")
+        self._slider_button(fx_frame, "Vignette", lambda v: Vignette(v), 40, "Strength (0..100)")
+
+        # Toolbar for geometry
+        geo_frame = self._toolbar_row("Geometry:")
+        self._op_button(geo_frame, "Rotate 90°", Rotate90)
+        self._slider_button(geo_frame, "Straighten", lambda v: Rotate(v), 0, "Angle in degrees")
+        self._op_button(geo_frame, "Flip Horiz", FlipHorizontal)
+        self._op_button(geo_frame, "Flip Vert", FlipVertical)
+        self._op_button(geo_frame, "Resize (800x600)", lambda: Resize(width=800, height=600))
 
         # Toolbar for AI tools (heavy deps load on first use; a clear install
         # hint is shown if requirements-ai.txt isn't installed)
@@ -106,6 +147,23 @@ class AppGUI:
 
     def _op_button(self, frame, text, op_factory):
         self._button(frame, text, lambda: self.apply_and_refresh(op_factory()))
+
+    def _slider_button(self, frame, text, op_factory, default, prompt):
+        """Button for a parametric op: asks for a value, then applies
+        op_factory(value). Keeps the GUI simple without per-op dialogs."""
+        def run():
+            if not self.document:
+                return
+            value = simpledialog.askfloat(text, prompt, initialvalue=default, parent=self.master)
+            if value is None:
+                return  # cancelled
+            try:
+                operation = op_factory(value)
+            except ValueError as e:
+                messagebox.showerror(text, str(e))
+                return
+            self.apply_and_refresh(operation)
+        self._button(frame, text, run)
 
     def _set_busy(self, busy, message="Processing…"):
         self.status_var.set(message if busy else "Ready")
