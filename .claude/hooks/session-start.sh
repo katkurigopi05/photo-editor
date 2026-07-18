@@ -6,8 +6,11 @@
 # hook installs the headless-runnable dependencies every session so the core
 # engine (core/), batch_export.py, and the test suite work out of the box.
 #
+# requirements-dev.txt pulls in the core (Pillow) plus the OpenCV + NumPy
+# extras (requirements-cv.txt) and pytest, so the cv_tools tests run too.
+#
 # Scope notes:
-#  - The heavy, optional extras (requirements-ai.txt: torch/transformers/
+#  - The heaviest optional extras (requirements-ai.txt: torch/transformers/
 #    ultralytics; requirements-raw.txt: rawpy) are intentionally NOT installed
 #    here — they are multi-GB and opt-in. Install them by hand when needed.
 #  - The Tkinter GUI (photo_editor.py) is NOT runnable in a headless remote
@@ -26,4 +29,4 @@ cd "${CLAUDE_PROJECT_DIR:-.}"
 # and the container state is cached after the hook completes.
 python3 -m pip install --quiet -r requirements-dev.txt
 
-echo "session-start: installed core + dev dependencies (Pillow, pytest)."
+echo "session-start: installed core + dev dependencies (Pillow, OpenCV, NumPy, pytest)."

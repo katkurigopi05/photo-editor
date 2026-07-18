@@ -1,0 +1,8 @@
+# Optional dependencies for the cv_tools/ package (OpenCV + NumPy).
+# Not required by the core editor. Install with:
+#   pip install -r requirements-cv.txt
+#
+# Headless build is used deliberately: the editor's GUI is Tkinter, not
+# OpenCV highgui, so the lighter -headless wheel avoids pulling GTK/Qt.
+opencv-python-headless>=4.9
+numpy>=1.24

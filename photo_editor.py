@@ -33,6 +33,7 @@ from core import (
     registered_operations,
 )
 from ai_tools import AutoCrop, RemoveBackground
+from cv_tools import BilateralFilter, CLAHE, Denoise, UnsharpMask
 
 OPEN_FILETYPES = [
     ("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp"),
@@ -108,6 +109,14 @@ class AppGUI:
         self._op_button(geo_frame, "Flip Horiz", FlipHorizontal)
         self._op_button(geo_frame, "Flip Vert", FlipVertical)
         self._op_button(geo_frame, "Resize (800x600)", lambda: Resize(width=800, height=600))
+
+        # Toolbar for OpenCV tools (needs requirements-cv.txt; a clear install
+        # hint is shown on first use if it isn't installed)
+        cv_frame = self._toolbar_row("OpenCV:")
+        self._op_button(cv_frame, "CLAHE", CLAHE)
+        self._op_button(cv_frame, "Denoise", Denoise)
+        self._op_button(cv_frame, "Bilateral", BilateralFilter)
+        self._slider_button(cv_frame, "Unsharp", lambda v: UnsharpMask(amount=v), 1.0, "Amount (e.g. 1.0)")
 
         # Toolbar for AI tools (heavy deps load on first use; a clear install
         # hint is shown if requirements-ai.txt isn't installed)

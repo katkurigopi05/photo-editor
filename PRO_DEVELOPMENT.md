@@ -169,6 +169,38 @@ auto-detected and used when available.
 - `ai_tools/segmentation.py` — transformer background-removal wrapper
 - `requirements-ai.txt` — optional dependencies, install with `pip install -r requirements-ai.txt`
 
+## 6b. Additional Libraries — cv_tools (OpenCV + NumPy)
+
+Pillow covers I/O and the common adjustments, but some professional tools are
+awkward or slow in pure Pillow. Rather than replace Pillow, the operation model
+lets us add other libraries behind the same `apply(image) -> image` contract.
+Survey of candidates:
+
+| Library | Adds over Pillow | Weight |
+|---|---|---|
+| **NumPy** | Fast vectorized pixel math; enables custom algorithms | Light |
+| **OpenCV** (`opencv-python-headless`) | CLAHE, non-local-means denoise, bilateral filter, inpainting, warping | ~40 MB |
+| **scikit-image** | Research-grade restoration/segmentation (pulls in scipy) | Heavier |
+| **rawpy / pillow-heif / imageio** | More formats (RAW added; HEIC/AVIF, animated) | Small |
+
+Implemented: an optional **`cv_tools/`** package (OpenCV + NumPy), following the
+same opt-in pattern as `ai_tools` — classes register into the core registry at
+import time, but `cv2`/`numpy` are imported lazily inside `apply()`, so the
+package is safe to import without the deps and raises a clear
+`requirements-cv.txt` hint if used without them.
+
+| Operation | Backing call | Why not pure Pillow |
+|---|---|---|
+| `CLAHE` | `cv2.createCLAHE` on LAB L-channel | Adaptive *local* contrast; Pillow only has global equalize |
+| `Denoise` | `cv2.fastNlMeansDenoisingColored` | Edge-preserving noise removal |
+| `BilateralFilter` | `cv2.bilateralFilter` | Edge-preserving smoothing (skin, flattening) |
+| `UnsharpMask` | NumPy `img + amount*(img - blur)` | Fine-grained sharpening control |
+| `RemoveObject` | `cv2.inpaint` (Telea/NS) over a region mask | Classical, no-ML distraction removal |
+
+`cv_tools` is installed with `pip install -r requirements-cv.txt`. The four
+parameterized filters have GUI buttons; `RemoveObject` needs an interactive
+region selection (future work) and is currently used via the API/recipes.
+
 ## 7. Sources
 
 - [The best photo editing software in 2026 — Digital Camera World](https://www.digitalcameraworld.com/buying-guides/the-best-photo-editing-software)
@@ -186,3 +218,5 @@ auto-detected and used when available.
 - [Photography Basics: Editing with Snapseed — Britton Perelman](http://bybrittonperelman.com/writing/2018/4/16/photography-basics-editing-with-snapseed)
 - [Where Is Vibrance In Snapseed — Snapseed Online](https://snapseed-online.com/where-is-vibrance-in-snapseed/)
 - [Pixlr Editor Adjustment menu (Levels, Curves, Posterize, Color balance) — Wikibooks](https://en.wikibooks.org/wiki/Pixlr_Editor/Menus/Adjustment)
+- [OpenCV-Python Documentation (CLAHE, denoising, inpainting)](https://docs.opencv.org/4.x/d6/d00/tutorial_py_root.html)
+- [NumPy Documentation](https://numpy.org/doc/stable/)
