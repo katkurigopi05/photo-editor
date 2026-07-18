@@ -191,6 +191,25 @@ export const borderParamsSchema = z
   })
   .strict();
 
+export const removeBackgroundParamsSchema = z
+  .object({
+    // When `auto` is true the background color is sampled from the image
+    // corners; otherwise `keyColorHex` is keyed out.
+    auto: z.boolean(),
+    keyColorHex: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/, "must be a valid 6-char hex color (#RRGGBB)"),
+    threshold: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "threshold must be between 0 and 1",
+    ),
+    softness: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "softness must be between 0 and 1",
+    ),
+  })
+  .strict();
+
 export const EFFECT_TYPES = [
   "color.brightness",
   "color.contrast",
@@ -210,6 +229,7 @@ export const EFFECT_TYPES = [
   "color.duotone",
   "fx.retro_noise",
   "fx.border",
+  "fx.remove_background",
 ] as const;
 
 export const effectTypeSchema = z.enum(EFFECT_TYPES);
@@ -236,6 +256,7 @@ export const effectParamsSchemas = {
   "color.duotone": duotoneParamsSchema,
   "fx.retro_noise": retroNoiseParamsSchema,
   "fx.border": borderParamsSchema,
+  "fx.remove_background": removeBackgroundParamsSchema,
 } satisfies Record<EffectType, z.ZodTypeAny>;
 
 function effect<Type extends EffectType, Params extends z.ZodTypeAny>(
@@ -272,6 +293,7 @@ export const effectInstanceSchema = z.discriminatedUnion("type", [
   effect("color.duotone", duotoneParamsSchema),
   effect("fx.retro_noise", retroNoiseParamsSchema),
   effect("fx.border", borderParamsSchema),
+  effect("fx.remove_background", removeBackgroundParamsSchema),
 ]);
 
 export type EffectInstance = z.infer<typeof effectInstanceSchema>;

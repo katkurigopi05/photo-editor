@@ -202,6 +202,22 @@ const EFFECTS: EffectSpec[] = [
       range("borderWidthPx", "Width (px)", 0, 50, 1, 12),
     ],
   },
+  {
+    type: "fx.remove_background",
+    label: "Remove Background",
+    modes: ["photo", "video"],
+    params: [
+      { name: "auto", label: "Auto (from corners)", kind: "toggle", def: true },
+      {
+        name: "keyColorHex",
+        label: "Key color",
+        kind: "color",
+        def: "#00ff00",
+      },
+      range("threshold", "Tolerance", 0, 1, 0.02, 0.28),
+      range("softness", "Softness", 0, 1, 0.02, 0.12),
+    ],
+  },
 ];
 
 const effectSpec = (type: string): EffectSpec | undefined =>
@@ -226,7 +242,7 @@ const ACTOR = { type: "user", id: "user-1" } as const;
 const FRAME_RATE = { numerator: 30, denominator: 1 };
 
 const session = new EditorSession();
-let mode: "video" | "photo" = "video";
+let mode: "video" | "photo" = "photo";
 let selectedClipId: string | null = null;
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
@@ -555,6 +571,15 @@ function drawLayer(
 
   const { filter, alpha, rotateDeg, flipX, flipY } = previewTransform(clip);
 
+  // Background removal (color key) needs per-pixel work, so it runs on an
+  // offscreen canvas whose result is drawn in place of the raw media.
+  const bgFx = clip.effects.find(
+    (e) => e.enabled && e.type === "fx.remove_background",
+  );
+  const drawable: CanvasImageSource = bgFx
+    ? removeBackground(media, mw, mh, bgFx)
+    : media;
+
   cctx.save();
   cctx.globalAlpha = alpha;
   cctx.filter = filter || "none";
@@ -563,7 +588,7 @@ function drawLayer(
   cctx.translate(ccx, ccy);
   if (rotateDeg) cctx.rotate((rotateDeg * Math.PI) / 180);
   if (flipX || flipY) cctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-  cctx.drawImage(media, -dw / 2, -dh / 2, dw, dh);
+  cctx.drawImage(drawable, -dw / 2, -dh / 2, dw, dh);
   cctx.restore();
 
   drawOverlays(clip, dx, dy, dw, dh);
@@ -688,6 +713,68 @@ function drawOverlays(
       cctx.strokeRect(dx + w / 2, dy + w / 2, dw - w, dh - w);
     }
   }
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const m = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex);
+  if (!m) return [0, 255, 0];
+  return [parseInt(m[1]!, 16), parseInt(m[2]!, 16), parseInt(m[3]!, 16)];
+}
+
+function cornerKey(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+): [number, number, number] {
+  const corners = [0, (w - 1) * 4, (h - 1) * w * 4, ((h - 1) * w + w - 1) * 4];
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (const i of corners) {
+    r += data[i]!;
+    g += data[i + 1]!;
+    b += data[i + 2]!;
+  }
+  return [Math.round(r / 4), Math.round(g / 4), Math.round(b / 4)];
+}
+
+/** Color-key background removal: pixels close to the key color become
+ * transparent, with a soft edge. Deterministic; no ML model. */
+function removeBackground(
+  media: CanvasImageSource,
+  mw: number,
+  mh: number,
+  fx: EffectInstance,
+): HTMLCanvasElement {
+  const off = document.createElement("canvas");
+  off.width = mw;
+  off.height = mh;
+  const octx = off.getContext("2d")!;
+  octx.drawImage(media, 0, 0, mw, mh);
+  const image = octx.getImageData(0, 0, mw, mh);
+  const d = image.data;
+
+  const key = getParamBool(fx, "auto")
+    ? cornerKey(d, mw, mh)
+    : hexToRgb(getParamString(fx, "keyColorHex", "#00ff00"));
+  const MAX = Math.sqrt(3) * 255;
+  const threshold = getParamNumber(fx, "threshold", 0.28) * MAX;
+  const softness = getParamNumber(fx, "softness", 0.12) * MAX;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const dist = Math.hypot(
+      d[i]! - key[0],
+      d[i + 1]! - key[1],
+      d[i + 2]! - key[2],
+    );
+    if (dist <= threshold) {
+      d[i + 3] = 0;
+    } else if (softness > 0 && dist <= threshold + softness) {
+      d[i + 3] = Math.round(d[i + 3]! * ((dist - threshold) / softness));
+    }
+  }
+  octx.putImageData(image, 0, 0);
+  return off;
 }
 
 // ==========================================================================
@@ -1294,6 +1381,6 @@ function doExport(): void {
 // ==========================================================================
 seed();
 bindEvents();
-setMode("video");
+setMode("photo");
 updateUI();
 requestAnimationFrame(animate);
