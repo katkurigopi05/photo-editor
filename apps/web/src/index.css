@@ -214,6 +214,31 @@ body {
   color: var(--text);
 }
 
+/* ---- effects palette ---- */
+.effects-palette {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.fx-chip {
+  padding: 7px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: center;
+}
+.fx-chip:hover {
+  border-color: var(--accent);
+  color: #fff;
+}
+.fx-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ---- center / preview ---- */
 #center-panel {
   padding: 12px;

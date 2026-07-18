@@ -252,6 +252,7 @@ const versionBadge = $<HTMLSpanElement>("version-badge");
 const seekEl = $<HTMLInputElement>("seek");
 const playBtn = $<HTMLButtonElement>("btn-play");
 const fileInput = $<HTMLInputElement>("file-input");
+const paletteEl = $<HTMLDivElement>("effects-palette");
 
 // ==========================================================================
 // Helpers
@@ -830,21 +831,7 @@ function renderInspector(): void {
     select.appendChild(new Option(spec.label, spec.type));
   }
   select.addEventListener("change", () => {
-    const spec = effectSpec(select.value);
-    if (!spec) return;
-    const effect = {
-      id: `fx-${crypto.randomUUID().slice(0, 8)}`,
-      type: spec.type,
-      enabled: true,
-      params: defaultParams(spec),
-    } as unknown as EffectInstance;
-    commit(
-      buildAddEffect(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
-        clipId: clip.id,
-        effect,
-      }),
-    );
+    if (select.value) addEffectByType(select.value as EffectType);
   });
   addWrap.appendChild(select);
   fxSection.appendChild(addWrap);
@@ -995,6 +982,43 @@ function renderHistory(): void {
   });
 }
 
+function addEffectByType(type: EffectType): void {
+  if (!selectedClipId) {
+    toast("Select a clip on the timeline first, then add an effect.", true);
+    return;
+  }
+  const spec = effectSpec(type);
+  if (!spec) return;
+  const effect = {
+    id: `fx-${crypto.randomUUID().slice(0, 8)}`,
+    type: spec.type,
+    enabled: true,
+    params: defaultParams(spec),
+  } as unknown as EffectInstance;
+  commit(
+    buildAddEffect(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: selectedClipId,
+      effect,
+    }),
+  );
+}
+
+function renderEffectsPalette(): void {
+  paletteEl.innerHTML = "";
+  for (const spec of EFFECTS.filter((s) => s.modes.includes(mode))) {
+    const chip = document.createElement("button");
+    chip.className = "fx-chip";
+    chip.textContent = spec.label;
+    chip.disabled = selectedClipId === null;
+    chip.title = selectedClipId
+      ? `Add ${spec.label} to the selected clip`
+      : "Select a clip first";
+    chip.addEventListener("click", () => addEffectByType(spec.type));
+    paletteEl.appendChild(chip);
+  }
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
   for (const asset of session.getProject()?.assets ?? []) {
@@ -1070,6 +1094,7 @@ function updateUI(): void {
   versionBadge.textContent = `v${session.getVersion()}`;
   syncPlaybackDuration();
   renderMedia();
+  renderEffectsPalette();
   renderHistory();
   renderTimeline();
   renderInspector();
@@ -1083,6 +1108,7 @@ function setMode(next: "video" | "photo"): void {
   $("mode-photo").classList.toggle("active", mode === "photo");
   document.body.dataset["mode"] = mode;
   renderInspector();
+  renderEffectsPalette();
 }
 
 // ==========================================================================
