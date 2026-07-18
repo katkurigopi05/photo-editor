@@ -1,0 +1,6 @@
+node_modules/
+dist/
+coverage/
+target/
+*.tsbuildinfo
+.DS_Store
