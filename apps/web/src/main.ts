@@ -1832,7 +1832,6 @@ function renderInspector() {
 
       dispatch("timeline.update_clip_effects", {
         sequenceId: activeSequenceId,
-        trackId: track.id,
         clipId: clip.id,
         effects: newEffects,
       });
@@ -1864,7 +1863,6 @@ function renderInspector() {
 
       dispatch("timeline.update_clip_effects", {
         sequenceId: activeSequenceId,
-        trackId: track.id,
         clipId: clip.id,
         effects: updatedEffects,
       });

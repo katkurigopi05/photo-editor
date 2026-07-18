@@ -111,6 +111,21 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
 
+  packages/ui-kit:
+    dependencies:
+      '@director/command-schema':
+        specifier: workspace:*
+        version: link:../command-schema
+      '@director/editor-state':
+        specifier: workspace:*
+        version: link:../editor-state
+      '@director/playback-controller':
+        specifier: workspace:*
+        version: link:../playback-controller
+      '@director/project-schema':
+        specifier: workspace:*
+        version: link:../project-schema
+
 packages:
 
   '@esbuild/aix-ppc64@0.21.5':

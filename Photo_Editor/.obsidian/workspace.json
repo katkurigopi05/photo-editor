@@ -198,6 +198,8 @@
   },
   "active": "10dd8e8235d4557b",
   "lastOpenFiles": [
+    "Phases/Phase 5 Editing UI.md",
+    "Packages/ui-kit.md",
     "Phases/Phase 4 Audio.md",
     "Crates/audio-engine.md",
     "Phases/Phase 3 Playback.md",
@@ -227,8 +229,6 @@
     "Data Model/Track.md",
     "Data Model/TimelineClip.md",
     "Data Model/Sequence.md",
-    "Data Model/Rational.md",
-    "Data Model/Project.md",
     "Data Model",
     "Concepts"
   ]

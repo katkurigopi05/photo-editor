@@ -229,6 +229,22 @@ export const reorderEffectsCommandSchema = command(
   reorderEffectsPayloadSchema,
 );
 
+// --- timeline.update_clip_effects -------------------------------------------
+
+/** Replace a clip's entire effect stack in one command (e.g. presets). */
+export const updateClipEffectsPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    effects: z.array(effectInstanceSchema),
+  })
+  .strict();
+
+export const updateClipEffectsCommandSchema = command(
+  "timeline.update_clip_effects",
+  updateClipEffectsPayloadSchema,
+);
+
 // --- timeline.set_clip_audio_gain -------------------------------------------
 
 export const setClipAudioGainPayloadSchema = z
@@ -274,6 +290,7 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   updateEffectParamsCommandSchema,
   removeEffectCommandSchema,
   reorderEffectsCommandSchema,
+  updateClipEffectsCommandSchema,
   setClipAudioGainCommandSchema,
   setClipAudioPanCommandSchema,
 ]);
@@ -293,6 +310,9 @@ export type UpdateEffectParamsCommand = z.infer<
 >;
 export type RemoveEffectCommand = z.infer<typeof removeEffectCommandSchema>;
 export type ReorderEffectsCommand = z.infer<typeof reorderEffectsCommandSchema>;
+export type UpdateClipEffectsCommand = z.infer<
+  typeof updateClipEffectsCommandSchema
+>;
 export type SetClipAudioGainCommand = z.infer<
   typeof setClipAudioGainCommandSchema
 >;
@@ -315,6 +335,7 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.update_effect_params",
   "timeline.remove_effect",
   "timeline.reorder_effects",
+  "timeline.update_clip_effects",
   "timeline.set_clip_audio_gain",
   "timeline.set_clip_audio_pan",
 ];

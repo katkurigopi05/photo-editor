@@ -13,6 +13,7 @@ export default defineConfig({
       "@director/playback-controller": pkg(
         "packages/playback-controller/src/index.ts",
       ),
+      "@director/ui-kit": pkg("packages/ui-kit/src/index.ts"),
     },
   },
   test: {

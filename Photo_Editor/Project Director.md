@@ -27,6 +27,7 @@ codebase in this workspace.
 - [[Packages/command-schema|@director/command-schema]]
 - [[Packages/editor-state|@director/editor-state]]
 - [[Packages/playback-controller|@director/playback-controller]]
+- [[Packages/ui-kit|@director/ui-kit]]
 
 ## Crates (Rust)
 
@@ -42,6 +43,7 @@ codebase in this workspace.
 - [[Phases/Phase 2 Effects|Phase 2 — Effects]] 🟡 state layer built
 - [[Phases/Phase 3 Playback|Phase 3 — Playback]] 🟡 transport core built
 - [[Phases/Phase 4 Audio|Phase 4 — Audio]] 🟡 DSP core + state built
+- [[Phases/Phase 5 Editing UI|Phase 5 — Editing UI]] 🟡 command boundary + session built
 
 ## Decisions
 
@@ -50,5 +52,5 @@ codebase in this workspace.
 
 ## Status
 
-- TypeScript: format ✅ lint ✅ typecheck ✅ 147 tests ✅ build ✅
+- TypeScript: format ✅ lint ✅ typecheck ✅ 165 tests ✅ build ✅
 - Rust: fmt ✅ clippy ✅ 22 tests ✅

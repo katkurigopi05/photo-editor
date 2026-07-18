@@ -14,7 +14,7 @@ contract with the same rigor as the Foundation; phases are not built all at once
 | [[Phases/Phase 2 Effects\|2 — Effects]] | render + effect stack | 🟡 state layer built |
 | [[Phases/Phase 3 Playback\|3 — Playback & Scrubbing]] | transport, frame-accurate seek | 🟡 transport core built |
 | [[Phases/Phase 4 Audio\|4 — Audio Engine]] | mixing, waveform | 🟡 DSP core + state built |
-| 5 — Editing UI | timeline, viewer, inspector | ⬜ future |
+| [[Phases/Phase 5 Editing UI\|5 — Editing UI]] | timeline, viewer, inspector | 🟡 command boundary + session built |
 | 6 — Export | encode + mux | ⬜ future |
 
 **Suggested order:** 0 → 1 → 2 → 3 → 5 → 4 → 6.
