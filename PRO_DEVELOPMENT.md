@@ -201,6 +201,30 @@ package is safe to import without the deps and raises a clear
 parameterized filters have GUI buttons; `RemoveObject` needs an interactive
 region selection (future work) and is currently used via the API/recipes.
 
+## 6c. Animation & Video (recipe reuse across frames)
+
+The operation/recipe model isn't limited to still images — the same recipe can
+be applied to every frame of an animation or video. Two phases:
+
+- **Phase A — Animated GIF (Pillow-only, no FFmpeg).** `core/frames.py` renders
+  each frame of an animated GIF/WebP through the operation list, preserving
+  per-frame duration and loop count. `animate.py` is the CLI
+  (`python animate.py recipe.json in.gif out.gif`). Frames are edited in RGB
+  (per-frame transparency is flattened).
+- **Phase B — Video (optional, MoviePy + FFmpeg).** `video_tools/` applies a
+  recipe to every video frame via MoviePy v2's `image_transform`, preserving
+  audio. `edit_video.py` is the CLI
+  (`python edit_video.py recipe.json in.mp4 out.mp4 [--no-audio]`). MoviePy is
+  imported lazily (safe to import without it; clear `requirements-video.txt`
+  hint otherwise). Size-changing geometry ops (Crop/Resize/Rotate) are rejected
+  for video in this first version — every frame must keep the clip's size.
+
+Note on the library survey (MoviePy, PyAV, OpenCV, Pillow): MoviePy and PyAV are
+video libraries. This project stays image-first; video is an opt-in extension
+that reuses the existing recipe rather than a rewrite. MoviePy was chosen over
+PyAV for Phase B because its high-level `image_transform` + audio handling fit
+the "apply a recipe per frame" use case with the least code.
+
 ## 7. Sources
 
 - [The best photo editing software in 2026 — Digital Camera World](https://www.digitalcameraworld.com/buying-guides/the-best-photo-editing-software)
