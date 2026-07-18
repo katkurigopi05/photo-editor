@@ -14,6 +14,7 @@ export default defineConfig({
         "packages/playback-controller/src/index.ts",
       ),
       "@director/ui-kit": pkg("packages/ui-kit/src/index.ts"),
+      "@director/export-engine": pkg("packages/export-engine/src/index.ts"),
     },
   },
   test: {

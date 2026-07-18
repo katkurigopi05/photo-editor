@@ -96,6 +96,18 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
 
+  packages/export-engine:
+    dependencies:
+      '@director/playback-controller':
+        specifier: workspace:*
+        version: link:../playback-controller
+      '@director/project-schema':
+        specifier: workspace:*
+        version: link:../project-schema
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
   packages/playback-controller:
     dependencies:
       '@director/project-schema':
