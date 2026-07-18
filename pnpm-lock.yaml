@@ -59,12 +59,18 @@ importers:
       '@director/editor-state':
         specifier: workspace:*
         version: link:../../packages/editor-state
+      '@director/export-engine':
+        specifier: workspace:*
+        version: link:../../packages/export-engine
       '@director/playback-controller':
         specifier: workspace:*
         version: link:../../packages/playback-controller
       '@director/project-schema':
         specifier: workspace:*
         version: link:../../packages/project-schema
+      '@director/ui-kit':
+        specifier: workspace:*
+        version: link:../../packages/ui-kit
     devDependencies:
       vite:
         specifier: ^5.4.21

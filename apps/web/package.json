@@ -20,8 +20,10 @@
   },
   "dependencies": {
     "@director/editor-state": "workspace:*",
+    "@director/export-engine": "workspace:*",
     "@director/playback-controller": "workspace:*",
-    "@director/project-schema": "workspace:*"
+    "@director/project-schema": "workspace:*",
+    "@director/ui-kit": "workspace:*"
   },
   "devDependencies": {
     "vite": "^5.4.21"
