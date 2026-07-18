@@ -10,6 +10,9 @@ export default defineConfig({
       "@director/project-schema": pkg("packages/project-schema/src/index.ts"),
       "@director/command-schema": pkg("packages/command-schema/src/index.ts"),
       "@director/editor-state": pkg("packages/editor-state/src/index.ts"),
+      "@director/playback-controller": pkg(
+        "packages/playback-controller/src/index.ts",
+      ),
     },
   },
   test: {

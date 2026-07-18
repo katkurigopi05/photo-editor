@@ -12,7 +12,7 @@ contract with the same rigor as the Foundation; phases are not built all at once
 | [[Phases/Phase 0 Foundation\|0 — Foundation]] | data model, command engine, undo/redo/replay | ✅ built |
 | [[Phases/Phase 1 Media Decoding\|1 — Media Decoding]] | decode source media to pixels/samples | 🟡 image decode built |
 | [[Phases/Phase 2 Effects\|2 — Effects]] | render + effect stack | 🟡 state layer built |
-| 3 — Playback & Scrubbing | transport, frame-accurate seek | ⬜ future |
+| [[Phases/Phase 3 Playback\|3 — Playback & Scrubbing]] | transport, frame-accurate seek | 🟡 transport core built |
 | 4 — Audio Engine | mixing, waveform | ⬜ future |
 | 5 — Editing UI | timeline, viewer, inspector | ⬜ future |
 | 6 — Export | encode + mux | ⬜ future |

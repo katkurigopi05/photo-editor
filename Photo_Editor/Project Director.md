@@ -26,6 +26,7 @@ codebase in this workspace.
 - [[Packages/project-schema|@director/project-schema]]
 - [[Packages/command-schema|@director/command-schema]]
 - [[Packages/editor-state|@director/editor-state]]
+- [[Packages/playback-controller|@director/playback-controller]]
 
 ## Crates (Rust)
 
@@ -38,6 +39,7 @@ codebase in this workspace.
 - [[Phases/Phase 0 Foundation|Phase 0 — Foundation]] ✅ built
 - [[Phases/Phase 1 Media Decoding|Phase 1 — Media Decoding]] 🟡 image decode built
 - [[Phases/Phase 2 Effects|Phase 2 — Effects]] 🟡 state layer built
+- [[Phases/Phase 3 Playback|Phase 3 — Playback]] 🟡 transport core built
 
 ## Decisions
 

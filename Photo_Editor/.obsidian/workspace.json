@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "create a link.md",
+                "file": "Project Director.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "create a link"
+              "title": "Project Director"
             }
           }
         ]
@@ -110,7 +110,6 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "create a link.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -120,7 +119,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for create a link"
+              "title": "Backlinks"
             }
           },
           {
@@ -129,12 +128,11 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "create a link.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from create a link"
+              "title": "Outgoing links"
             }
           },
           {
@@ -172,13 +170,12 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "create a link.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of create a link"
+              "title": "Outline"
             }
           }
         ]
@@ -199,10 +196,13 @@
       "bases:Create new base": false
     }
   },
-  "active": "623a50a58109a338",
+  "active": "10dd8e8235d4557b",
   "lastOpenFiles": [
-    "How this vault works.md",
+    "Phases/Phase 3 Playback.md",
+    "Packages/playback-controller.md",
     "Project Director.md",
+    "How this vault works.md",
+    "create a link.md",
     "Rules/Non-negotiables.md",
     "Rules",
     "Decisions/ADR 0002 Deterministic Command Driven State.md",
@@ -229,10 +229,7 @@
     "Data Model/Project.md",
     "Data Model/Microseconds.md",
     "Data Model/MediaAsset.md",
-    "Data Model/EffectInstance.md",
     "Data Model",
-    "Concepts/Validation Precedence.md",
-    "Concepts/Undo Redo Replay.md",
     "Concepts"
   ]
 }
