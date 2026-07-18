@@ -59,6 +59,16 @@ importers:
       '@director/editor-state':
         specifier: workspace:*
         version: link:../../packages/editor-state
+      '@director/playback-controller':
+        specifier: workspace:*
+        version: link:../../packages/playback-controller
+      '@director/project-schema':
+        specifier: workspace:*
+        version: link:../../packages/project-schema
+    devDependencies:
+      vite:
+        specifier: ^5.4.21
+        version: 5.4.21(@types/node@22.20.1)
 
   packages/canonical-json: {}
 
@@ -86,6 +96,12 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
 
+  packages/playback-controller:
+    dependencies:
+      '@director/project-schema':
+        specifier: workspace:*
+        version: link:../project-schema
+
   packages/project-schema:
     dependencies:
       '@director/canonical-json':
@@ -94,6 +110,21 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+
+  packages/ui-kit:
+    dependencies:
+      '@director/command-schema':
+        specifier: workspace:*
+        version: link:../command-schema
+      '@director/editor-state':
+        specifier: workspace:*
+        version: link:../editor-state
+      '@director/playback-controller':
+        specifier: workspace:*
+        version: link:../playback-controller
+      '@director/project-schema':
+        specifier: workspace:*
+        version: link:../project-schema
 
 packages:
 

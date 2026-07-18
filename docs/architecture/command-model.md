@@ -32,6 +32,9 @@ state. Commands are a Zod-validated discriminated union on `commandType`.
 | `timeline.update_effect_params` | Replace an effect's params (re-validated against its type). |
 | `timeline.remove_effect`    | Remove an effect; inverse restores it at its exact index.   |
 | `timeline.reorder_effects`  | Reorder a clip's effect stack by a permutation of effect ids. |
+| `timeline.update_clip_effects` | Replace a clip's whole effect stack (e.g. presets); inverse restores the prior stack. |
+| `timeline.set_clip_audio_gain` | Set a clip's audio gain in dB (validated range). |
+| `timeline.set_clip_audio_pan`  | Set a clip's stereo pan in [-1, 1].              |
 
 ## Validation precedence
 

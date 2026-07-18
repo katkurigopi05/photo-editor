@@ -81,6 +81,8 @@ interface TimelineClip {
   sourceInUs: string;
   sourceOutUs: string;
   playbackRate: Rational; // v1: exactly 1/1
+  audioGainDb: number; // Phase 4: default 0, range [-60, 12]
+  audioPan: number; // Phase 4: default 0 (center), range [-1, 1]
   effects: EffectInstance[]; // ordered effect stack (Phase 2)
 }
 ```

@@ -12,4 +12,4 @@ clock, randomness, or I/O.
   does not overlap, matching [[Data Model/TimelineClip]].
 
 Built in the [[Phases/Phase 0 Foundation|Foundation]] phase; compiles native +
-(later) WASM.
+(later) WASM. Audio DSP lives in [[Crates/audio-engine]].

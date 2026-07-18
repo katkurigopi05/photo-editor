@@ -28,6 +28,10 @@ interface TimelineClip {
   rejected.
 - Deterministic order: `timelineStartUs`, then `id`.
 - Carries [[Data Model/EffectInstance|effects]].
+- Carries audio state (Phase 4): `audioGainDb` (default 0, [-60, 12]) and
+  `audioPan` (default 0, [-1, 1]), edited via `timeline.set_clip_audio_gain` /
+  `timeline.set_clip_audio_pan`. See [[Phases/Phase 4 Audio]] and
+  [[Crates/audio-engine]].
 
 Added via `timeline.add_clip`; edited via move/trim/delete. See
 [[Concepts/Command Engine]].

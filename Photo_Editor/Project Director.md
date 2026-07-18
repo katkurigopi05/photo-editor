@@ -26,18 +26,24 @@ codebase in this workspace.
 - [[Packages/project-schema|@director/project-schema]]
 - [[Packages/command-schema|@director/command-schema]]
 - [[Packages/editor-state|@director/editor-state]]
+- [[Packages/playback-controller|@director/playback-controller]]
+- [[Packages/ui-kit|@director/ui-kit]]
 
 ## Crates (Rust)
 
 - [[Crates/media-core|media-core]]
 - [[Crates/timeline-engine|timeline-engine]]
 - [[Crates/project-store|project-store]]
+- [[Crates/audio-engine|audio-engine]]
 
 ## Phases
 
 - [[Phases/Phase 0 Foundation|Phase 0 — Foundation]] ✅ built
 - [[Phases/Phase 1 Media Decoding|Phase 1 — Media Decoding]] 🟡 image decode built
 - [[Phases/Phase 2 Effects|Phase 2 — Effects]] 🟡 state layer built
+- [[Phases/Phase 3 Playback|Phase 3 — Playback]] 🟡 transport core built
+- [[Phases/Phase 4 Audio|Phase 4 — Audio]] 🟡 DSP core + state built
+- [[Phases/Phase 5 Editing UI|Phase 5 — Editing UI]] 🟡 command boundary + session built
 
 ## Decisions
 
@@ -46,5 +52,5 @@ codebase in this workspace.
 
 ## Status
 
-- TypeScript: format ✅ lint ✅ typecheck ✅ 96 tests ✅ build ✅
-- Rust: fmt ✅ clippy ✅ 16 tests ✅
+- TypeScript: format ✅ lint ✅ typecheck ✅ 165 tests ✅ build ✅
+- Rust: fmt ✅ clippy ✅ 22 tests ✅

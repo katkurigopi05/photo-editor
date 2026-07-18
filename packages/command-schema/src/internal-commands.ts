@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  audioGainDbSchema,
+  audioPanSchema,
   effectInstanceSchema,
   isoInstantSchema,
   jsonObjectSchema,
@@ -168,6 +170,42 @@ export const reorderEffectsInverseSchema = internal(
     .strict(),
 );
 
+export const setClipEffectsInverseSchema = internal(
+  "internal.set_clip_effects",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      effects: z.array(effectInstanceSchema),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
+export const setClipAudioGainInverseSchema = internal(
+  "internal.set_clip_audio_gain",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      gainDb: audioGainDbSchema,
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
+export const setClipAudioPanInverseSchema = internal(
+  "internal.set_clip_audio_pan",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      pan: audioPanSchema,
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 export const internalCommandSchema = z.discriminatedUnion("commandType", [
   removeProjectInverseSchema,
   removeAssetInverseSchema,
@@ -181,6 +219,9 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   insertEffectInverseSchema,
   setEffectParamsInverseSchema,
   reorderEffectsInverseSchema,
+  setClipEffectsInverseSchema,
+  setClipAudioGainInverseSchema,
+  setClipAudioPanInverseSchema,
 ]);
 
 export type InternalProjectCommand = z.infer<typeof internalCommandSchema>;

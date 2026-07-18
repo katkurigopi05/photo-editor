@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "moduleDetection": "force",
@@ -23,7 +23,11 @@
       "@director/canonical-json": ["packages/canonical-json/src/index.ts"],
       "@director/project-schema": ["packages/project-schema/src/index.ts"],
       "@director/command-schema": ["packages/command-schema/src/index.ts"],
-      "@director/editor-state": ["packages/editor-state/src/index.ts"]
+      "@director/editor-state": ["packages/editor-state/src/index.ts"],
+      "@director/playback-controller": [
+        "packages/playback-controller/src/index.ts"
+      ],
+      "@director/ui-kit": ["packages/ui-kit/src/index.ts"]
     }
   }
 }

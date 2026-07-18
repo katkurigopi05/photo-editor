@@ -13,10 +13,17 @@
     }
   },
   "scripts": {
+    "dev": "vite",
     "build": "tsup src/index.ts --format esm --dts --clean --target node20",
+    "build:app": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@director/editor-state": "workspace:*"
+    "@director/editor-state": "workspace:*",
+    "@director/playback-controller": "workspace:*",
+    "@director/project-schema": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^5.4.21"
   }
 }

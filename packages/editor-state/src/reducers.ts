@@ -154,6 +154,12 @@ export function applyForward(
       return removeEffect(project, command);
     case "timeline.reorder_effects":
       return reorderEffects(project, command);
+    case "timeline.update_clip_effects":
+      return updateClipEffects(project, command);
+    case "timeline.set_clip_audio_gain":
+      return setClipAudioGain(project, command);
+    case "timeline.set_clip_audio_pan":
+      return setClipAudioPan(project, command);
     default:
       return {
         ok: false,
@@ -472,6 +478,8 @@ function addClip(
     sourceInUs: clip.sourceInUs,
     sourceOutUs: clip.sourceOutUs,
     playbackRate: { numerator: 1, denominator: 1 },
+    audioGainDb: 0,
+    audioPan: 0,
     effects: [],
   };
 
@@ -1121,6 +1129,151 @@ function reorderEffects(
   };
 }
 
+function updateClipEffects(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.update_clip_effects" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, effects } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+
+  const seen = new Set<string>();
+  for (const effect of effects) {
+    if (seen.has(effect.id)) {
+      return {
+        ok: false,
+        error: makeError("DUPLICATE_ID", `duplicate effect id ${effect.id}`, [
+          "payload",
+          "effects",
+        ]),
+      };
+    }
+    seen.add(effect.id);
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const prevEffects = location.clip.effects;
+  const newClip: TimelineClip = {
+    ...location.clip,
+    effects: structuredClone(effects),
+  };
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_effects",
+      payload: {
+        sequenceId,
+        clipId,
+        effects: structuredClone(prevEffects),
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+// --- audio reducers ---------------------------------------------------------
+
+function setClipAudioGain(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.set_clip_audio_gain" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, gainDb } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+
+  const prevUpdatedAt = project.updatedAt;
+  const prevGain = location.clip.audioGainDb;
+  const newClip: TimelineClip = { ...location.clip, audioGainDb: gainDb };
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_audio_gain",
+      payload: {
+        sequenceId,
+        clipId,
+        gainDb: prevGain,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+function setClipAudioPan(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.set_clip_audio_pan" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, pan } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+
+  const prevUpdatedAt = project.updatedAt;
+  const prevPan = location.clip.audioPan;
+  const newClip: TimelineClip = { ...location.clip, audioPan: pan };
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_audio_pan",
+      payload: {
+        sequenceId,
+        clipId,
+        pan: prevPan,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
 // --- shared validation ------------------------------------------------------
 
 function validateSourceRange(
@@ -1353,6 +1506,27 @@ export function applyInverse(
           }
           return found;
         }),
+      }));
+    }
+    case "internal.set_clip_effects": {
+      const { sequenceId, clipId, effects, restoreUpdatedAt } = inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => ({
+        ...clip,
+        effects: structuredClone(effects),
+      }));
+    }
+    case "internal.set_clip_audio_gain": {
+      const { sequenceId, clipId, gainDb, restoreUpdatedAt } = inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => ({
+        ...clip,
+        audioGainDb: gainDb,
+      }));
+    }
+    case "internal.set_clip_audio_pan": {
+      const { sequenceId, clipId, pan, restoreUpdatedAt } = inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => ({
+        ...clip,
+        audioPan: pan,
       }));
     }
     default:
