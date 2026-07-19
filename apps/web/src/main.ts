@@ -1059,11 +1059,21 @@ function renderInspector(): void {
   const asset = findAsset(clip.assetId);
 
   if (mode === "photo" && asset?.kind === "image") {
+    const aiBtn = document.createElement("button");
+    aiBtn.className = "tool primary";
+    aiBtn.style.width = "100%";
+    aiBtn.style.marginBottom = "8px";
+    aiBtn.textContent = "🧠 AI Remove Background (one click)";
+    aiBtn.title =
+      "Real U²-Net segmentation running locally — the same model rembg uses. Best for photos with a busy or textured background.";
+    aiBtn.addEventListener("click", () => void quickAiRemoveBackground(clip.id));
+    inspectorEl.appendChild(aiBtn);
+
     const editBtn = document.createElement("button");
-    editBtn.className = "tool primary";
+    editBtn.className = "tool";
     editBtn.style.width = "100%";
     editBtn.style.marginBottom = "12px";
-    editBtn.textContent = "🖌 Edit Photo (Brush, Crop, Clone…)";
+    editBtn.textContent = "🖌 Edit Photo (Brush, Crop, Clone, AI…)";
     editBtn.addEventListener("click", () => enterRasterMode(clip.id));
     inspectorEl.appendChild(editBtn);
   }
@@ -1659,10 +1669,14 @@ function hexToRgbColor(hex: string): { r: number; g: number; b: number } {
   return { r, g, b };
 }
 
-function startRasterSession(clipId: string, session: RasterSession): void {
+function startRasterSession(
+  clipId: string,
+  session: RasterSession,
+  initialTool: RasterTool = "brush",
+): void {
   rasterSession = session;
   rasterEditingClipId = clipId;
-  rasterTool = "brush";
+  rasterTool = initialTool;
   rasterSelection = null;
   rasterSelectionOverlay = null;
   rasterDrag = null;
@@ -1673,22 +1687,38 @@ function startRasterSession(clipId: string, session: RasterSession): void {
   updateUI();
 }
 
-function enterRasterMode(clipId: string): void {
+function enterRasterMode(clipId: string, initialTool: RasterTool = "brush"): boolean {
   const loc = locateClip(clipId);
-  if (!loc) return;
+  if (!loc) return false;
   const asset = findAsset(loc.clip.assetId);
   if (!asset || asset.kind !== "image") {
     toast("Only photo (image) clips can be edited here.", true);
-    return;
+    return false;
   }
   const media = mediaCache.get(asset.originalUri);
   if (!media || !(media instanceof HTMLImageElement)) {
     toast("This photo hasn't finished loading yet.", true);
-    return;
+    return false;
   }
   const width = media.naturalWidth || asset.metadata.width || 1;
   const height = media.naturalHeight || asset.metadata.height || 1;
-  startRasterSession(clipId, RasterSession.fromSource(media, width, height));
+  startRasterSession(clipId, RasterSession.fromSource(media, width, height), initialTool);
+  return true;
+}
+
+/** One-click AI background removal straight from the Inspector: open the photo
+ * editor with the AI tool, run real U²-Net segmentation, and remove the
+ * background in a single gesture. The user lands on the finished cutout and
+ * just clicks Apply (or Undo/refine with the selection tools). */
+async function quickAiRemoveBackground(clipId: string): Promise<void> {
+  if (!enterRasterMode(clipId, "aibgremove")) return;
+  await runAiSegmentation();
+  if (!rasterSession || !rasterSelection) return;
+  rasterSession.snapshot();
+  applyMaskDelete(rasterSession.image, invertMask(rasterSelection));
+  redrawRasterCanvas();
+  renderRasterPanel();
+  toast('AI removed the background. Click "✓ Apply" to keep it — or Undo to refine.');
 }
 
 /** Wait until the video element has actually seeked to `targetSeconds` before
