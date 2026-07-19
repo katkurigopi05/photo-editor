@@ -1,22 +1,54 @@
 # Pro Development Roadmap
 
-This document captures competitive research on established photo-editing applications
-and lays out a phased roadmap for evolving this repository's MVP
-(`photo_editor.py`) into a professional-grade photo editor.
+This document captures competitive research on established photo-editing
+applications and tracks this repository's evolution from a single-file MVP into
+a professional-grade, non-destructive editor for **photos, GIFs and video** —
+built around one core idea: **one recipe, every medium.** A single serializable
+list of operations is authored once and replayed on a photo, a folder, a GIF,
+or a video. A public-facing summary of this lives in
+[`web/index.html`](web/index.html) (a "ships today vs coming soon" landing page).
 
-## 1. Current State (MVP)
+## 1. Where it started, where it is now
 
-`photo_editor.py` is a single-file Tkinter + Pillow application. It provides:
+**Where it started (the MVP).** `photo_editor.py` was a single-file Tkinter +
+Pillow app with a linear, destructive undo stack capped at 10 states, three
+filters (Grayscale, Sepia, Blur), a few fixed adjustments, and no layers, masks,
+non-destructive editing, RAW support, or plugin surface — the GUI and image
+logic tightly coupled in one class.
 
-- Open / Save (`SimpleImageEditor.load_image`, `save_image`)
-- A **linear, destructive** undo stack capped at 10 states (`_save_current_state`, `undo`)
-- Filters: Grayscale, Sepia, Blur
-- Adjustments: Rotate 90°, Flip Horizontal/Vertical, Brightness Up/Down, fixed 800×600 Resize
-- A single preview `Label` widget with no zoom/pan, cropping, or selection tools
+**Where it is now.** The image logic is a GUI-agnostic `core/` engine: 35
+serializable `Operation`s, a `Document` with pointer-based undo/redo and JSON
+recipes, masking, plugins, and a media dispatch layer. Optional modules add
+OpenCV, AI, RAW and video capabilities behind lazy imports. Everything is
+reachable from one entry point (`app.py`) and a media-aware GUI. See the status
+summary below.
 
-There are no layers, no masks, no non-destructive editing, no RAW support, and no
-plugin or scripting surface. The GUI and the image-processing logic are tightly
-coupled in `AppGUI`/`SimpleImageEditor`.
+## 1b. Status — Ships today vs Coming soon
+
+**Ships today**
+
+- Non-destructive editing: editable operation list, pointer-based undo/redo, JSON recipes (`core/document.py`)
+- 35 editing operations across light/tone, color, detail, effects, geometry (`core/operations.py`)
+- Local/selective edits via `MaskedOperation`
+- Batch processing across a folder (`batch_export.py`)
+- Animated GIF editing and building from stills (`core/frames.py`, `core/builder.py`)
+- Video editing frame-by-frame with audio preserved (`video_tools/`, optional)
+- Drop-in plugins (`core/plugins.py`, `plugins/`)
+- OpenCV operations — CLAHE, denoise, bilateral, unsharp, inpaint object removal (`cv_tools/`, optional)
+- AI operations — background removal, auto-crop (`ai_tools/`, optional)
+- RAW loading (`rawpy`, optional)
+- Unified CLI + media-aware GUI (`app.py`, `photo_editor.py`, `core/media.py`)
+- 95 headless tests; SessionStart hook installs deps in web sessions
+
+**Coming soon** (next on the roadmap, not yet shipped)
+
+- Interactive Curves widget (drag control points on a live graph)
+- Brush-mask UI for selective/local edits (compositing path already exists)
+- Per-channel curves & levels (R/G/B)
+- AI generative fill & outpainting; AI upscaling
+- In-browser web editor
+- Video timeline & scrubbing in the GUI
+- GPU-accelerated real-time preview
 
 ## 2. Competitive Research
 
@@ -73,25 +105,19 @@ be wrapped in `MaskedOperation` for local/selective application. Still on the
 roadmap: a true interactive Curves widget, per-channel curves, and a brush-mask
 UI (the compositing path already exists).
 
-## 3. Gap Analysis
+## 3. Gap Analysis (original MVP → now)
 
-Relative to the apps above, the current MVP is missing:
+These were the gaps against the researched apps when this was still an MVP.
+Most are now closed (✅); the checkmarks double as a record of what was built.
 
-- **Non-destructive editing** — today, `undo()` just pops pixel snapshots off a
-  capped list; there's no editable "recipe" of adjustments.
-- **Layers & masks** — no compositing, no selective/local adjustments (Snapseed's
-  brush mask, Photoshop/Affinity layer masks).
-- **RAW support** — `load_image` only handles formats Pillow decodes directly
-  (no `.CR2`/`.NEF`/`.ARW` etc.).
-- **Core tools** — no crop, no levels/curves, no selection tools.
-- **AI-assisted tools** — no background/object removal, generative fill, or upscaling.
-- **Extensibility** — filters are hardcoded `if/elif` branches in
-  `apply_filter`; no plugin or scripting interface (contrast with GIMP's
-  Script-Fu/Python-Fu or Photoshop's plugin API).
-- **Performance/UX at scale** — all processing runs synchronously on the UI
-  thread; a large image or slow filter will freeze the Tkinter mainloop.
-- **Batch processing** — every competitor above supports operating on more than
-  one image at a time; the MVP only ever holds one.
+- ✅ **Non-destructive editing** — an editable operation list with pointer-based undo/redo and JSON recipes replaced the capped pixel-snapshot stack.
+- 🔶 **Layers & masks** — `MaskedOperation` gives selective/local edits; a full layer stack and brush-mask UI are still coming soon.
+- ✅ **RAW support** — `Document.open` decodes RAW via optional `rawpy`.
+- ✅ **Core tools** — crop, levels, curves, and the full adjustment set shipped (interactive Curves/selection UI still to come).
+- 🔶 **AI-assisted tools** — background removal and auto-crop shipped; generative fill and upscaling are on the roadmap.
+- ✅ **Extensibility** — the `if/elif` chain became a registry with a drop-in plugin loader.
+- ✅ **Performance/UX at scale** — rendering and export run off the Tkinter mainloop with a busy state.
+- ✅ **Batch processing** — plus GIF, video, and build-from-stills, all driven by the same recipe.
 
 ## 4. Proposed "Pro" Feature Roadmap
 
