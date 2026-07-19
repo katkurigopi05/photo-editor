@@ -1398,6 +1398,9 @@ function setMode(next: "video" | "photo"): void {
   $("mode-video").classList.toggle("active", mode === "video");
   $("mode-photo").classList.toggle("active", mode === "photo");
   document.body.dataset["mode"] = mode;
+  // Photo mode edits a single still image — the scrub timeline and transport
+  // (play/seek/timecode) only make sense once there's a video to play through.
+  $("app").classList.toggle("mode-photo", mode === "photo");
   renderInspector();
   renderEffectsPalette();
 }

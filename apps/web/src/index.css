@@ -133,6 +133,17 @@ body {
   height: 100vh;
   gap: 8px;
   padding: 8px;
+  transition: grid-template-rows 0.15s;
+}
+/* Photo mode edits one still image at a time — the scrub timeline and
+   transport (play/seek/timecode) are a video-only concept. */
+#app.mode-photo {
+  grid-template-rows: 56px 1fr;
+}
+#app.mode-photo #timeline,
+#app.mode-photo .transport,
+#app.mode-photo #timecode {
+  display: none;
 }
 
 /* ---- top bar ---- */
