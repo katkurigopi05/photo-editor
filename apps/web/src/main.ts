@@ -1157,17 +1157,28 @@ function renderMedia(): void {
       e.dataTransfer?.setData("application/x-asset-id", asset.id);
       e.dataTransfer?.setData("text/plain", asset.id);
     });
-    const kind = document.createElement("span");
-    kind.className = "media-kind";
-    kind.textContent =
-      asset.kind === "audio" ? "🔊" : asset.kind === "video" ? "🎞" : "🖼";
+    const thumb = document.createElement("div");
+    thumb.className = "media-thumb";
+    if (asset.kind === "image" || asset.kind === "video") {
+      thumb.style.backgroundImage = `url("${asset.originalUri}")`;
+    } else {
+      thumb.classList.add("audio");
+      thumb.textContent = "🔊";
+    }
+    const meta = document.createElement("div");
+    meta.className = "media-meta";
     const name = document.createElement("span");
     name.className = "media-name";
     name.textContent = assetName(asset);
+    const sub = document.createElement("span");
+    sub.className = "media-sub";
+    sub.textContent = `${asset.kind} · ${formatTime(asset.metadata.durationUs ?? "0")}`;
+    meta.append(name, sub);
     const add = document.createElement("span");
     add.className = "media-add";
-    add.textContent = "+ timeline";
-    el.append(kind, name, add);
+    add.textContent = "＋";
+    add.title = "Add to timeline";
+    el.append(thumb, meta, add);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
