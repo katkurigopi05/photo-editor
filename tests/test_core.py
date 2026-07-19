@@ -124,8 +124,11 @@ def test_operation_from_dict_rejects_unknown():
 
 def test_plugin_loads_and_is_correct(sample):
     _, img = sample
-    loaded = load_plugins()
-    assert "Invert" in loaded
+    load_plugins()
+    # load_plugins() reports only newly-registered names, so it may return an
+    # empty list if a previous test already loaded the plugins; the invariant
+    # that matters is that Invert ends up in the registry.
+    assert "Invert" in registered_operations()
     Invert = registered_operations()["Invert"]
     rgb = img.convert("RGB")
     out = Invert().apply(rgb)

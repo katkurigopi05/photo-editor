@@ -4,6 +4,6 @@ Applies the same operation recipe used for still images and GIFs to every
 frame of a video via MoviePy/FFmpeg. Requires requirements-video.txt; the
 heavy import is deferred so this package is safe to import without it.
 """
-from .processing import apply_to_video
+from .processing import apply_to_video, build_video
 
-__all__ = ["apply_to_video"]
+__all__ = ["apply_to_video", "build_video"]
