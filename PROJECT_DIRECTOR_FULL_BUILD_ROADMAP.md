@@ -196,10 +196,107 @@ interactive frame rates, on both native and web.
 
 ---
 
+## Phase 7 — Cloud Platform & AI-Assisted Editing *(deferred, distinct scope)*
+
+Everything in Phases 0–6 is local-first and deterministic: no server, no
+database, no auth, no calls to an AI model. Phase 7 is where the product
+would grow a cloud backend and real generative AI (object removal,
+generative fill, background replacement/outpainting, subject
+masking/tracking, upscaling) — a genuinely different order of investment
+(hosted infra, GPU cost, model licensing/hosting), not just more local code.
+It is deliberately **not** part of "the whole editor" scoped by Phases 0–6.
+The following is distilled from a full reference architecture
+(`ai-photo-video-editing-architecture.md`) down to the load-bearing
+decisions worth keeping when this phase is actually specified:
+
+**Already validated by Phases 0–6 — no rework needed when this phase starts:**
+- *Non-destructive editing = three separate things*: immutable original
+  asset, a structured edit graph, and generated derivatives. This is
+  exactly `MediaAsset` (immutable) + the command/operation log + the raster
+  editor's "Apply → register a new derived asset" flow (Phase 5's photo/video
+  raster tools) — the cloud version just adds AI-generated derivatives to
+  the same shape.
+- *Async jobs report `{jobId, status, progress}` over a push channel*, not a
+  blocking request. Phase 6's `ExportJob` state machine (`running` →
+  `completed`/`failed`/`cancelled`, bound to a specific project version) is
+  this pattern already, just local and synchronous-enough not to need a
+  queue yet.
+- *The renderer/exporter consumes a frozen, versioned project state, never
+  live UI state.* Phase 6's `planExport` (pure function of project version +
+  preset) already satisfies this; the cloud render stages (freeze version →
+  resolve assets → build plan → render → mux → QC → deliver) are the same
+  shape with more steps.
+
+**The one design decision that matters most (keep this when specifying Phase 7):**
+> The most important boundary is between the **editor** and the **AI
+> implementation**. The editor expresses user intent in a stable format
+> ("remove this object", "replace this region", "preserve the face",
+> "upscale to 4K"). A **Model Gateway** decides which model, provider, GPU
+> pool, and parameters fulfill that intent — so the timeline, project
+> system, UI, and rendering engine never need to change when the underlying
+> AI model changes.
+
+**Scope, when specified for real:**
+- *Backend services*: Auth (workspace roles: owner/admin/editor/reviewer/
+  viewer), Project/Asset/Timeline services backed by a real database
+  (`apps/api` is currently a scaffold only), signed direct-to-storage
+  uploads (large media must not transit the API gateway).
+- *AI Model Gateway*: one internal contract for every AI op (validate input
+  → safety/policy check → route to external provider or internal GPU model →
+  post-process → automated quality check → result). Model-specific
+  parameters live behind the gateway; the client never sends
+  provider-specific settings.
+- *Job orchestration*: `CREATED → VALIDATING → QUEUED → PREPROCESSING →
+  RUNNING → POSTPROCESSING → QUALITY_CHECK → COMPLETED`, with
+  `FAILED`/`CANCELED`/`TIMED_OUT`/`REJECTED` as terminal alternatives. Each
+  stage restartable — a failed final render must not repeat expensive AI
+  inference. (Phase 6's local `ExportJob` should adopt `TIMED_OUT` as a
+  distinct terminal state even before Phase 7, since "the export hung" and
+  "the export failed" are different, actionable facts for a caller.)
+- *GPU worker pools, separated by workload* (segmentation, image generation,
+  video generation, upscaling, tracking, rendering, CPU media) — each with
+  its own scaling method, since a queue-depth-scaled inpainting pool and a
+  duration-scaled render pool have nothing in common operationally.
+- *Proxy-first video editing*: on import, generate a low-res editing proxy,
+  thumbnail strip, audio waveform, keyframes, and shot-boundary detection;
+  edit against the proxy, apply the same edit graph to the original at
+  export time. Note: proxy/thumbnail/waveform generation itself needs no
+  cloud or AI — it's a good candidate to pull *earlier*, as a background-job
+  enhancement to Phase 1 (decode) and Phase 4 (waveform), once there's a
+  real async job runner to put it on.
+- *Video AI's hard problem is temporal consistency*, not per-frame quality.
+  A robust approach combines: shot-aware processing (never run a temporal
+  pass across a hard cut), keyframe conditioning (edit reference frames
+  first), mask propagation via object tracking (with user corrections as
+  tracking anchors), overlapping frame windows with blended/consistency-
+  scored seams, identity conditioning (reusable embeddings for the edited
+  subject), motion-aware generation (optical flow/depth/camera motion as
+  conditioning), a final temporal-correction pass (flicker, color drift,
+  edge/mask jitter, lighting), and compositing only the regenerated region
+  over untouched original pixels wherever possible (cheaper and safer).
+- *Photo AI quality control*: compare pixels **outside** the requested edit
+  mask against the source; reject or regenerate candidates that change
+  unrequested regions beyond a configured tolerance. Cheap, effective, and
+  worth adopting as the acceptance test for any future generative op.
+- *Security/privacy, additive to Phase 0's rules*: encryption in transit/at
+  rest, short-lived signed asset URLs (never expose raw storage paths),
+  workspace-level authorization checked per project/asset/job/export,
+  malware scanning + media type/codec validation on upload (Phase 1's
+  decoder already rejects corrupt/unsupported files — extend the same
+  discipline to a real upload boundary), prompt/output safety checks before
+  and after any AI call, per-workspace rate limits, and explicit handling
+  for the Model Gateway not leaking user metadata to third-party providers.
+
+**Not carried forward as-is:** the reference architecture's specific product
+choices (Kafka/Postgres/Redis/Kubernetes, a particular embedding store,
+CRDT-vs-OT for collaboration) are implementation details to decide when this
+phase is actually specified, not commitments made now.
+
 ## Explicitly deferred (not in this roadmap yet)
 
 Per the Foundation phase's exclusions, these remain future work and are
-**not** part of "the whole editor" as scoped here:
+**not** part of "the whole editor" as scoped here — see Phase 7 above for
+the distilled shape of this work when it's eventually specified:
 - AI-assisted editing features (the product's eventual differentiator, but a distinct phase requiring its own product spec).
 - Authentication, cloud sync, multi-user collaboration.
 - A real database/backend for `apps/api` (currently a scaffold only).
@@ -209,7 +306,9 @@ Per the Foundation phase's exclusions, these remain future work and are
 Phase 0 → 1 → 2 → 3 (playback needs both decode and render) → 5 (UI needs a
 working preview loop to be testable) → 4 (audio can develop in parallel with
 2/3 but needs UI to be user-testable) → 6 (export depends on render + audio
-being stable).
+being stable). Phase 7 (cloud + AI) is a distinct, later product decision —
+build it only once local editing is solid and there's a real infra/GPU
+budget behind it.
 
 ## Next step
 

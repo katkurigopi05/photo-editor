@@ -6,9 +6,11 @@ import {
   failExport,
   hasCompletedOutput,
   isCodecContainerCompatible,
+  isTerminal,
   planExport,
   planVideoFrames,
   startExport,
+  timeOutExport,
 } from "../src/index.js";
 import { mp4Preset, twoSecondProject } from "./fixtures.js";
 
@@ -133,5 +135,17 @@ describe("export job", () => {
     expect(job.status).toBe("failed");
     expect(job.error?.code).toBe("SEQUENCE_NOT_FOUND");
     expect(hasCompletedOutput(job)).toBe(false);
+  });
+
+  it("times out as a distinct terminal state from failed/cancelled", () => {
+    let job = advanceExport(runningJob(), 30);
+    job = timeOutExport(job);
+    expect(job.status).toBe("timed_out");
+    expect(job.error?.code).toBe("TIMED_OUT");
+    expect(hasCompletedOutput(job)).toBe(false);
+    expect(isTerminal(job)).toBe(true);
+    // further advances/timeouts are no-ops after a terminal state
+    expect(advanceExport(job, 60)).toBe(job);
+    expect(timeOutExport(job)).toBe(job);
   });
 });

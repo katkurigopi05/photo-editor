@@ -26,6 +26,7 @@ export {
   advanceExport,
   failExport,
   cancelExport,
+  timeOutExport,
   isTerminal,
   hasCompletedOutput,
   type ExportJob,

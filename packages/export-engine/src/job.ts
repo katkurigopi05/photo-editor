@@ -7,7 +7,8 @@ import type { ExportError, ExportPlan } from "./plan.js";
  * depend on live UI/playback state. All transitions are pure.
  */
 
-export type ExportStatus = "running" | "completed" | "failed" | "cancelled";
+export type ExportStatus =
+  "running" | "completed" | "failed" | "cancelled" | "timed_out";
 
 export interface ExportJob {
   status: ExportStatus;
@@ -25,6 +26,21 @@ export function startExport(plan: ExportPlan): ExportJob {
     framesDone: 0,
     projectVersion: plan.projectVersion,
     error: null,
+  };
+}
+
+/**
+ * Distinct from `failExport`: "the export hung" and "the export failed" are
+ * different, actionable facts for a caller (a stuck encoder vs. a rejected
+ * input) — the reference cloud architecture's job state machine keeps these
+ * separate, and there's no reason a local job should collapse them.
+ */
+export function timeOutExport(job: ExportJob): ExportJob {
+  if (job.status !== "running") return job;
+  return {
+    ...job,
+    status: "timed_out",
+    error: { code: "TIMED_OUT", message: "export timed out" },
   };
 }
 
