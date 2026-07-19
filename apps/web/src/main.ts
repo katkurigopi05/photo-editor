@@ -41,6 +41,29 @@ import {
   MAX_CUSTOM_THEMES,
   type ThemeTokens,
 } from "./theme.js";
+import { RasterSession, canvasPointToImage } from "./raster.js";
+import {
+  stampBrush,
+  cloneStamp,
+  applyMaskDelete,
+  applyMaskFill,
+  polygonMask,
+  floodFillMask,
+  invertMask,
+  featherMask,
+  unsharpMask,
+  diffusionFill,
+  colorKeyAlpha,
+  cornerKeyColor,
+  cropImage,
+  resizeImage,
+  rotateImage,
+  shiftImage,
+  cloneImage as cloneRasterImage,
+  type Mask,
+  type Point,
+  type RasterImage,
+} from "@director/raster-tools";
 import type {
   EffectInstance,
   EffectType,
@@ -258,6 +281,57 @@ let selectedClipId: string | null = null;
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
 const mediaCache = new Map<string, HTMLImageElement | HTMLVideoElement>();
+
+// -- Raster photo editing (Photo mode only; local session state, outside
+// the deterministic command engine — see raster.ts) --
+type RasterTool =
+  | "move"
+  | "crop"
+  | "transform"
+  | "brush"
+  | "eraser"
+  | "clone"
+  | "lasso"
+  | "wand"
+  | "sharpen"
+  | "smartfill"
+  | "bgremove";
+let rasterSession: RasterSession | null = null;
+let rasterEditingClipId: string | null = null;
+let rasterTool: RasterTool = "brush";
+let rasterSelection: Mask | null = null;
+let rasterSelectionOverlay: HTMLCanvasElement | null = null;
+let cloneSource: Point | null = null;
+
+type RasterDrag =
+  | { kind: "stroke" }
+  | { kind: "clone"; anchorDestX: number; anchorDestY: number; sourceSnapshot: RasterImage }
+  | { kind: "lasso"; points: Point[] }
+  | { kind: "crop"; startX: number; startY: number; rect: { x: number; y: number; width: number; height: number } }
+  | { kind: "move"; startClientX: number; startClientY: number };
+let rasterDrag: RasterDrag | null = null;
+
+const rasterOptions = {
+  brushColor: "#ff2d55",
+  brushSize: 28,
+  brushOpacity: 1,
+  brushHardness: 0.85,
+  eraserSize: 28,
+  eraserOpacity: 1,
+  eraserHardness: 0.85,
+  cloneSize: 32,
+  cloneOpacity: 1,
+  cloneHardness: 0.85,
+  wandTolerance: 0.2,
+  wandContiguous: true,
+  lassoFeather: 0,
+  sharpenAmount: 0.6,
+  smartFillIterations: 150,
+  bgAuto: true,
+  bgKeyColor: "#00ff00",
+  bgThreshold: 0.28,
+  bgSoftness: 0.12,
+};
 
 // ==========================================================================
 // DOM references
@@ -537,6 +611,11 @@ function selectClip(clipId: string | null): void {
 // Preview rendering
 // ==========================================================================
 function drawPreview(): void {
+  if (rasterSession) {
+    stageEmpty.style.display = "none";
+    redrawRasterCanvas();
+    return;
+  }
   const cw = stageEl.clientWidth;
   const ch = stageEl.clientHeight;
   if (canvas.width !== cw || canvas.height !== ch) {
@@ -915,6 +994,10 @@ function startClipDrag(
 // Inspector rendering
 // ==========================================================================
 function renderInspector(): void {
+  if (rasterSession) {
+    renderRasterPanel();
+    return;
+  }
   const loc = locateClip(selectedClipId);
   inspectorEl.innerHTML = "";
   if (!loc) {
@@ -925,6 +1008,17 @@ function renderInspector(): void {
     return;
   }
   const { clip } = loc;
+  const asset = findAsset(clip.assetId);
+
+  if (mode === "photo" && asset?.kind === "image") {
+    const editBtn = document.createElement("button");
+    editBtn.className = "tool primary";
+    editBtn.style.width = "100%";
+    editBtn.style.marginBottom = "12px";
+    editBtn.textContent = "🖌 Edit Photo (Brush, Crop, Clone…)";
+    editBtn.addEventListener("click", () => enterRasterMode(clip.id));
+    inspectorEl.appendChild(editBtn);
+  }
 
   // --- Effects ---
   const fxSection = section("Effects");
@@ -1470,6 +1564,799 @@ function bindThemePicker(): void {
     applyThemeSelection(`custom:${name}`);
     toast(`Saved theme "${name}".`);
   });
+}
+
+// ==========================================================================
+// Raster photo editing (Photo mode only)
+//
+// A working pixel buffer, edited with real classical algorithms from
+// @director/raster-tools (flood-fill selection, polygon lasso, brush/eraser/
+// clone stamping, unsharp mask, harmonic diffusion "Smart Fill", color-key
+// background removal). This lives entirely outside the deterministic command
+// engine — like playback and export state — so individual brush strokes never
+// enter the operation log. "Apply" is the only path back into the project,
+// and it goes through the real `asset.register` command with a genuine
+// SHA-256 of the flattened PNG bytes; nothing here bypasses validation.
+// ==========================================================================
+
+const RASTER_TOOLS: Array<{ id: RasterTool; icon: string; label: string }> = [
+  { id: "move", icon: "✥", label: "Move" },
+  { id: "crop", icon: "⬚", label: "Crop" },
+  { id: "transform", icon: "⇲", label: "Transform" },
+  { id: "brush", icon: "🖌", label: "Brush" },
+  { id: "eraser", icon: "⌫", label: "Eraser" },
+  { id: "clone", icon: "⎘", label: "Clone Stamp" },
+  { id: "lasso", icon: "➰", label: "Lasso" },
+  { id: "wand", icon: "✨", label: "Magic Wand" },
+  { id: "sharpen", icon: "◆", label: "Sharpen" },
+  { id: "smartfill", icon: "🩹", label: "Smart Fill" },
+  { id: "bgremove", icon: "🪄", label: "Remove Background" },
+];
+
+function hexToRgbColor(hex: string): { r: number; g: number; b: number } {
+  const [r, g, b] = hexToRgb(hex);
+  return { r, g, b };
+}
+
+function enterRasterMode(clipId: string): void {
+  const loc = locateClip(clipId);
+  if (!loc) return;
+  const asset = findAsset(loc.clip.assetId);
+  if (!asset || asset.kind !== "image") {
+    toast("Only photo (image) clips can be edited here.", true);
+    return;
+  }
+  const media = mediaCache.get(asset.originalUri);
+  if (!media || !(media instanceof HTMLImageElement)) {
+    toast("This photo hasn't finished loading yet.", true);
+    return;
+  }
+  const width = media.naturalWidth || asset.metadata.width || 1;
+  const height = media.naturalHeight || asset.metadata.height || 1;
+
+  rasterSession = RasterSession.fromSource(media, width, height);
+  rasterEditingClipId = clipId;
+  rasterTool = "brush";
+  rasterSelection = null;
+  rasterSelectionOverlay = null;
+  rasterDrag = null;
+  cloneSource = null;
+  playback = pause(playback);
+  syncTransport();
+  bindRasterCanvasEvents();
+  updateUI();
+}
+
+function exitRasterMode(): void {
+  rasterSession = null;
+  rasterEditingClipId = null;
+  rasterSelection = null;
+  rasterSelectionOverlay = null;
+  rasterDrag = null;
+  cloneSource = null;
+  unbindRasterCanvasEvents();
+  canvas.classList.remove("raster-active");
+  canvas.style.transform = "";
+  $("raster-rail").classList.add("hidden");
+  updateUI();
+}
+
+function bindRasterCanvasEvents(): void {
+  canvas.addEventListener("pointerdown", rasterPointerDown);
+  canvas.addEventListener("pointermove", rasterPointerMove);
+  window.addEventListener("pointerup", rasterPointerUp);
+  canvas.classList.add("raster-active");
+}
+
+function unbindRasterCanvasEvents(): void {
+  canvas.removeEventListener("pointerdown", rasterPointerDown);
+  canvas.removeEventListener("pointermove", rasterPointerMove);
+  window.removeEventListener("pointerup", rasterPointerUp);
+}
+
+function paintStrokePoint(x: number, y: number): void {
+  if (!rasterSession) return;
+  const isEraser = rasterTool === "eraser";
+  const size = isEraser ? rasterOptions.eraserSize : rasterOptions.brushSize;
+  const opacity = isEraser ? rasterOptions.eraserOpacity : rasterOptions.brushOpacity;
+  const hardness = isEraser ? rasterOptions.eraserHardness : rasterOptions.brushHardness;
+  const color = hexToRgbColor(rasterOptions.brushColor);
+  stampBrush(
+    rasterSession.image,
+    x,
+    y,
+    size / 2,
+    { ...color, a: 1 },
+    opacity,
+    isEraser ? "erase" : "paint",
+    hardness,
+  );
+  redrawRasterCanvas();
+}
+
+function cloneStampPoint(x: number, y: number): void {
+  if (!rasterSession || !cloneSource || !rasterDrag || rasterDrag.kind !== "clone") return;
+  const offsetX = cloneSource.x - rasterDrag.anchorDestX;
+  const offsetY = cloneSource.y - rasterDrag.anchorDestY;
+  cloneStamp(
+    rasterSession.image,
+    rasterDrag.sourceSnapshot,
+    x + offsetX,
+    y + offsetY,
+    x,
+    y,
+    rasterOptions.cloneSize / 2,
+    rasterOptions.cloneOpacity,
+    rasterOptions.cloneHardness,
+  );
+  redrawRasterCanvas();
+}
+
+function buildSelectionOverlay(mask: Mask): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = mask.width;
+  c.height = mask.height;
+  const ctx = c.getContext("2d")!;
+  const imageData = ctx.createImageData(mask.width, mask.height);
+  for (let i = 0; i < mask.data.length; i++) {
+    imageData.data[i * 4] = 124;
+    imageData.data[i * 4 + 1] = 92;
+    imageData.data[i * 4 + 2] = 255;
+    imageData.data[i * 4 + 3] = mask.data[i]!;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return c;
+}
+
+function setRasterSelection(mask: Mask | null): void {
+  rasterSelection = mask;
+  rasterSelectionOverlay = mask ? buildSelectionOverlay(mask) : null;
+  redrawRasterCanvas();
+  renderRasterPanel();
+}
+
+function redrawRasterCanvas(): void {
+  if (!rasterSession) return;
+  rasterSession.drawTo(canvas);
+  const ctx = canvas.getContext("2d")!;
+
+  if (rasterSelectionOverlay) {
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    ctx.drawImage(rasterSelectionOverlay, 0, 0);
+    ctx.restore();
+  }
+  if (rasterDrag?.kind === "crop") {
+    ctx.save();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(
+      rasterDrag.rect.x,
+      rasterDrag.rect.y,
+      rasterDrag.rect.width,
+      rasterDrag.rect.height,
+    );
+    ctx.restore();
+  }
+  if (rasterDrag?.kind === "lasso" && rasterDrag.points.length > 1) {
+    ctx.save();
+    ctx.strokeStyle = "#7c5cff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const [first, ...rest] = rasterDrag.points;
+    ctx.moveTo(first!.x, first!.y);
+    for (const p of rest) ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function rasterPointerDown(e: PointerEvent): void {
+  if (!rasterSession) return;
+  e.preventDefault();
+  const { x, y } = canvasPointToImage(canvas, e.clientX, e.clientY);
+  switch (rasterTool) {
+    case "brush":
+    case "eraser":
+      rasterSession.snapshot();
+      rasterDrag = { kind: "stroke" };
+      paintStrokePoint(x, y);
+      break;
+    case "clone":
+      if (e.altKey) {
+        cloneSource = { x, y };
+        toast("Clone source set — drag elsewhere to paint.");
+        break;
+      }
+      if (!cloneSource) {
+        toast("Alt/Option-click first to set the clone source.", true);
+        break;
+      }
+      rasterSession.snapshot();
+      rasterDrag = {
+        kind: "clone",
+        anchorDestX: x,
+        anchorDestY: y,
+        sourceSnapshot: cloneRasterImage(rasterSession.image),
+      };
+      cloneStampPoint(x, y);
+      break;
+    case "lasso":
+      rasterDrag = { kind: "lasso", points: [{ x, y }] };
+      break;
+    case "wand": {
+      const mask = floodFillMask(
+        rasterSession.image,
+        Math.round(x),
+        Math.round(y),
+        rasterOptions.wandTolerance,
+        rasterOptions.wandContiguous,
+      );
+      setRasterSelection(mask);
+      break;
+    }
+    case "crop":
+      rasterDrag = { kind: "crop", startX: x, startY: y, rect: { x, y, width: 0, height: 0 } };
+      break;
+    case "move":
+      rasterDrag = { kind: "move", startClientX: e.clientX, startClientY: e.clientY };
+      break;
+    default:
+      break;
+  }
+  redrawRasterCanvas();
+}
+
+function rasterPointerMove(e: PointerEvent): void {
+  if (!rasterSession || !rasterDrag) return;
+  const { x, y } = canvasPointToImage(canvas, e.clientX, e.clientY);
+  switch (rasterDrag.kind) {
+    case "stroke":
+      paintStrokePoint(x, y);
+      break;
+    case "clone":
+      cloneStampPoint(x, y);
+      break;
+    case "lasso":
+      rasterDrag.points.push({ x, y });
+      redrawRasterCanvas();
+      break;
+    case "crop":
+      rasterDrag.rect = {
+        x: Math.min(rasterDrag.startX, x),
+        y: Math.min(rasterDrag.startY, y),
+        width: Math.abs(x - rasterDrag.startX),
+        height: Math.abs(y - rasterDrag.startY),
+      };
+      redrawRasterCanvas();
+      break;
+    case "move": {
+      canvas.style.transform = `translate(${e.clientX - rasterDrag.startClientX}px, ${e.clientY - rasterDrag.startClientY}px)`;
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function rasterPointerUp(e: PointerEvent): void {
+  if (!rasterSession || !rasterDrag) return;
+  const drag = rasterDrag;
+  if (drag.kind === "lasso") {
+    if (drag.points.length >= 3) {
+      setRasterSelection(
+        polygonMask(rasterSession.image.width, rasterSession.image.height, drag.points),
+      );
+    }
+    rasterDrag = null;
+  } else if (drag.kind === "crop") {
+    // Keep the pending rect alive so the panel's Apply/Cancel can act on it.
+    renderRasterPanel();
+    return;
+  } else if (drag.kind === "move") {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rasterSession.image.width / rect.width;
+    const scaleY = rasterSession.image.height / rect.height;
+    const dx = Math.round((e.clientX - drag.startClientX) * scaleX);
+    const dy = Math.round((e.clientY - drag.startClientY) * scaleY);
+    canvas.style.transform = "";
+    if (dx !== 0 || dy !== 0) {
+      rasterSession.snapshot();
+      rasterSession.image = shiftImage(rasterSession.image, dx, dy);
+    }
+    rasterDrag = null;
+  } else {
+    rasterDrag = null;
+  }
+  redrawRasterCanvas();
+  renderRasterPanel();
+}
+
+function renderRasterRail(): void {
+  const rail = $<HTMLDivElement>("raster-rail");
+  rail.classList.remove("hidden");
+  rail.innerHTML = "";
+  for (const t of RASTER_TOOLS) {
+    const btn = document.createElement("button");
+    btn.className = `raster-tool-btn${rasterTool === t.id ? " active" : ""}`;
+    btn.textContent = t.icon;
+    btn.title = t.label;
+    btn.addEventListener("click", () => {
+      rasterTool = t.id;
+      rasterDrag = null;
+      renderRasterRail();
+      renderRasterPanel();
+      redrawRasterCanvas();
+    });
+    rail.appendChild(btn);
+  }
+}
+
+function rasterSelectionActions(container: HTMLElement): void {
+  if (!rasterSession) return;
+  const s = section("Selection");
+  const info = document.createElement("p");
+  info.className = "raster-hint";
+  info.textContent = rasterSelection
+    ? "Selection active. Feather, delete, fill, or invert it below."
+    : "No selection yet — draw one with Lasso or click with Magic Wand.";
+  s.appendChild(info);
+
+  if (rasterSelection) {
+    s.appendChild(
+      sliderControl(
+        "Feather (px)",
+        0,
+        40,
+        1,
+        rasterOptions.lassoFeather,
+        (v) => {
+          rasterOptions.lassoFeather = v;
+          if (rasterSelection) {
+            setRasterSelection(featherMask(rasterSelection, v));
+          }
+        },
+      ),
+    );
+    const row = document.createElement("div");
+    row.className = "raster-toolbar";
+    const invert = document.createElement("button");
+    invert.className = "mini";
+    invert.textContent = "Invert";
+    invert.addEventListener("click", () => {
+      if (rasterSelection) setRasterSelection(invertMask(rasterSelection));
+    });
+    const clear = document.createElement("button");
+    clear.className = "mini";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => setRasterSelection(null));
+    const del = document.createElement("button");
+    del.className = "mini";
+    del.textContent = "Delete";
+    del.addEventListener("click", () => {
+      if (!rasterSession || !rasterSelection) return;
+      rasterSession.snapshot();
+      applyMaskDelete(rasterSession.image, rasterSelection);
+      redrawRasterCanvas();
+    });
+    const fill = document.createElement("button");
+    fill.className = "mini";
+    fill.textContent = "Fill color";
+    fill.addEventListener("click", () => {
+      if (!rasterSession || !rasterSelection) return;
+      rasterSession.snapshot();
+      applyMaskFill(rasterSession.image, rasterSelection, {
+        ...hexToRgbColor(rasterOptions.brushColor),
+        a: 1,
+      });
+      redrawRasterCanvas();
+    });
+    row.append(invert, clear, del, fill);
+    s.appendChild(row);
+  }
+  container.appendChild(s);
+}
+
+function renderRasterPanel(): void {
+  if (!rasterSession) return;
+  renderRasterRail();
+  inspectorEl.innerHTML = "";
+
+  const asset = rasterEditingClipId
+    ? findAsset(locateClip(rasterEditingClipId)?.clip.assetId ?? "")
+    : undefined;
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "raster-toolbar";
+  const title = document.createElement("div");
+  title.className = "raster-title";
+  title.textContent = asset ? `Editing ${assetName(asset)}` : "Editing photo";
+  toolbar.appendChild(title);
+
+  const undoBtn = document.createElement("button");
+  undoBtn.className = "mini";
+  undoBtn.textContent = "↶ Undo";
+  undoBtn.disabled = !rasterSession.canUndo();
+  undoBtn.addEventListener("click", () => {
+    rasterSession?.undo();
+    redrawRasterCanvas();
+    renderRasterPanel();
+  });
+  const redoBtn = document.createElement("button");
+  redoBtn.className = "mini";
+  redoBtn.textContent = "↷ Redo";
+  redoBtn.disabled = !rasterSession.canRedo();
+  redoBtn.addEventListener("click", () => {
+    rasterSession?.redo();
+    redrawRasterCanvas();
+    renderRasterPanel();
+  });
+  const discardBtn = document.createElement("button");
+  discardBtn.className = "mini";
+  discardBtn.textContent = "✕ Discard";
+  discardBtn.addEventListener("click", () => exitRasterMode());
+  const applyBtn = document.createElement("button");
+  applyBtn.className = "tool primary";
+  applyBtn.textContent = "✓ Apply";
+  applyBtn.addEventListener("click", () => void applyRasterEdit());
+  toolbar.append(undoBtn, redoBtn, discardBtn, applyBtn);
+  inspectorEl.appendChild(toolbar);
+
+  const body = document.createElement("div");
+  inspectorEl.appendChild(body);
+
+  switch (rasterTool) {
+    case "move": {
+      const p = document.createElement("p");
+      p.className = "raster-hint";
+      p.textContent = "Drag on the canvas to shift the photo's content. The vacated edge becomes transparent.";
+      body.appendChild(p);
+      break;
+    }
+    case "crop": {
+      const s = section("Crop");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent = "Drag a rectangle on the canvas, then apply.";
+      s.appendChild(hint);
+      if (rasterDrag?.kind === "crop") {
+        const row = document.createElement("div");
+        row.className = "raster-toolbar";
+        const apply = document.createElement("button");
+        apply.className = "tool primary";
+        apply.textContent = "Apply Crop";
+        apply.addEventListener("click", () => {
+          if (!rasterSession || rasterDrag?.kind !== "crop") return;
+          const { rect } = rasterDrag;
+          if (rect.width < 1 || rect.height < 1) return;
+          rasterSession.snapshot();
+          rasterSession.image = cropImage(rasterSession.image, rect);
+          rasterSelection = null;
+          rasterSelectionOverlay = null;
+          rasterDrag = null;
+          redrawRasterCanvas();
+          renderRasterPanel();
+        });
+        const cancel = document.createElement("button");
+        cancel.className = "mini";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("click", () => {
+          rasterDrag = null;
+          redrawRasterCanvas();
+          renderRasterPanel();
+        });
+        row.append(apply, cancel);
+        s.appendChild(row);
+      }
+      body.appendChild(s);
+      break;
+    }
+    case "transform": {
+      const s = section("Resize");
+      const widthInput = document.createElement("input");
+      widthInput.type = "number";
+      widthInput.min = "1";
+      widthInput.value = String(rasterSession.image.width);
+      const heightInput = document.createElement("input");
+      heightInput.type = "number";
+      heightInput.min = "1";
+      heightInput.value = String(rasterSession.image.height);
+      for (const input of [widthInput, heightInput]) {
+        input.className = "theme-name-input";
+        input.style.marginBottom = "6px";
+      }
+      const resizeBtn = document.createElement("button");
+      resizeBtn.className = "tool primary";
+      resizeBtn.textContent = "Apply Resize";
+      resizeBtn.addEventListener("click", () => {
+        if (!rasterSession) return;
+        const w = Math.max(1, Math.round(Number(widthInput.value)));
+        const h = Math.max(1, Math.round(Number(heightInput.value)));
+        rasterSession.snapshot();
+        rasterSession.image = resizeImage(rasterSession.image, w, h);
+        rasterSelection = null;
+        rasterSelectionOverlay = null;
+        redrawRasterCanvas();
+        renderRasterPanel();
+      });
+      s.append(widthInput, heightInput, resizeBtn);
+      body.appendChild(s);
+
+      const rotSection = section("Rotate");
+      const rotations = document.createElement("div");
+      rotations.className = "raster-toolbar";
+      for (const [label, deg] of [
+        ["⟲ 90°", -90],
+        ["⟳ 90°", 90],
+        ["180°", 180],
+      ] as const) {
+        const btn = document.createElement("button");
+        btn.className = "mini";
+        btn.textContent = label;
+        btn.addEventListener("click", () => {
+          if (!rasterSession) return;
+          rasterSession.snapshot();
+          rasterSession.image = rotateImage(rasterSession.image, deg);
+          rasterSelection = null;
+          rasterSelectionOverlay = null;
+          redrawRasterCanvas();
+          renderRasterPanel();
+        });
+        rotations.appendChild(btn);
+      }
+      rotSection.appendChild(rotations);
+      body.appendChild(rotSection);
+      break;
+    }
+    case "brush": {
+      const s = section("Brush");
+      const colorRow = document.createElement("div");
+      colorRow.className = "control";
+      const colorInput = document.createElement("input");
+      colorInput.type = "color";
+      colorInput.value = rasterOptions.brushColor;
+      colorInput.addEventListener("input", () => {
+        rasterOptions.brushColor = colorInput.value;
+      });
+      colorRow.appendChild(colorInput);
+      s.appendChild(colorRow);
+      s.appendChild(
+        sliderControl("Size (px)", 1, 200, 1, rasterOptions.brushSize, (v) => (rasterOptions.brushSize = v)),
+      );
+      s.appendChild(
+        sliderControl("Opacity", 0, 1, 0.05, rasterOptions.brushOpacity, (v) => (rasterOptions.brushOpacity = v)),
+      );
+      s.appendChild(
+        sliderControl("Hardness", 0, 1, 0.05, rasterOptions.brushHardness, (v) => (rasterOptions.brushHardness = v)),
+      );
+      body.appendChild(s);
+      break;
+    }
+    case "eraser": {
+      const s = section("Eraser");
+      s.appendChild(
+        sliderControl("Size (px)", 1, 200, 1, rasterOptions.eraserSize, (v) => (rasterOptions.eraserSize = v)),
+      );
+      s.appendChild(
+        sliderControl("Opacity", 0, 1, 0.05, rasterOptions.eraserOpacity, (v) => (rasterOptions.eraserOpacity = v)),
+      );
+      s.appendChild(
+        sliderControl("Hardness", 0, 1, 0.05, rasterOptions.eraserHardness, (v) => (rasterOptions.eraserHardness = v)),
+      );
+      body.appendChild(s);
+      break;
+    }
+    case "clone": {
+      const s = section("Clone Stamp");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent = cloneSource
+        ? "Source set. Drag on the canvas to paint from it."
+        : "Alt/Option-click on the canvas to set the clone source, then drag to paint.";
+      s.appendChild(hint);
+      s.appendChild(
+        sliderControl("Size (px)", 1, 300, 1, rasterOptions.cloneSize, (v) => (rasterOptions.cloneSize = v)),
+      );
+      s.appendChild(
+        sliderControl("Opacity", 0, 1, 0.05, rasterOptions.cloneOpacity, (v) => (rasterOptions.cloneOpacity = v)),
+      );
+      s.appendChild(
+        sliderControl("Hardness", 0, 1, 0.05, rasterOptions.cloneHardness, (v) => (rasterOptions.cloneHardness = v)),
+      );
+      body.appendChild(s);
+      break;
+    }
+    case "lasso": {
+      const s = section("Lasso");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent = "Draw freehand on the canvas to select a region.";
+      s.appendChild(hint);
+      body.appendChild(s);
+      rasterSelectionActions(body);
+      break;
+    }
+    case "wand": {
+      const s = section("Magic Wand");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent = "Click the canvas to select similar-colored pixels.";
+      s.appendChild(hint);
+      s.appendChild(
+        sliderControl("Tolerance", 0, 1, 0.02, rasterOptions.wandTolerance, (v) => (rasterOptions.wandTolerance = v)),
+      );
+      const contiguousRow = document.createElement("label");
+      contiguousRow.className = "control";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = rasterOptions.wandContiguous;
+      cb.addEventListener("change", () => (rasterOptions.wandContiguous = cb.checked));
+      contiguousRow.append(cb, document.createTextNode(" Contiguous (connected region only)"));
+      s.appendChild(contiguousRow);
+      body.appendChild(s);
+      rasterSelectionActions(body);
+      break;
+    }
+    case "sharpen": {
+      const s = section("Sharpen");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent = "Unsharp mask over the whole photo.";
+      s.appendChild(hint);
+      s.appendChild(
+        sliderControl("Amount", 0, 3, 0.1, rasterOptions.sharpenAmount, (v) => (rasterOptions.sharpenAmount = v)),
+      );
+      const apply = document.createElement("button");
+      apply.className = "tool primary";
+      apply.textContent = "Apply Sharpen";
+      apply.addEventListener("click", () => {
+        if (!rasterSession) return;
+        rasterSession.snapshot();
+        rasterSession.image = unsharpMask(rasterSession.image, rasterOptions.sharpenAmount);
+        redrawRasterCanvas();
+        renderRasterPanel();
+      });
+      s.appendChild(apply);
+      body.appendChild(s);
+      break;
+    }
+    case "smartfill": {
+      const s = section("Smart Fill");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent =
+        "Classical harmonic-diffusion fill — smoothly reconstructs the selected area from its surrounding pixels. Not AI/ML; no model, no network call. Select an area first with Lasso or Magic Wand.";
+      s.appendChild(hint);
+      s.appendChild(
+        sliderControl(
+          "Strength (iterations)",
+          20,
+          400,
+          10,
+          rasterOptions.smartFillIterations,
+          (v) => (rasterOptions.smartFillIterations = v),
+        ),
+      );
+      const apply = document.createElement("button");
+      apply.className = "tool primary";
+      apply.textContent = "Fill Selection";
+      apply.disabled = !rasterSelection;
+      apply.addEventListener("click", () => {
+        if (!rasterSession || !rasterSelection) return;
+        rasterSession.snapshot();
+        rasterSession.image = diffusionFill(
+          rasterSession.image,
+          rasterSelection,
+          rasterOptions.smartFillIterations,
+        );
+        redrawRasterCanvas();
+        renderRasterPanel();
+      });
+      s.appendChild(apply);
+      body.appendChild(s);
+      break;
+    }
+    case "bgremove": {
+      const s = section("Remove Background");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent =
+        "Color-key removal — pixels near the key color become transparent. Deterministic; no ML model.";
+      s.appendChild(hint);
+      const autoRow = document.createElement("label");
+      autoRow.className = "control";
+      const autoCb = document.createElement("input");
+      autoCb.type = "checkbox";
+      autoCb.checked = rasterOptions.bgAuto;
+      autoCb.addEventListener("change", () => {
+        rasterOptions.bgAuto = autoCb.checked;
+        colorField.style.display = autoCb.checked ? "none" : "";
+      });
+      autoRow.append(autoCb, document.createTextNode(" Auto-detect from corners"));
+      s.appendChild(autoRow);
+      const colorField = document.createElement("div");
+      colorField.className = "control";
+      colorField.style.display = rasterOptions.bgAuto ? "none" : "";
+      const colorInput = document.createElement("input");
+      colorInput.type = "color";
+      colorInput.value = rasterOptions.bgKeyColor;
+      colorInput.addEventListener("input", () => (rasterOptions.bgKeyColor = colorInput.value));
+      colorField.appendChild(colorInput);
+      s.appendChild(colorField);
+      s.appendChild(
+        sliderControl("Tolerance", 0, 1, 0.02, rasterOptions.bgThreshold, (v) => (rasterOptions.bgThreshold = v)),
+      );
+      s.appendChild(
+        sliderControl("Softness", 0, 1, 0.02, rasterOptions.bgSoftness, (v) => (rasterOptions.bgSoftness = v)),
+      );
+      const apply = document.createElement("button");
+      apply.className = "tool primary";
+      apply.textContent = "Apply";
+      apply.addEventListener("click", () => {
+        if (!rasterSession) return;
+        const key = rasterOptions.bgAuto
+          ? cornerKeyColor(rasterSession.image)
+          : hexToRgbColor(rasterOptions.bgKeyColor);
+        rasterSession.snapshot();
+        rasterSession.image = colorKeyAlpha(
+          rasterSession.image,
+          key,
+          rasterOptions.bgThreshold,
+          rasterOptions.bgSoftness,
+        );
+        redrawRasterCanvas();
+        renderRasterPanel();
+      });
+      s.appendChild(apply);
+      body.appendChild(s);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+async function applyRasterEdit(): Promise<void> {
+  if (!rasterSession || !rasterEditingClipId) return;
+  const loc = locateClip(rasterEditingClipId);
+  const sourceAsset = loc ? findAsset(loc.clip.assetId) : undefined;
+  try {
+    const blob = await rasterSession.toBlob();
+    const checksum = await sha256Hex(await blob.arrayBuffer());
+    const url = URL.createObjectURL(blob);
+    const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+    const registered = commit(
+      buildRegisterAsset(nextCtx(), {
+        asset: {
+          id: assetId,
+          projectId: PROJECT_ID,
+          kind: "image",
+          originalUri: url,
+          checksum,
+          metadata: {
+            fileSizeBytes: String(blob.size),
+            durationUs: sourceAsset?.metadata.durationUs ?? "5000000",
+            width: rasterSession.image.width,
+            height: rasterSession.image.height,
+          },
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    );
+    if (!registered) return;
+    const img = new Image();
+    img.src = url;
+    await new Promise<void>((resolve) => {
+      img.onload = () => resolve();
+      img.onerror = () => resolve();
+    });
+    mediaCache.set(url, img);
+    toast("Applied. Your edit is now a new photo in the Media bin — drag it onto the timeline.");
+    exitRasterMode();
+  } catch (err) {
+    toast(err instanceof Error ? err.message : "Failed to apply the edit.", true);
+  }
 }
 
 // ==========================================================================

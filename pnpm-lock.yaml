@@ -68,6 +68,9 @@ importers:
       '@director/project-schema':
         specifier: workspace:*
         version: link:../../packages/project-schema
+      '@director/raster-tools':
+        specifier: workspace:*
+        version: link:../../packages/raster-tools
       '@director/ui-kit':
         specifier: workspace:*
         version: link:../../packages/ui-kit
@@ -128,6 +131,8 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+
+  packages/raster-tools: {}
 
   packages/ui-kit:
     dependencies:

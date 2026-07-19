@@ -19,7 +19,13 @@ resolver (move/trim), and `EditorSession`. Engine gained
 `timeline.update_clip_effects`, closing the last gap so every UI action
 dispatches a real validated command.
 
-**Remaining:** pixel-level canvas rendering, DOM drag/drop, and a styled
-component library (need a browser) — in the `apps/web` shell.
+**Also built:** [[Packages/raster-tools]] — a full Photo-mode raster editing
+toolset (Move/Crop/Transform/Brush/Eraser/Clone/Lasso/Wand/Sharpen/Smart
+Fill/Remove Background), pure pixel algorithms + tested, with its own bounded
+local undo/redo outside the command engine. "Apply" is the only path back in,
+via a real `asset.register` command.
+
+**Remaining:** raster tools for Video mode, DOM drag/drop on the timeline, and
+a fuller styled component library — in the `apps/web` shell.
 
 See [[Phases/Roadmap]].

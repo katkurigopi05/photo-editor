@@ -661,6 +661,80 @@ body {
   font-size: 13px;
   max-width: 320px;
 }
+/* ---- raster tool rail (photo edit mode) ---- */
+.raster-rail {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  bottom: 10px;
+  width: 46px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 10;
+  overflow-y: auto;
+}
+.raster-rail.hidden {
+  display: none;
+}
+.raster-tool-btn {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 15px;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.raster-tool-btn:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.raster-tool-btn.active {
+  background: var(--accent-grad);
+  color: var(--on-accent);
+}
+#preview.raster-active {
+  cursor: crosshair;
+}
+.raster-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.raster-toolbar .mini {
+  padding: 4px 9px;
+}
+.raster-title {
+  font-weight: 700;
+  font-size: 12.5px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.raster-hint {
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+
 .transport {
   display: flex;
   align-items: center;

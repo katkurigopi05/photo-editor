@@ -23,6 +23,7 @@
     "@director/export-engine": "workspace:*",
     "@director/playback-controller": "workspace:*",
     "@director/project-schema": "workspace:*",
+    "@director/raster-tools": "workspace:*",
     "@director/ui-kit": "workspace:*"
   },
   "devDependencies": {
