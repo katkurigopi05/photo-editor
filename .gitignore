@@ -4,3 +4,15 @@ coverage/
 target/
 *.tsbuildinfo
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# pytest
+.pytest_cache/

@@ -1,0 +1,4 @@
+# Core dependencies for the editor (photo_editor.py, core/, plugins/).
+# Optional extras live in requirements-ai.txt (AI tools) and
+# requirements-raw.txt (camera RAW support).
+Pillow>=10.0

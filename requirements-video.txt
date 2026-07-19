@@ -1,0 +1,7 @@
+# Optional dependency for video support (see PRO_DEVELOPMENT.md, Phase B).
+# Not required by the core editor. Install with:
+#   pip install -r requirements-video.txt
+#
+# MoviePy wraps FFmpeg; it pulls in imageio-ffmpeg which bundles an ffmpeg
+# binary, so a system ffmpeg is not strictly required.
+moviepy>=2.0

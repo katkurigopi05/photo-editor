@@ -5,3 +5,7 @@ target/
 **/*.md
 photo_editor.py
 **/.obsidian/**
+
+# Python track (separate toolchain; not formatted by Prettier)
+web/
+.claude/

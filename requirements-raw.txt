@@ -1,0 +1,4 @@
+# Optional dependency for camera RAW support (see PRO_DEVELOPMENT.md, Phase 3).
+# Not required by the core editor. Install with:
+#   pip install -r requirements-raw.txt
+rawpy>=0.22

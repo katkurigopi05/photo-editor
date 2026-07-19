@@ -1,120 +1,57 @@
+import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk, ImageFilter, ImageEnhance, ImageOps
-import os
+from tkinter import filedialog, messagebox, simpledialog
+from PIL import ImageTk
 
-class SimpleImageEditor:
-    """
-    Core class handling all image processing logic using PIL.
-    Manages the image state and applies filters non-destructively 
-    by utilizing an undo history stack.
-    """
-    def __init__(self):
-        self.image_states = []
-        self.current_state_index = -1 
-        self.current_pil_image = None
+from core import (
+    Document,
+    Grayscale,
+    Sepia,
+    GaussianBlur,
+    Rotate90,
+    FlipHorizontal,
+    FlipVertical,
+    Brightness,
+    Resize,
+    Contrast,
+    Highlights,
+    Shadows,
+    Levels,
+    AutoContrast,
+    Equalize,
+    Saturation,
+    Vibrance,
+    Temperature,
+    Tint,
+    AutoWhiteBalance,
+    Sharpen,
+    Posterize,
+    Solarize,
+    Vignette,
+    Rotate,
+    load_plugins,
+    registered_operations,
+)
+from core.media import detect_media_type, export_media, first_frame
+from core.builder import build_gif
+from core.document import operations_from_recipe
+from ai_tools import AutoCrop, RemoveBackground
+from cv_tools import BilateralFilter, CLAHE, Denoise, UnsharpMask
 
-    def load_image(self, path):
-        try:
-            self.current_pil_image = Image.open(path).convert("RGB")
-            self.image_states = [self.current_pil_image.copy()]
-            self.current_state_index = 0
-            return True
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not load image: {e}")
-            return False
+OPEN_FILETYPES = [
+    ("All media", "*.jpg *.jpeg *.png *.bmp *.webp *.gif *.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
+    ("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp"),
+    ("Animated GIF", "*.gif"),
+    ("Video Files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
+    ("RAW Files", "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2"),
+]
 
-    def _save_current_state(self):
-        if self.current_pil_image:
-            new_state = self.current_pil_image.copy()
-            # If we're not at the end of the history (i.e. we undid some steps and now making a new change)
-            # we should truncate the future history
-            if self.current_state_index < len(self.image_states) - 1:
-                self.image_states = self.image_states[:self.current_state_index + 1]
-            
-            self.image_states.append(new_state)
-            self.current_state_index += 1
-            
-            # Limit history to prevent excessive memory usage (e.g. 10 states)
-            if len(self.image_states) > 10:
-                self.image_states.pop(0)
-                self.current_state_index -= 1
-
-    def undo(self):
-        if self.current_state_index > 0:
-            self.current_state_index -= 1
-            self.current_pil_image = self.image_states[self.current_state_index].copy()
-            return True
-        return False
-
-    def apply_filter(self, filter_type, **kwargs):
-        if not self.current_pil_image:
-            return False
-
-        new_image = self.current_pil_image.copy()
-
-        try:
-            if filter_type == "Grayscale":
-                new_image = ImageOps.grayscale(new_image).convert("RGB")
-            elif filter_type == "Sepia":
-                # Fast matrix conversion for Sepia
-                sepia_matrix = (
-                    0.393, 0.769, 0.189, 0,
-                    0.349, 0.686, 0.168, 0,
-                    0.272, 0.534, 0.131, 0
-                )
-                new_image = new_image.convert("RGB", sepia_matrix)
-            elif filter_type == "Blur":
-                radius = kwargs.get('radius', 3)
-                new_image = new_image.filter(ImageFilter.GaussianBlur(radius))
-            elif filter_type == "Rotate":
-                # Rotate 90 degrees left
-                new_image = new_image.rotate(90, expand=True)
-            elif filter_type == "Flip Horizontal":
-                new_image = ImageOps.mirror(new_image)
-            elif filter_type == "Flip Vertical":
-                new_image = ImageOps.flip(new_image)
-            elif filter_type == "Brightness Up":
-                enhancer = ImageEnhance.Brightness(new_image)
-                new_image = enhancer.enhance(1.2)
-            elif filter_type == "Brightness Down":
-                enhancer = ImageEnhance.Brightness(new_image)
-                new_image = enhancer.enhance(0.8)
-            else:
-                return False
-
-            self.current_pil_image = new_image
-            self._save_current_state()
-            return True
-
-        except Exception as e:
-            messagebox.showerror("Processing Error", f"Filter application failed: {e}")
-            return False
-
-    def resize_image(self, width, height):
-        if self.current_pil_image:
-            new_image = self.current_pil_image.copy()
-            try:
-                new_image = new_image.resize((width, height))
-                self.current_pil_image = new_image
-                self._save_current_state()
-            except Exception as e:
-                messagebox.showerror("Resize Error", f"Resizing failed: {e}")
-        return True
-
-    def save_image(self, path):
-        if self.current_pil_image:
-            try:
-                file_ext = os.path.splitext(path)[1].lower()
-                if file_ext == '.png':
-                    self.current_pil_image.save(path, format='PNG')
-                else:
-                    self.current_pil_image.save(path, format='JPEG')
-                return True
-            except Exception as e:
-                messagebox.showerror("Save Error", f"Failed to save image: {e}")
-                return False
-        return False
+# what export_media writes for each media type, and the save dialog defaults
+EXPORT_DEFAULTS = {
+    "image": (".png", [("PNG files", "*.png"), ("JPEG files", "*.jpg")]),
+    "gif": (".gif", [("Animated GIF", "*.gif")]),
+    "video": (".mp4", [("MP4 video", "*.mp4")]),
+}
 
 # =============================
 # --- GUI Implementation using Tkinter ---
@@ -125,96 +62,311 @@ class AppGUI:
         self.master = master
         master.title("Advanced Photo Editor")
 
-        self.editor = SimpleImageEditor()
-        
+        self.document = None
+        self.media_type = None
+        self.source_path = None
+        self._buttons = []
+
         self.main_frame = tk.Frame(master, padx=10, pady=10)
         self.main_frame.pack(fill="both", expand=True)
 
-        self.image_label = tk.Label(self.main_frame, bg="grey", text="Open an image to start editing", width=100, height=30)
+        self.image_label = tk.Label(self.main_frame, bg="grey", text="Open an image, GIF or video to start editing", width=100, height=30)
         self.image_label.pack(pady=10, padx=10, fill="both", expand=True)
 
+        self.status_var = tk.StringVar(value="Ready")
+        tk.Label(master, textvariable=self.status_var, anchor="w", padx=10).pack(fill="x", side=tk.BOTTOM)
+
         # Toolbar for file operations
-        self.file_frame = tk.Frame(master, padx=10, pady=5)
-        self.file_frame.pack(fill="x")
-        
-        tk.Button(self.file_frame, text="📂 Open Image", command=self.select_file).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.file_frame, text="💾 Save Image", command=self.save_action).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.file_frame, text="↩ Undo", command=self.undo_action).pack(side=tk.LEFT, padx=5)
+        file_frame = self._toolbar_row()
+        self._button(file_frame, "📂 Open", self.select_file)
+        self._button(file_frame, "🎞 Build from Images", self.build_action)
+        self._button(file_frame, "💾 Export", self.save_action)
+        self._button(file_frame, "📋 Save Recipe", self.save_recipe_action)
+        self._button(file_frame, "📥 Load Recipe", self.load_recipe_action)
+        self._button(file_frame, "↩ Undo", self.undo_action)
+        self._button(file_frame, "↪ Redo", self.redo_action)
 
         # Toolbar for filters
-        self.filter_frame = tk.Frame(master, padx=10, pady=5)
-        self.filter_frame.pack(fill="x")
-        
-        tk.Label(self.filter_frame, text="Filters:").pack(side=tk.LEFT, padx=5)
-        tk.Button(self.filter_frame, text="Grayscale", command=lambda: self.apply_and_refresh("Grayscale")).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.filter_frame, text="Sepia", command=lambda: self.apply_and_refresh("Sepia")).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.filter_frame, text="Blur", command=lambda: self.apply_and_refresh("Blur")).pack(side=tk.LEFT, padx=5)
+        filter_frame = self._toolbar_row("Filters:")
+        self._op_button(filter_frame, "Grayscale", Grayscale)
+        self._op_button(filter_frame, "Sepia", Sepia)
+        self._op_button(filter_frame, "Blur", lambda: GaussianBlur(radius=3))
 
-        # Toolbar for adjustments
-        self.adj_frame = tk.Frame(master, padx=10, pady=5)
-        self.adj_frame.pack(fill="x")
-        
-        tk.Label(self.adj_frame, text="Adjustments:").pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Rotate 90°", command=lambda: self.apply_and_refresh("Rotate")).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Flip Horiz", command=lambda: self.apply_and_refresh("Flip Horizontal")).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Flip Vert", command=lambda: self.apply_and_refresh("Flip Vertical")).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Brighten (+)", command=lambda: self.apply_and_refresh("Brightness Up")).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Darken (-)", command=lambda: self.apply_and_refresh("Brightness Down")).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.adj_frame, text="Resize (800x600)", command=lambda: self.apply_and_refresh("Resize")).pack(side=tk.LEFT, padx=5)
+        # Toolbar for light/tone adjustments
+        light_frame = self._toolbar_row("Light:")
+        self._op_button(light_frame, "Brighten (+)", lambda: Brightness(factor=1.2))
+        self._op_button(light_frame, "Darken (-)", lambda: Brightness(factor=0.8))
+        self._slider_button(light_frame, "Contrast", lambda v: Contrast(v), 1.3, "Contrast factor (1.0 = none)")
+        self._slider_button(light_frame, "Highlights", lambda v: Highlights(v), -50, "Highlights (-100..100)")
+        self._slider_button(light_frame, "Shadows", lambda v: Shadows(v), 50, "Shadows (-100..100)")
+        self._slider_button(light_frame, "Levels γ", lambda v: Levels(0, 255, v), 1.2, "Gamma (>0, 1.0 = none)")
+        self._op_button(light_frame, "Auto Contrast", AutoContrast)
+        self._op_button(light_frame, "Equalize", Equalize)
+
+        # Toolbar for color adjustments
+        color_frame = self._toolbar_row("Color:")
+        self._slider_button(color_frame, "Saturation", lambda v: Saturation(v), 1.4, "Saturation factor (1.0 = none)")
+        self._slider_button(color_frame, "Vibrance", lambda v: Vibrance(v), 40, "Vibrance (-100..100)")
+        self._slider_button(color_frame, "Temperature", lambda v: Temperature(v), 30, "Temperature (-100 cool..100 warm)")
+        self._slider_button(color_frame, "Tint", lambda v: Tint(v), 0, "Tint (-100 green..100 magenta)")
+        self._op_button(color_frame, "Auto WB", AutoWhiteBalance)
+        # per-channel levels gamma (R/G/B) for color grading
+        self._slider_button(color_frame, "R γ", lambda v: Levels(0, 255, v, channel="r"), 1.2, "Red gamma (>0, 1.0 = none)")
+        self._slider_button(color_frame, "G γ", lambda v: Levels(0, 255, v, channel="g"), 1.2, "Green gamma (>0, 1.0 = none)")
+        self._slider_button(color_frame, "B γ", lambda v: Levels(0, 255, v, channel="b"), 1.2, "Blue gamma (>0, 1.0 = none)")
+
+        # Toolbar for detail, effects and geometry
+        fx_frame = self._toolbar_row("Detail/FX:")
+        self._slider_button(fx_frame, "Sharpen", lambda v: Sharpen(v), 2.0, "Sharpness factor (1.0 = none)")
+        self._slider_button(fx_frame, "Posterize", lambda v: Posterize(int(v)), 3, "Bits (1..8)")
+        self._slider_button(fx_frame, "Solarize", lambda v: Solarize(int(v)), 128, "Threshold (0..255)")
+        self._slider_button(fx_frame, "Vignette", lambda v: Vignette(v), 40, "Strength (0..100)")
+
+        # Toolbar for geometry
+        geo_frame = self._toolbar_row("Geometry:")
+        self._op_button(geo_frame, "Rotate 90°", Rotate90)
+        self._slider_button(geo_frame, "Straighten", lambda v: Rotate(v), 0, "Angle in degrees")
+        self._op_button(geo_frame, "Flip Horiz", FlipHorizontal)
+        self._op_button(geo_frame, "Flip Vert", FlipVertical)
+        self._op_button(geo_frame, "Resize (800x600)", lambda: Resize(width=800, height=600))
+
+        # Toolbar for OpenCV tools (needs requirements-cv.txt; a clear install
+        # hint is shown on first use if it isn't installed)
+        cv_frame = self._toolbar_row("OpenCV:")
+        self._op_button(cv_frame, "CLAHE", CLAHE)
+        self._op_button(cv_frame, "Denoise", Denoise)
+        self._op_button(cv_frame, "Bilateral", BilateralFilter)
+        self._slider_button(cv_frame, "Unsharp", lambda v: UnsharpMask(amount=v), 1.0, "Amount (e.g. 1.0)")
+
+        # Toolbar for AI tools (heavy deps load on first use; a clear install
+        # hint is shown if requirements-ai.txt isn't installed)
+        ai_frame = self._toolbar_row("AI:")
+        self._op_button(ai_frame, "Remove Background", RemoveBackground)
+        self._op_button(ai_frame, "Auto Crop", AutoCrop)
+
+        # Toolbar for plugins, built dynamically from the plugins/ directory
+        plugin_names = load_plugins()
+        if plugin_names:
+            plugin_frame = self._toolbar_row("Plugins:")
+            registry = registered_operations()
+            for name in plugin_names:
+                cls = registry[name]
+                try:
+                    cls()  # only zero-arg-constructible ops get a button
+                except TypeError:
+                    continue
+                self._op_button(plugin_frame, cls.label, cls)
+        for error in getattr(load_plugins, "errors", []):
+            messagebox.showwarning("Plugin Error", f"Skipped broken plugin — {error}")
+
+    # --- toolbar helpers ---------------------------------------------------
+
+    def _toolbar_row(self, label=None):
+        frame = tk.Frame(self.master, padx=10, pady=5)
+        frame.pack(fill="x")
+        if label:
+            tk.Label(frame, text=label).pack(side=tk.LEFT, padx=5)
+        return frame
+
+    def _button(self, frame, text, command):
+        button = tk.Button(frame, text=text, command=command)
+        button.pack(side=tk.LEFT, padx=5)
+        self._buttons.append(button)
+        return button
+
+    def _op_button(self, frame, text, op_factory):
+        self._button(frame, text, lambda: self.apply_and_refresh(op_factory()))
+
+    def _slider_button(self, frame, text, op_factory, default, prompt):
+        """Button for a parametric op: asks for a value, then applies
+        op_factory(value). Keeps the GUI simple without per-op dialogs."""
+        def run():
+            if not self.document:
+                return
+            value = simpledialog.askfloat(text, prompt, initialvalue=default, parent=self.master)
+            if value is None:
+                return  # cancelled
+            try:
+                operation = op_factory(value)
+            except ValueError as e:
+                messagebox.showerror(text, str(e))
+                return
+            self.apply_and_refresh(operation)
+        self._button(frame, text, run)
+
+    def _set_busy(self, busy, message="Processing…"):
+        self.status_var.set(message if busy else "Ready")
+        state = tk.DISABLED if busy else tk.NORMAL
+        for button in self._buttons:
+            button.config(state=state)
+
+    # --- rendering ---------------------------------------------------------
 
     def display_image(self):
-        if not self.editor.current_pil_image:
+        if not self.document:
             return
 
-        width, height = self.editor.current_pil_image.size
-        # Dynamically size to the label if possible, or use a fixed max
-        max_display_width = 800
-        max_display_height = 600
-
-        display_img = self.editor.current_pil_image.copy()
-        display_img.thumbnail((max_display_width, max_display_height))
+        display_img = self.document.render().copy()
+        display_img.thumbnail((800, 600))
 
         tk_img = ImageTk.PhotoImage(display_img)
         self.image_label.config(image=tk_img, text="", width=display_img.width, height=display_img.height)
-        self.image_label.image = tk_img 
+        self.image_label.image = tk_img
+
+    def apply_and_refresh(self, operation):
+        if not self.document:
+            return
+        self.document.add_operation(operation)
+        self._render_async(rollback_on_error=True)
+
+    def _render_async(self, rollback_on_error=False):
+        """Render on a worker thread so slow filters (AI ops especially)
+        don't freeze the Tkinter mainloop."""
+        self._set_busy(True)
+        document = self.document
+
+        def work():
+            try:
+                document.render()
+                error = None
+            except Exception as e:
+                error = e
+            self.master.after(0, lambda: self._render_done(error, rollback_on_error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_done(self, error, rollback_on_error):
+        self._set_busy(False)
+        if error:
+            if rollback_on_error:
+                self.document.remove_last_operation()
+            messagebox.showerror("Processing Error", f"Filter application failed: {error}")
+            return
+        self.display_image()
+
+    # --- actions -----------------------------------------------------------
 
     def select_file(self):
-        path = filedialog.askopenfilename(
-            title="Select an Image File",
-            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")]
-        )
-        if path:
-            if self.editor.load_image(path):
-                self.display_image()
+        path = filedialog.askopenfilename(title="Open image, GIF or video", filetypes=OPEN_FILETYPES)
+        if not path:
+            return
+        try:
+            media_type = detect_media_type(path)
+            base = first_frame(path, media_type)  # first frame is the edit preview
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open file: {e}")
+            return
+        self.source_path = path
+        self.media_type = media_type
+        # edit the preview frame; export re-applies the recipe to the whole media
+        self.document = Document(base, source_path=path)
+        self._update_media_status()
+        self.display_image()
+
+    def _update_media_status(self, extra=""):
+        label = {"image": "Image", "gif": "Animated GIF", "video": "Video"}.get(self.media_type, "")
+        note = " — editing first frame; export applies to all frames" if self.media_type in ("gif", "video") else ""
+        self.status_var.set(f"{label}{note}{extra}" if label else "Ready")
 
     def save_action(self):
+        if not self.document:
+            return
+        media_type = self.media_type or "image"
+        default_ext, filetypes = EXPORT_DEFAULTS[media_type]
         path = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            title="Save Edited Image As",
-            filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg")]
+            defaultextension=default_ext,
+            title=f"Export {media_type}",
+            filetypes=filetypes,
+        )
+        if not path:
+            return
+        # export re-applies the current operation recipe to the full media
+        operations = list(self.document.operations)
+        self._set_busy(True, f"Exporting {media_type}…")
+
+        def work():
+            try:
+                export_media(media_type, self.source_path, operations, path)
+                error = None
+            except Exception as e:
+                error = e
+            self.master.after(0, lambda: self._export_done(error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _export_done(self, error):
+        self._set_busy(False)
+        self._update_media_status()
+        if error:
+            messagebox.showerror("Export Error", f"Failed to export: {error}")
+
+    def build_action(self):
+        """Build an animated GIF from a set of still images (stills -> animation)."""
+        paths = filedialog.askopenfilenames(
+            title="Select images to build into a GIF (in order)",
+            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")],
+        )
+        if not paths:
+            return
+        out = filedialog.asksaveasfilename(
+            defaultextension=".gif", title="Save built GIF as",
+            filetypes=[("Animated GIF", "*.gif")],
+        )
+        if not out:
+            return
+        try:
+            count = build_gif(list(paths), out)
+        except Exception as e:
+            messagebox.showerror("Build Error", f"Failed to build GIF: {e}")
+            return
+        messagebox.showinfo("Build", f"Built {out} from {count} image(s).")
+
+    def save_recipe_action(self):
+        if not self.document:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            title="Save Edit Recipe As",
+            filetypes=[("Recipe files", "*.json")]
         )
         if path:
-            self.editor.save_image(path)
+            try:
+                self.document.save_recipe(path)
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save recipe: {e}")
+
+    def load_recipe_action(self):
+        if not self.document:
+            messagebox.showinfo("Load Recipe", "Open an image, GIF or video first.")
+            return
+        path = filedialog.askopenfilename(title="Load Edit Recipe", filetypes=[("Recipe files", "*.json")])
+        if not path:
+            return
+        try:
+            operations = operations_from_recipe(path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load recipe: {e}")
+            return
+        # apply the recipe's operations onto the currently-open media
+        for operation in operations:
+            self.document.add_operation(operation)
+        self._render_async()
 
     def undo_action(self):
-        if self.editor.undo():
+        if self.document and self.document.undo():
             self.display_image()
         else:
             messagebox.showinfo("Undo", "Nothing more to undo.")
 
-    def apply_and_refresh(self, action):
-        success = False
-        if action == "Resize":
-            success = self.editor.resize_image(800, 600)
+    def redo_action(self):
+        if self.document and self.document.redo():
+            self._render_async()
         else:
-            success = self.editor.apply_filter(action)
-        
-        if success:
-            self.display_image()
+            messagebox.showinfo("Redo", "Nothing to redo.")
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("900x850") 
+    root.geometry("900x850")
     app = AppGUI(root)
-    root.protocol("WM_DELETE_WINDOW", root.quit) 
+    root.protocol("WM_DELETE_WINDOW", root.quit)
     root.mainloop()
