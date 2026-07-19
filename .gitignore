@@ -16,3 +16,6 @@ env/
 
 # pytest
 .pytest_cache/
+
+# local reference material, not part of the project
+example_photos/

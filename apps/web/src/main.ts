@@ -30,6 +30,17 @@ import {
   type PlaybackState,
 } from "@director/playback-controller";
 import { planExport } from "@director/export-engine";
+import {
+  PRESETS,
+  PRESET_LABELS,
+  deriveTheme,
+  applyThemeTokens,
+  loadCustomThemes,
+  upsertCustomTheme,
+  deleteCustomTheme,
+  MAX_CUSTOM_THEMES,
+  type ThemeTokens,
+} from "./theme.js";
 import type {
   EffectInstance,
   EffectType,
@@ -1256,14 +1267,48 @@ function setMode(next: "video" | "photo"): void {
 }
 
 // ==========================================================================
-// Theme (dark / light / system)
+// Theme: dark / light / system, plus customizable color themes
 // ==========================================================================
 type ThemePreference = "dark" | "light" | "system";
 const THEME_STORAGE_KEY = "director-theme";
+const THEME_SELECTION_KEY = "director-theme-selection";
 const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");
 
 function resolveTheme(pref: ThemePreference): "dark" | "light" {
   return pref === "system" ? (systemThemeQuery.matches ? "light" : "dark") : pref;
+}
+
+function currentThemePreference(): ThemePreference {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === "dark" || stored === "light" || stored === "system"
+    ? stored
+    : "system";
+}
+
+/** "default" (plain dark/light), a preset key, or `custom:<name>`. */
+function currentThemeSelection(): string {
+  return localStorage.getItem(THEME_SELECTION_KEY) ?? "default";
+}
+
+function setThemeSelection(selection: string): void {
+  localStorage.setItem(THEME_SELECTION_KEY, selection);
+}
+
+function resolveSelectionTokens(selection: string): ThemeTokens | null {
+  if (selection === "default") return null;
+  if (selection in PRESETS) return PRESETS[selection] ?? null;
+  if (selection.startsWith("custom:")) {
+    const name = selection.slice("custom:".length);
+    const entry = loadCustomThemes().find((c) => c.name === name);
+    if (!entry) return null;
+    return deriveTheme(
+      entry.seeds.bg,
+      entry.seeds.panel,
+      entry.seeds.text,
+      entry.seeds.accent,
+    );
+  }
+  return null;
 }
 
 function applyTheme(pref: ThemePreference): void {
@@ -1276,18 +1321,154 @@ function applyTheme(pref: ThemePreference): void {
   }
 }
 
-function currentThemePreference(): ThemePreference {
-  const stored = localStorage.getItem(THEME_STORAGE_KEY);
-  return stored === "dark" || stored === "light" || stored === "system"
-    ? stored
-    : "system";
+function applyThemeSelection(selection: string): void {
+  setThemeSelection(selection);
+  applyThemeTokens(resolveSelectionTokens(selection));
+  renderThemePanel();
+}
+
+function renderThemePanel(): void {
+  const selection = currentThemeSelection();
+  const grid = $<HTMLDivElement>("theme-preset-grid");
+  grid.innerHTML = "";
+
+  const defaultSwatch = document.createElement("button");
+  defaultSwatch.type = "button";
+  defaultSwatch.className = `theme-swatch${selection === "default" ? " active" : ""}`;
+  defaultSwatch.style.background = "var(--accent-grad)";
+  defaultSwatch.title = "Default (follows dark/light)";
+  defaultSwatch.innerHTML = `<span class="theme-swatch-label">Default</span>`;
+  defaultSwatch.addEventListener("click", () => applyThemeSelection("default"));
+  grid.appendChild(defaultSwatch);
+
+  for (const [key, tokens] of Object.entries(PRESETS)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `theme-swatch${selection === key ? " active" : ""}`;
+    btn.style.background = `linear-gradient(135deg, ${tokens.bg}, ${tokens.accent})`;
+    btn.title = PRESET_LABELS[key] ?? key;
+    btn.innerHTML = `<span class="theme-swatch-label">${PRESET_LABELS[key] ?? key}</span>`;
+    btn.addEventListener("click", () => applyThemeSelection(key));
+    grid.appendChild(btn);
+  }
+
+  const list = $<HTMLDivElement>("theme-custom-list");
+  list.innerHTML = "";
+  for (const entry of loadCustomThemes()) {
+    const selectionKey = `custom:${entry.name}`;
+    const row = document.createElement("div");
+    row.className = `theme-custom-item${selection === selectionKey ? " active" : ""}`;
+    const dot = document.createElement("span");
+    dot.className = "theme-custom-swatch";
+    dot.style.background = entry.seeds.accent;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = entry.name;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "mini";
+    del.textContent = "✕";
+    del.title = "Delete theme";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteCustomTheme(entry.name);
+      if (currentThemeSelection() === selectionKey) applyThemeSelection("default");
+      renderThemePanel();
+    });
+    row.append(dot, name, del);
+    row.addEventListener("click", () => applyThemeSelection(selectionKey));
+    list.appendChild(row);
+  }
 }
 
 function initTheme(): void {
   applyTheme(currentThemePreference());
+  applyThemeTokens(resolveSelectionTokens(currentThemeSelection()));
+  renderThemePanel();
   // If the user is following the system theme, react to OS changes live.
   systemThemeQuery.addEventListener("change", () => {
     if (currentThemePreference() === "system") applyTheme("system");
+  });
+}
+
+function bindThemePicker(): void {
+  const toggleBtn = $<HTMLButtonElement>("btn-theme-picker");
+  const panel = $<HTMLDivElement>("theme-panel");
+  const form = $<HTMLFormElement>("theme-form");
+  const newBtn = $<HTMLButtonElement>("btn-theme-new");
+  const cancelBtn = $<HTMLButtonElement>("btn-theme-cancel");
+  const nameInput = $<HTMLInputElement>("theme-name");
+  const seedBg = $<HTMLInputElement>("seed-bg");
+  const seedPanel = $<HTMLInputElement>("seed-panel");
+  const seedText = $<HTMLInputElement>("seed-text");
+  const seedAccent = $<HTMLInputElement>("seed-accent");
+
+  const closePanel = (): void => {
+    panel.classList.add("hidden");
+    form.classList.add("hidden");
+    toggleBtn.setAttribute("aria-expanded", "false");
+  };
+
+  toggleBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = panel.classList.contains("hidden");
+    if (willOpen) renderThemePanel();
+    panel.classList.toggle("hidden", !willOpen);
+    toggleBtn.setAttribute("aria-expanded", String(willOpen));
+  });
+  document.addEventListener("click", (e) => {
+    if (!panel.contains(e.target as Node) && e.target !== toggleBtn) {
+      closePanel();
+    }
+  });
+
+  const previewSeeds = (): void => {
+    const tokens: ThemeTokens = deriveTheme(
+      seedBg.value,
+      seedPanel.value,
+      seedText.value,
+      seedAccent.value,
+    );
+    applyThemeTokens(tokens);
+  };
+
+  newBtn.addEventListener("click", () => {
+    if (loadCustomThemes().length >= MAX_CUSTOM_THEMES) {
+      toast(`You can save up to ${MAX_CUSTOM_THEMES} custom themes.`, true);
+      return;
+    }
+    form.classList.remove("hidden");
+    nameInput.focus();
+    previewSeeds();
+  });
+  for (const input of [seedBg, seedPanel, seedText, seedAccent]) {
+    input.addEventListener("input", previewSeeds);
+  }
+  cancelBtn.addEventListener("click", () => {
+    form.classList.add("hidden");
+    applyThemeTokens(resolveSelectionTokens(currentThemeSelection()));
+  });
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = nameInput.value.trim();
+    if (!name) return;
+    const saved = upsertCustomTheme({
+      name,
+      seeds: {
+        bg: seedBg.value,
+        panel: seedPanel.value,
+        text: seedText.value,
+        accent: seedAccent.value,
+      },
+    });
+    if (!saved) {
+      toast(`You can save up to ${MAX_CUSTOM_THEMES} custom themes.`, true);
+      return;
+    }
+    form.classList.add("hidden");
+    nameInput.value = "";
+    applyThemeSelection(`custom:${name}`);
+    toast(`Saved theme "${name}".`);
   });
 }
 
@@ -1301,6 +1482,7 @@ function bindEvents(): void {
   $("theme-dark").addEventListener("click", () => applyTheme("dark"));
   $("theme-light").addEventListener("click", () => applyTheme("light"));
   $("theme-system").addEventListener("click", () => applyTheme("system"));
+  bindThemePicker();
 
   $("btn-import").addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {

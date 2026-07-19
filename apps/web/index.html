@@ -47,6 +47,65 @@
               ◐
             </button>
           </div>
+          <div class="theme-picker">
+            <button
+              id="btn-theme-picker"
+              class="tool"
+              title="Color theme"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              🎨
+            </button>
+            <div id="theme-panel" class="theme-panel hidden">
+              <div class="theme-panel-title">Color theme</div>
+              <div id="theme-preset-grid" class="theme-preset-grid"></div>
+              <div id="theme-custom-list" class="theme-custom-list"></div>
+              <button id="btn-theme-new" class="mini theme-new-btn">
+                ＋ Custom theme…
+              </button>
+              <form id="theme-form" class="theme-form hidden">
+                <input
+                  id="theme-name"
+                  class="theme-name-input"
+                  type="text"
+                  placeholder="Theme name"
+                  maxlength="24"
+                  required
+                />
+                <div class="theme-seed-row">
+                  <label>Background<input
+                      id="seed-bg"
+                      type="color"
+                      value="#14161f"
+                  /></label>
+                  <label>Panel<input
+                      id="seed-panel"
+                      type="color"
+                      value="#1c202c"
+                  /></label>
+                  <label>Text<input
+                      id="seed-text"
+                      type="color"
+                      value="#eef1f6"
+                  /></label>
+                  <label>Accent<input
+                      id="seed-accent"
+                      type="color"
+                      value="#7c5cff"
+                  /></label>
+                </div>
+                <div class="theme-form-actions">
+                  <button type="button" id="btn-theme-cancel" class="mini">
+                    Cancel
+                  </button>
+                  <button type="submit" class="tool primary theme-save-btn">
+                    Save theme
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
           <button id="btn-undo" class="tool" title="Undo (Cmd/Ctrl+Z)">
             ↶ Undo
           </button>
