@@ -53,7 +53,25 @@ to project state.
 
 ## Scope
 
-Photo mode only, per the current requirement. Video clips do not show the
-raster tool entry point. Sharpen and the geometry tools (crop/resize/rotate)
+Photo mode only for the full raster (pixel-paint) toolset. Video gets the
+"same pattern" honestly, in two ways that respect what video actually is (a
+live decoded stream, not a static pixel buffer):
+
+- **`transform.crop`** — a non-destructive crop/reframe **effect**, added to
+  `packages/project-schema` alongside the existing `transform.rotate` /
+  `transform.flip`. Since video can't be destructively pixel-cropped like a
+  photo, cropping/reframing a video clip goes through the deterministic
+  command engine as a declarative, Zod-validated, undoable, replayable effect
+  (normalized `x/y/width/height` fractions, `x+width<=1`, `y+height<=1`).
+  Rendered in `apps/web` as a source-rect crop before the scale-to-fit draw.
+- **"Edit Current Frame"** — for a video clip, grabs the exact frame under
+  the playhead (waits for the real `seeked` event before reading pixels, so
+  it never captures a stale frame) and opens it in the *same* raster editor
+  built for photos — full reuse, zero new pixel algorithms. Useful for
+  frame touch-ups, rotoscoping a single frame, or pulling a clean thumbnail.
+  Apply registers the flattened frame as a new image asset, same as photo
+  edits; the original video clip is never touched.
+
+Sharpen and the geometry tools (crop/resize/rotate in the raster editor)
 apply to the whole working buffer; selection-scoped tools (Delete, Fill,
 Smart Fill) operate on the current Lasso/Wand selection.

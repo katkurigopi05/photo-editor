@@ -210,6 +210,37 @@ export const removeBackgroundParamsSchema = z
   })
   .strict();
 
+const unitFraction = finiteNumber.refine(
+  (n) => n >= 0 && n <= 1,
+  "must be between 0 and 1",
+);
+
+/** A non-destructive crop/reframe: the normalized (0..1) sub-rectangle of the
+ * source frame to display, scaled to fill the clip's full display area. Real
+ * video can't be destructively pixel-cropped like a still photo (it's a live
+ * decoded stream), so cropping/reframing a video clip is a declarative,
+ * undoable effect instead — same pattern as the other transform.* effects. */
+export const cropParamsSchema = z
+  .object({
+    x: unitFraction,
+    y: unitFraction,
+    width: unitFraction,
+    height: unitFraction,
+  })
+  .strict()
+  .refine((v) => v.x + v.width <= 1, {
+    message: "x + width must not exceed 1",
+    path: ["width"],
+  })
+  .refine((v) => v.y + v.height <= 1, {
+    message: "y + height must not exceed 1",
+    path: ["height"],
+  })
+  .refine((v) => v.width > 0 && v.height > 0, {
+    message: "width and height must be greater than 0",
+    path: ["width"],
+  });
+
 export const EFFECT_TYPES = [
   "color.brightness",
   "color.contrast",
@@ -230,6 +261,7 @@ export const EFFECT_TYPES = [
   "fx.retro_noise",
   "fx.border",
   "fx.remove_background",
+  "transform.crop",
 ] as const;
 
 export const effectTypeSchema = z.enum(EFFECT_TYPES);
@@ -257,6 +289,7 @@ export const effectParamsSchemas = {
   "fx.retro_noise": retroNoiseParamsSchema,
   "fx.border": borderParamsSchema,
   "fx.remove_background": removeBackgroundParamsSchema,
+  "transform.crop": cropParamsSchema,
 } satisfies Record<EffectType, z.ZodTypeAny>;
 
 function effect<Type extends EffectType, Params extends z.ZodTypeAny>(
@@ -294,6 +327,7 @@ export const effectInstanceSchema = z.discriminatedUnion("type", [
   effect("fx.retro_noise", retroNoiseParamsSchema),
   effect("fx.border", borderParamsSchema),
   effect("fx.remove_background", removeBackgroundParamsSchema),
+  effect("transform.crop", cropParamsSchema),
 ]);
 
 export type EffectInstance = z.infer<typeof effectInstanceSchema>;

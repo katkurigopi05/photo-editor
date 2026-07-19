@@ -165,6 +165,17 @@ const EFFECTS: EffectSpec[] = [
     params: [range("opacity", "Opacity", 0, 1, 0.05, 1)],
   },
   {
+    type: "transform.crop",
+    label: "Crop / Reframe",
+    modes: ["video", "photo"],
+    params: [
+      range("x", "Left", 0, 0.9, 0.01, 0),
+      range("y", "Top", 0, 0.9, 0.01, 0),
+      range("width", "Width", 0.1, 1, 0.01, 1),
+      range("height", "Height", 0.1, 1, 0.01, 1),
+    ],
+  },
+  {
     type: "transform.rotate",
     label: "Rotate",
     modes: ["video", "photo"],
@@ -667,9 +678,31 @@ function drawLayer(
     }
   }
 
-  const scale = Math.min(cw / mw, ch / mh);
-  const dw = mw * scale;
-  const dh = mh * scale;
+  // Crop/reframe is a non-destructive effect: it narrows the source rect we
+  // sample from, rather than touching the media itself.
+  const cropFx = clip.effects.find(
+    (e) => e.enabled && e.type === "transform.crop",
+  );
+  let sx = 0;
+  let sy = 0;
+  let sw = mw;
+  let sh = mh;
+  if (cropFx) {
+    const p = cropFx.params as {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    sx = p.x * mw;
+    sy = p.y * mh;
+    sw = Math.max(1, p.width * mw);
+    sh = Math.max(1, p.height * mh);
+  }
+
+  const scale = Math.min(cw / sw, ch / sh);
+  const dw = sw * scale;
+  const dh = sh * scale;
   const dx = (cw - dw) / 2;
   const dy = (ch - dh) / 2;
 
@@ -692,7 +725,7 @@ function drawLayer(
   cctx.translate(ccx, ccy);
   if (rotateDeg) cctx.rotate((rotateDeg * Math.PI) / 180);
   if (flipX || flipY) cctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-  cctx.drawImage(drawable, -dw / 2, -dh / 2, dw, dh);
+  cctx.drawImage(drawable, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
   cctx.restore();
 
   drawOverlays(clip, dx, dy, dw, dh);
@@ -1018,6 +1051,15 @@ function renderInspector(): void {
     editBtn.textContent = "🖌 Edit Photo (Brush, Crop, Clone…)";
     editBtn.addEventListener("click", () => enterRasterMode(clip.id));
     inspectorEl.appendChild(editBtn);
+  }
+  if (mode === "video" && asset?.kind === "video") {
+    const editFrameBtn = document.createElement("button");
+    editFrameBtn.className = "tool primary";
+    editFrameBtn.style.width = "100%";
+    editFrameBtn.style.marginBottom = "12px";
+    editFrameBtn.textContent = "🎞 Edit Current Frame (Brush, Clone, Wand…)";
+    editFrameBtn.addEventListener("click", () => void enterRasterModeFromVideoFrame(clip.id));
+    inspectorEl.appendChild(editFrameBtn);
   }
 
   // --- Effects ---
@@ -1598,6 +1640,20 @@ function hexToRgbColor(hex: string): { r: number; g: number; b: number } {
   return { r, g, b };
 }
 
+function startRasterSession(clipId: string, session: RasterSession): void {
+  rasterSession = session;
+  rasterEditingClipId = clipId;
+  rasterTool = "brush";
+  rasterSelection = null;
+  rasterSelectionOverlay = null;
+  rasterDrag = null;
+  cloneSource = null;
+  playback = pause(playback);
+  syncTransport();
+  bindRasterCanvasEvents();
+  updateUI();
+}
+
 function enterRasterMode(clipId: string): void {
   const loc = locateClip(clipId);
   if (!loc) return;
@@ -1613,18 +1669,53 @@ function enterRasterMode(clipId: string): void {
   }
   const width = media.naturalWidth || asset.metadata.width || 1;
   const height = media.naturalHeight || asset.metadata.height || 1;
+  startRasterSession(clipId, RasterSession.fromSource(media, width, height));
+}
 
-  rasterSession = RasterSession.fromSource(media, width, height);
-  rasterEditingClipId = clipId;
-  rasterTool = "brush";
-  rasterSelection = null;
-  rasterSelectionOverlay = null;
-  rasterDrag = null;
-  cloneSource = null;
-  playback = pause(playback);
-  syncTransport();
-  bindRasterCanvasEvents();
-  updateUI();
+/** Wait until the video element has actually seeked to `targetSeconds` before
+ * reading pixels — `currentTime` assignment is async, so capturing
+ * immediately could grab the previous frame. */
+function seekVideoFrame(video: HTMLVideoElement, targetSeconds: number): Promise<void> {
+  if (Math.abs(video.currentTime - targetSeconds) < 0.02) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onSeeked = (): void => {
+      video.removeEventListener("seeked", onSeeked);
+      resolve();
+    };
+    video.addEventListener("seeked", onSeeked);
+    video.currentTime = targetSeconds;
+  });
+}
+
+/** Extract the exact video frame under the playhead into the same raster
+ * editor used for photos — a "same pattern" video editing entry: no new
+ * pixel algorithms, just a different frame source. */
+async function enterRasterModeFromVideoFrame(clipId: string): Promise<void> {
+  const loc = locateClip(clipId);
+  if (!loc) return;
+  const asset = findAsset(loc.clip.assetId);
+  if (!asset || asset.kind !== "video") {
+    toast("Only video clips can extract a frame here.", true);
+    return;
+  }
+  const media = mediaCache.get(asset.originalUri);
+  if (!media || !(media instanceof HTMLVideoElement)) {
+    toast("This video hasn't finished loading yet.", true);
+    return;
+  }
+  const seq = activeSequence();
+  const layer = seq
+    ? resolveAtTime(seq, playback.currentTimeUs).find((l) => l.clipId === clipId)
+    : undefined;
+  if (!layer) {
+    toast("Move the playhead onto this clip first.", true);
+    return;
+  }
+
+  await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
+  const width = media.videoWidth || asset.metadata.width || 1;
+  const height = media.videoHeight || asset.metadata.height || 1;
+  startRasterSession(clipId, RasterSession.fromSource(media, width, height));
 }
 
 function exitRasterMode(): void {

@@ -25,7 +25,15 @@ Fill/Remove Background), pure pixel algorithms + tested, with its own bounded
 local undo/redo outside the command engine. "Apply" is the only path back in,
 via a real `asset.register` command.
 
-**Remaining:** raster tools for Video mode, DOM drag/drop on the timeline, and
-a fuller styled component library — in the `apps/web` shell.
+**Video gets the same pattern, video-shaped:** `transform.crop` — a real,
+Zod-validated, undoable `Effect` (like `transform.rotate`/`transform.flip`)
+for non-destructive reframing, since a live video stream can't be
+destructively pixel-cropped the way a photo can. Plus **"Edit Current
+Frame"** — grabs the exact frame under the playhead (waits for the real
+`seeked` event, never a stale frame) and opens it in the *same* raster
+editor built for photos, full reuse, for touch-ups/rotoscoping/thumbnails.
+
+**Remaining:** DOM drag/drop on the timeline and a fuller styled component
+library — in the `apps/web` shell.
 
 See [[Phases/Roadmap]].
