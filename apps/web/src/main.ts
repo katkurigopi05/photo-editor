@@ -1256,11 +1256,51 @@ function setMode(next: "video" | "photo"): void {
 }
 
 // ==========================================================================
+// Theme (dark / light / system)
+// ==========================================================================
+type ThemePreference = "dark" | "light" | "system";
+const THEME_STORAGE_KEY = "director-theme";
+const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");
+
+function resolveTheme(pref: ThemePreference): "dark" | "light" {
+  return pref === "system" ? (systemThemeQuery.matches ? "light" : "dark") : pref;
+}
+
+function applyTheme(pref: ThemePreference): void {
+  const root = document.documentElement;
+  root.setAttribute("data-theme", resolveTheme(pref));
+  root.setAttribute("data-theme-pref", pref);
+  localStorage.setItem(THEME_STORAGE_KEY, pref);
+  for (const id of ["theme-dark", "theme-light", "theme-system"] as const) {
+    $(id).classList.toggle("active", id === `theme-${pref}`);
+  }
+}
+
+function currentThemePreference(): ThemePreference {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === "dark" || stored === "light" || stored === "system"
+    ? stored
+    : "system";
+}
+
+function initTheme(): void {
+  applyTheme(currentThemePreference());
+  // If the user is following the system theme, react to OS changes live.
+  systemThemeQuery.addEventListener("change", () => {
+    if (currentThemePreference() === "system") applyTheme("system");
+  });
+}
+
+// ==========================================================================
 // Events
 // ==========================================================================
 function bindEvents(): void {
   $("mode-video").addEventListener("click", () => setMode("video"));
   $("mode-photo").addEventListener("click", () => setMode("photo"));
+
+  $("theme-dark").addEventListener("click", () => applyTheme("dark"));
+  $("theme-light").addEventListener("click", () => applyTheme("light"));
+  $("theme-system").addEventListener("click", () => applyTheme("system"));
 
   $("btn-import").addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
@@ -1462,6 +1502,7 @@ function doExport(): void {
 // ==========================================================================
 seed();
 bindEvents();
+initTheme();
 setMode("photo");
 updateUI();
 requestAnimationFrame(animate);

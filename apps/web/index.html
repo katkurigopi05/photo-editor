@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Project Director — Editor</title>
     <link rel="stylesheet" href="/src/index.css" />
+    <script>
+      // Apply the persisted theme before first paint, to avoid a flash of the
+      // wrong theme. "system" resolves via prefers-color-scheme.
+      (function () {
+        var stored = localStorage.getItem("director-theme") || "system";
+        var resolved =
+          stored === "system"
+            ? window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark"
+            : stored;
+        document.documentElement.setAttribute("data-theme", resolved);
+        document.documentElement.setAttribute("data-theme-pref", stored);
+      })();
+    </script>
   </head>
   <body>
     <div id="app">
@@ -21,6 +36,17 @@
           <span id="version-badge" class="badge">v0</span>
         </div>
         <div class="top-right">
+          <div class="theme-switch" role="tablist" aria-label="Theme">
+            <button id="theme-light" class="theme-btn" title="Light theme">
+              ☀
+            </button>
+            <button id="theme-dark" class="theme-btn" title="Dark theme">
+              ●
+            </button>
+            <button id="theme-system" class="theme-btn" title="Match system">
+              ◐
+            </button>
+          </div>
           <button id="btn-undo" class="tool" title="Undo (Cmd/Ctrl+Z)">
             ↶ Undo
           </button>

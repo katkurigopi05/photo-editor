@@ -1,7 +1,10 @@
-/* Project Director — editor UI. Polished dark theme, explicit grid so every
-   panel is always visible. */
+/* Project Director — editor UI. Dark + light themes (plus "system"), explicit
+   grid so every panel is always visible. The active theme is applied by
+   index.html before first paint via [data-theme] on <html>, and toggled at
+   runtime by main.ts; :root supplies dark defaults as a safe fallback. */
 
-:root {
+:root,
+:root[data-theme="dark"] {
   --bg: #0e1015;
   --bg-2: #0a0c11;
   --panel: #161922;
@@ -15,12 +18,68 @@
   --accent: #7c5cff;
   --accent-2: #4ad2c9;
   --accent-grad: linear-gradient(135deg, #8f6bff, #5ad6cd);
+  --on-accent: #0c0e14;
   --danger: #ff5d6c;
   --warn: #ffb454;
+  --radial-glow: #1a1f2e;
+  --checker: #14161d;
+  --thumb: #fff;
   --radius: 10px;
   --radius-lg: 14px;
   --shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
   --shadow-soft: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+:root[data-theme="light"] {
+  --bg: #f3f4f8;
+  --bg-2: #e7e9f0;
+  --panel: #ffffff;
+  --panel-2: #f5f6fa;
+  --panel-3: #eceefb;
+  --line: #dadde8;
+  --line-soft: #e6e8f0;
+  --text: #1c1f2a;
+  --muted: #5b6376;
+  --faint: #8890a0;
+  --accent: #6a4bfa;
+  --accent-2: #12a89d;
+  --accent-grad: linear-gradient(135deg, #7c5cff, #29c2b6);
+  --on-accent: #ffffff;
+  --danger: #e0303f;
+  --warn: #c97400;
+  --radial-glow: #dfe3f5;
+  --checker: #e3e5ee;
+  --thumb: #fff;
+  --shadow: 0 8px 26px rgba(30, 34, 60, 0.12);
+  --shadow-soft: 0 2px 10px rgba(30, 34, 60, 0.08);
+}
+
+/* Respect the system preference only when no explicit choice was persisted
+   (index.html falls back to "system" -> resolved theme on first paint; this
+   covers the rare case where the attribute is absent, e.g. scripting disabled). */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: #f3f4f8;
+    --bg-2: #e7e9f0;
+    --panel: #ffffff;
+    --panel-2: #f5f6fa;
+    --panel-3: #eceefb;
+    --line: #dadde8;
+    --line-soft: #e6e8f0;
+    --text: #1c1f2a;
+    --muted: #5b6376;
+    --faint: #8890a0;
+    --accent: #6a4bfa;
+    --accent-2: #12a89d;
+    --accent-grad: linear-gradient(135deg, #7c5cff, #29c2b6);
+    --on-accent: #ffffff;
+    --danger: #e0303f;
+    --warn: #c97400;
+    --radial-glow: #dfe3f5;
+    --checker: #e3e5ee;
+    --shadow: 0 8px 26px rgba(30, 34, 60, 0.12);
+    --shadow-soft: 0 2px 10px rgba(30, 34, 60, 0.08);
+  }
 }
 
 * {
@@ -32,7 +91,7 @@ body {
   margin: 0;
   height: 100%;
   background:
-    radial-gradient(1200px 600px at 80% -10%, #1a1f2e 0%, transparent 60%),
+    radial-gradient(1200px 600px at 80% -10%, var(--radial-glow) 0%, transparent 60%),
     var(--bg);
   color: var(--text);
   font:
@@ -43,6 +102,9 @@ body {
     Roboto,
     sans-serif;
   overflow: hidden;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -135,7 +197,7 @@ body {
 }
 .mode-btn.active {
   background: var(--accent-grad);
-  color: #0c0e14;
+  color: var(--on-accent);
   box-shadow: 0 2px 10px rgba(124, 92, 255, 0.4);
 }
 .timecode {
@@ -153,6 +215,39 @@ body {
   color: var(--accent-2);
   font-size: 11px;
   font-weight: 700;
+}
+
+.theme-switch {
+  display: flex;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+  margin-right: 4px;
+}
+.theme-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 999px;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+.theme-btn:hover {
+  color: var(--text);
+}
+.theme-btn.active {
+  background: var(--accent-grad);
+  color: var(--on-accent);
+  box-shadow: 0 2px 8px rgba(124, 92, 255, 0.35);
 }
 
 .tool {
@@ -182,7 +277,7 @@ body {
 .tool.primary {
   background: var(--accent-grad);
   border-color: transparent;
-  color: #0c0e14;
+  color: var(--on-accent);
   font-weight: 700;
 }
 .tool.primary:hover {
@@ -381,10 +476,10 @@ body {
   flex: 1;
   min-height: 0;
   background:
-    linear-gradient(45deg, #14161d 25%, transparent 25%) -11px 0/22px 22px,
-    linear-gradient(-45deg, #14161d 25%, transparent 25%) -11px 0/22px 22px,
-    linear-gradient(45deg, transparent 75%, #14161d 75%) 0 0/22px 22px,
-    linear-gradient(-45deg, transparent 75%, #14161d 75%) 0 0/22px 22px,
+    linear-gradient(45deg, var(--checker) 25%, transparent 25%) -11px 0/22px 22px,
+    linear-gradient(-45deg, var(--checker) 25%, transparent 25%) -11px 0/22px 22px,
+    linear-gradient(45deg, transparent 75%, var(--checker) 75%) 0 0/22px 22px,
+    linear-gradient(-45deg, transparent 75%, var(--checker) 75%) 0 0/22px 22px,
     var(--bg-2);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -430,7 +525,7 @@ body {
   border-radius: 999px;
   background: var(--accent-grad);
   border-color: transparent;
-  color: #0c0e14;
+  color: var(--on-accent);
 }
 .tool.play:hover {
   filter: brightness(1.08);
@@ -451,7 +546,7 @@ input[type="range"]::-webkit-slider-thumb {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--thumb);
   border: 3px solid var(--accent);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   transition: transform 0.1s;
@@ -463,7 +558,7 @@ input[type="range"]::-moz-range-thumb {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--thumb);
   border: 3px solid var(--accent);
 }
 
