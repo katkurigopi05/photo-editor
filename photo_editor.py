@@ -110,6 +110,10 @@ class AppGUI:
         self._slider_button(color_frame, "Temperature", lambda v: Temperature(v), 30, "Temperature (-100 cool..100 warm)")
         self._slider_button(color_frame, "Tint", lambda v: Tint(v), 0, "Tint (-100 green..100 magenta)")
         self._op_button(color_frame, "Auto WB", AutoWhiteBalance)
+        # per-channel levels gamma (R/G/B) for color grading
+        self._slider_button(color_frame, "R γ", lambda v: Levels(0, 255, v, channel="r"), 1.2, "Red gamma (>0, 1.0 = none)")
+        self._slider_button(color_frame, "G γ", lambda v: Levels(0, 255, v, channel="g"), 1.2, "Green gamma (>0, 1.0 = none)")
+        self._slider_button(color_frame, "B γ", lambda v: Levels(0, 255, v, channel="b"), 1.2, "Blue gamma (>0, 1.0 = none)")
 
         # Toolbar for detail, effects and geometry
         fx_frame = self._toolbar_row("Detail/FX:")

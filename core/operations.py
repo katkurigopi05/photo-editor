@@ -21,6 +21,21 @@ def _apply_channel_luts(image, r_lut, g_lut, b_lut):
     return Image.merge("RGB", (r.point(r_lut), g.point(g_lut), b.point(b_lut)))
 
 
+# channel name -> band index; "rgb" means "all channels together"
+_CHANNEL_INDEX = {"rgb": None, "r": 0, "g": 1, "b": 2}
+
+
+def _apply_lut_to_channel(image, lut, channel):
+    """Apply a single 256-entry LUT to one RGB channel, or to all of them when
+    channel is 'rgb'."""
+    if channel == "rgb":
+        return image.point(lut * len(image.getbands()))
+    index = _CHANNEL_INDEX[channel]
+    bands = list(image.split())
+    bands[index] = bands[index].point(lut)
+    return Image.merge(image.mode, bands)
+
+
 def register(cls):
     """Class decorator adding an Operation to the registry.
 
@@ -204,21 +219,29 @@ class Shadows(Operation):
 @register
 class Levels(Operation):
     """Map input range [black, white] to full output range with a gamma
-    (midtone) correction, like the Levels dialog in Photoshop/GIMP/Pixlr."""
+    (midtone) correction, like the Levels dialog in Photoshop/GIMP/Pixlr.
+
+    `channel` selects which channel to affect: "rgb" (all, default), or one of
+    "r"/"g"/"b" for a per-channel adjustment."""
 
     label = "Levels"
 
-    def __init__(self, black: int = 0, white: int = 255, gamma: float = 1.0):
+    def __init__(self, black: int = 0, white: int = 255, gamma: float = 1.0,
+                 channel: str = "rgb"):
         if white <= black:
             raise ValueError("Levels: white point must be greater than black point")
         if gamma <= 0:
             raise ValueError("Levels: gamma must be positive")
+        if channel not in _CHANNEL_INDEX:
+            raise ValueError(f"Levels: channel must be one of {sorted(_CHANNEL_INDEX)}")
         self.black = black
         self.white = white
         self.gamma = gamma
+        self.channel = channel
 
     def params(self):
-        return {"black": self.black, "white": self.white, "gamma": self.gamma}
+        return {"black": self.black, "white": self.white, "gamma": self.gamma,
+                "channel": self.channel}
 
     def apply(self, image):
         span = self.white - self.black
@@ -228,24 +251,30 @@ class Levels(Operation):
             t = (v - self.black) / span
             t = 0.0 if t < 0 else 1.0 if t > 1 else t
             lut.append(_clamp(255 * (t ** inv_gamma)))
-        return image.point(lut * len(image.getbands()))
+        return _apply_lut_to_channel(image, lut, self.channel)
 
 
 @register
 class Curves(Operation):
     """Tone curve through control points [[x, y], ...] in 0..255, linearly
-    interpolated into a lookup table (the Curves tool)."""
+    interpolated into a lookup table (the Curves tool).
+
+    `channel` selects which channel to affect: "rgb" (all, default), or one of
+    "r"/"g"/"b" for a per-channel curve."""
 
     label = "Curves"
 
-    def __init__(self, points=None):
+    def __init__(self, points=None, channel: str = "rgb"):
         pts = sorted((int(x), int(y)) for x, y in (points or [[0, 0], [255, 255]]))
         if len(pts) < 2:
             raise ValueError("Curves: need at least two control points")
+        if channel not in _CHANNEL_INDEX:
+            raise ValueError(f"Curves: channel must be one of {sorted(_CHANNEL_INDEX)}")
         self.points = [list(p) for p in pts]
+        self.channel = channel
 
     def params(self):
-        return {"points": [list(p) for p in self.points]}
+        return {"points": [list(p) for p in self.points], "channel": self.channel}
 
     def _lut(self):
         pts = self.points
@@ -266,7 +295,7 @@ class Curves(Operation):
         return lut
 
     def apply(self, image):
-        return image.point(self._lut() * len(image.getbands()))
+        return _apply_lut_to_channel(image, self._lut(), self.channel)
 
 
 @register

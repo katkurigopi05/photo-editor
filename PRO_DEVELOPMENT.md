@@ -29,6 +29,7 @@ summary below.
 
 - Non-destructive editing: editable operation list, pointer-based undo/redo, JSON recipes (`core/document.py`)
 - 35 editing operations across light/tone, color, detail, effects, geometry (`core/operations.py`)
+- Per-channel (R/G/B) Curves and Levels for color grading (`Curves`/`Levels` `channel=` param)
 - Local/selective edits via `MaskedOperation`
 - Batch processing across a folder (`batch_export.py`)
 - Animated GIF editing and building from stills (`core/frames.py`, `core/builder.py`)
@@ -44,7 +45,6 @@ summary below.
 
 - Interactive Curves widget (drag control points on a live graph)
 - Brush-mask UI for selective/local edits (compositing path already exists)
-- Per-channel curves & levels (R/G/B)
 - AI generative fill & outpainting; AI upscaling
 - In-browser web editor
 - Video timeline & scrubbing in the GUI

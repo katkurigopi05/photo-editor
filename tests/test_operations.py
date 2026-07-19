@@ -112,6 +112,59 @@ def test_rotate_expands_and_is_reversible_size(img):
     assert Rotate(30).apply(rgb).size[0] > 64
 
 
+def test_levels_per_channel_only_touches_one_channel(img):
+    rgb = img.convert("RGB")
+    # a strong red-only levels change must leave G and B bytes untouched
+    out = Levels(30, 220, 1.4, channel="r").apply(rgb)
+    r0, g0, b0 = rgb.split()
+    r1, g1, b1 = out.split()
+    assert r1.tobytes() != r0.tobytes()
+    assert g1.tobytes() == g0.tobytes()
+    assert b1.tobytes() == b0.tobytes()
+
+
+def test_curves_per_channel_only_touches_one_channel(img):
+    rgb = img.convert("RGB")
+    out = Curves([[0, 0], [128, 200], [255, 255]], channel="b").apply(rgb)
+    r0, g0, b0 = rgb.split()
+    r1, g1, b1 = out.split()
+    assert b1.tobytes() != b0.tobytes()
+    assert r1.tobytes() == r0.tobytes()
+    assert g1.tobytes() == g0.tobytes()
+
+
+def test_channel_ops_round_trip_and_default_is_rgb(img):
+    # default channel is "rgb" and survives a dict round-trip
+    for op in [Levels(10, 240, 1.1), Curves([[0, 0], [255, 255]])]:
+        assert op.params()["channel"] == "rgb"
+        restored = operation_from_dict(op.to_dict())
+        assert restored.channel == "rgb"
+        assert restored.to_dict() == op.to_dict()
+    # per-channel round-trips too
+    op = Levels(0, 255, 1.0, channel="g")
+    assert operation_from_dict(op.to_dict()).channel == "g"
+
+
+def test_channel_validation():
+    with pytest.raises(ValueError):
+        Levels(0, 255, channel="cyan")
+    with pytest.raises(ValueError):
+        Curves(channel="alpha")
+
+
+def test_rgb_channel_matches_legacy_all_channels(img):
+    rgb = img.convert("RGB")
+    # channel="rgb" applies the same LUT to every band (legacy behavior)
+    out = Levels(20, 235, 1.3, channel="rgb").apply(rgb)
+    r, g, b = out.split()
+    # identical input bands (they differ here) aside, verify rgb path applied to all:
+    # a gray image would map every band identically
+    gray = Image.new("RGB", (16, 16), (128, 128, 128))
+    gout = Levels(20, 235, 1.3, channel="rgb").apply(gray)
+    gr, gg, gb = gout.split()
+    assert gr.tobytes() == gg.tobytes() == gb.tobytes()
+
+
 def test_full_edit_pipeline_round_trips(tmp_path, img):
     """Stack many of the new ops in a Document and confirm the saved recipe
     reproduces identical pixels."""
