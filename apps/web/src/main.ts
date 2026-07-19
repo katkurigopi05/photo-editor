@@ -259,8 +259,8 @@ const EFFECTS: EffectSpec[] = [
         kind: "color",
         def: "#00ff00",
       },
-      range("threshold", "Tolerance", 0, 1, 0.02, 0.28),
-      range("softness", "Softness", 0, 1, 0.02, 0.12),
+      range("threshold", "Tolerance", 0, 1, 0.02, 0.12),
+      range("softness", "Softness", 0, 1, 0.02, 0.1),
     ],
   },
 ];
@@ -340,8 +340,8 @@ const rasterOptions = {
   smartFillIterations: 150,
   bgAuto: true,
   bgKeyColor: "#00ff00",
-  bgThreshold: 0.28,
-  bgSoftness: 0.12,
+  bgThreshold: 0.12,
+  bgSoftness: 0.1,
 };
 
 // ==========================================================================
@@ -895,8 +895,8 @@ function removeBackground(
     ? cornerKey(d, mw, mh)
     : hexToRgb(getParamString(fx, "keyColorHex", "#00ff00"));
   const MAX = Math.sqrt(3) * 255;
-  const threshold = getParamNumber(fx, "threshold", 0.28) * MAX;
-  const softness = getParamNumber(fx, "softness", 0.12) * MAX;
+  const threshold = getParamNumber(fx, "threshold", 0.12) * MAX;
+  const softness = getParamNumber(fx, "softness", 0.1) * MAX;
 
   for (let i = 0; i < d.length; i += 4) {
     const dist = Math.hypot(
@@ -2353,7 +2353,9 @@ function renderRasterPanel(): void {
       const hint = document.createElement("p");
       hint.className = "raster-hint";
       hint.textContent =
-        "Color-key removal — pixels near the key color become transparent. Deterministic; no ML model.";
+        "Color-key removal — pixels near the key color become transparent. Deterministic; no ML model. " +
+        "Works best against a plain, mostly solid-colored background. Busy/textured backgrounds or " +
+        "subject colors close to the background will need a lower Tolerance and manual key color.";
       s.appendChild(hint);
       const autoRow = document.createElement("label");
       autoRow.className = "control";
