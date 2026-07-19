@@ -16,6 +16,7 @@ export default defineConfig({
       "@director/ui-kit": pkg("packages/ui-kit/src/index.ts"),
       "@director/export-engine": pkg("packages/export-engine/src/index.ts"),
       "@director/raster-tools": pkg("packages/raster-tools/src/index.ts"),
+      "@director/bg-segmentation": pkg("packages/bg-segmentation/src/index.ts"),
     },
   },
   test: {

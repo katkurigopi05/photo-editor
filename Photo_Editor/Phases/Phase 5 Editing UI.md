@@ -25,6 +25,13 @@ Fill/Remove Background), pure pixel algorithms + tested, with its own bounded
 local undo/redo outside the command engine. "Apply" is the only path back in,
 via a real `asset.register` command.
 
+**Real AI, not fake:** [[Packages/bg-segmentation]] adds a second "AI Remove
+Background" tool alongside the classical one — genuine U²-Net segmentation
+(the same model a reference app's `rembg`-based tool uses), running fully
+client-side via `onnxruntime-web`. No server, no bundled-AI hand-waving: real
+checksummed weights, verified live in a browser on an adversarial photo the
+classical tool couldn't handle.
+
 **Video gets the same pattern, video-shaped:** `transform.crop` — a real,
 Zod-validated, undoable `Effect` (like `transform.rotate`/`transform.flip`)
 for non-destructive reframing, since a live video stream can't be

@@ -19,12 +19,14 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@director/bg-segmentation": "workspace:*",
     "@director/editor-state": "workspace:*",
     "@director/export-engine": "workspace:*",
     "@director/playback-controller": "workspace:*",
     "@director/project-schema": "workspace:*",
     "@director/raster-tools": "workspace:*",
-    "@director/ui-kit": "workspace:*"
+    "@director/ui-kit": "workspace:*",
+    "onnxruntime-web": "^1.20.1"
   },
   "devDependencies": {
     "vite": "^5.4.21"

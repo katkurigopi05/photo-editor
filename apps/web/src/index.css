@@ -888,6 +888,15 @@ input[type="range"]::-moz-range-thumb {
   color: var(--danger);
   border-color: var(--danger);
 }
+.mini.active {
+  color: var(--on-accent);
+  background: var(--accent-grad);
+  border-color: transparent;
+}
+.mini.active:hover {
+  color: var(--on-accent);
+  border-color: transparent;
+}
 select {
   width: 100%;
   padding: 8px;

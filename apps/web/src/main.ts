@@ -64,6 +64,17 @@ import {
   type Point,
   type RasterImage,
 } from "@director/raster-tools";
+import {
+  segmentForeground,
+  configureOnnxRuntime,
+  U2NETP_MODEL,
+  U2NET_MODEL,
+  type SegmentationModel,
+} from "@director/bg-segmentation";
+// Explicit, bundler-resolved asset URLs (Vite's `?url` suffix) — see
+// configureOnnxRuntime's doc comment for why this can't be a runtime path.
+import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
+import ortMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 import type {
   EffectInstance,
   EffectType,
@@ -306,7 +317,8 @@ type RasterTool =
   | "wand"
   | "sharpen"
   | "smartfill"
-  | "bgremove";
+  | "bgremove"
+  | "aibgremove";
 let rasterSession: RasterSession | null = null;
 let rasterEditingClipId: string | null = null;
 let rasterTool: RasterTool = "brush";
@@ -342,7 +354,10 @@ const rasterOptions = {
   bgKeyColor: "#00ff00",
   bgThreshold: 0.12,
   bgSoftness: 0.1,
+  aiModel: "fast" as "fast" | "accurate",
 };
+
+let aiSegmentationBusy = false;
 
 // ==========================================================================
 // DOM references
@@ -1636,6 +1651,7 @@ const RASTER_TOOLS: Array<{ id: RasterTool; icon: string; label: string }> = [
   { id: "sharpen", icon: "◆", label: "Sharpen" },
   { id: "smartfill", icon: "🩹", label: "Smart Fill" },
   { id: "bgremove", icon: "🪄", label: "Remove Background" },
+  { id: "aibgremove", icon: "🧠", label: "AI Remove Background" },
 ];
 
 function hexToRgbColor(hex: string): { r: number; g: number; b: number } {
@@ -2408,8 +2424,88 @@ function renderRasterPanel(): void {
       body.appendChild(s);
       break;
     }
+    case "aibgremove": {
+      const s = section("AI Remove Background");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent =
+        "Real foreground segmentation (U²-Net, ONNX Runtime Web) running locally in your browser — " +
+        "no server, no account, no per-image network call. Understands the subject semantically, so it " +
+        "handles busy or textured backgrounds the color-key tool can't.";
+      s.appendChild(hint);
+
+      const modelRow = document.createElement("div");
+      modelRow.className = "raster-toolbar";
+      const modelChoices: Array<["fast" | "accurate", string]> = [
+        ["fast", "Fast (4.4 MB, bundled)"],
+        ["accurate", "Accurate (168 MB, downloads once)"],
+      ];
+      for (const [value, label] of modelChoices) {
+        const btn = document.createElement("button");
+        btn.className = `mini${rasterOptions.aiModel === value ? " active" : ""}`;
+        btn.textContent = label;
+        btn.disabled = aiSegmentationBusy;
+        btn.addEventListener("click", () => {
+          rasterOptions.aiModel = value;
+          renderRasterPanel();
+        });
+        modelRow.appendChild(btn);
+      }
+      s.appendChild(modelRow);
+
+      if (aiSegmentationBusy) {
+        const status = document.createElement("p");
+        status.className = "raster-hint";
+        status.textContent =
+          "Segmenting… first run on Accurate downloads the model (~168 MB, cached after that).";
+        s.appendChild(status);
+      }
+
+      const segmentBtn = document.createElement("button");
+      segmentBtn.className = "tool primary";
+      segmentBtn.textContent = aiSegmentationBusy ? "Segmenting…" : "Segment Subject";
+      segmentBtn.disabled = aiSegmentationBusy;
+      segmentBtn.addEventListener("click", () => void runAiSegmentation());
+      s.appendChild(segmentBtn);
+
+      if (rasterSelection) {
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "tool primary";
+        removeBtn.style.marginTop = "8px";
+        removeBtn.textContent = "Remove Background (keep subject)";
+        removeBtn.addEventListener("click", () => {
+          if (!rasterSession || !rasterSelection) return;
+          rasterSession.snapshot();
+          applyMaskDelete(rasterSession.image, invertMask(rasterSelection));
+          redrawRasterCanvas();
+          renderRasterPanel();
+        });
+        s.appendChild(removeBtn);
+      }
+      body.appendChild(s);
+      if (rasterSelection) rasterSelectionActions(body);
+      break;
+    }
     default:
       break;
+  }
+}
+
+async function runAiSegmentation(): Promise<void> {
+  if (!rasterSession || aiSegmentationBusy) return;
+  aiSegmentationBusy = true;
+  renderRasterPanel();
+  try {
+    const model: SegmentationModel =
+      rasterOptions.aiModel === "accurate" ? U2NET_MODEL : U2NETP_MODEL;
+    const mask = await segmentForeground(rasterSession.image, model);
+    setRasterSelection(mask);
+    toast('Subject segmented. Click "Remove Background" or use the selection actions below.');
+  } catch (err) {
+    toast(err instanceof Error ? err.message : "AI segmentation failed.", true);
+  } finally {
+    aiSegmentationBusy = false;
+    renderRasterPanel();
   }
 }
 
@@ -2665,6 +2761,7 @@ function doExport(): void {
 // ==========================================================================
 // Bootstrap
 // ==========================================================================
+configureOnnxRuntime({ wasm: ortWasmUrl, mjs: ortMjsUrl });
 seed();
 bindEvents();
 initTheme();
