@@ -1,2 +1,10 @@
 __pycache__/
 *.pyc
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# pytest
+.pytest_cache/

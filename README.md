@@ -51,9 +51,18 @@ any image, folder, GIF, or video.
 
 ## Tests
 
+Run the suite in an isolated virtual environment so the project's dependencies
+don't touch your system Python:
+
 ```bash
-pip install -r requirements-dev.txt
-pytest
+python -m venv .venv           # create the environment
+source .venv/bin/activate       # activate it (Windows: .venv\Scripts\activate)
+pip install -r requirements-dev.txt   # install core + optional (OpenCV, MoviePy) + pytest
+pytest                          # run the ~100 headless tests
+deactivate                      # leave the environment when done
 ```
 
-The suite is headless (no display needed); GUI-only behavior isn't exercised.
+`.venv/` is git-ignored. The suite is headless (no display needed), so the
+Tkinter GUI itself isn't exercised — its logic lives in `core/media.py`, which
+is tested. Tests for optional modules (`cv_tools`, `video_tools`) skip
+automatically if their dependencies aren't installed.
