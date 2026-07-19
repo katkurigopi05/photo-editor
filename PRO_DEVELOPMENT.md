@@ -225,6 +225,30 @@ that reuses the existing recipe rather than a rewrite. MoviePy was chosen over
 PyAV for Phase B because its high-level `image_transform` + audio handling fit
 the "apply a recipe per frame" use case with the least code.
 
+## 6d. One Unified Application
+
+Every capability is reachable from a single entry point, `app.py`, so the
+project reads as one application rather than a pile of scripts:
+
+```
+python app.py gui | image | batch | gif | video | build | list-ops
+```
+
+- The **GUI** (`photo_editor.py`) detects the media type on open (image / GIF /
+  video), lets you edit the first frame as a live preview, and on **Export**
+  re-applies the operation recipe to the whole media via `core/media.py`
+  (`detect_media_type` / `first_frame` / `export_media`). It also has a "Build
+  from Images" action (stills → GIF).
+- The **CLI** (`app.py`) exposes the same operations for one image, a folder,
+  a GIF, a video, or building an animation from stills, plus `list-ops` (which
+  reports all 35 operations, optional ones included).
+
+The unifying idea throughout: a single serializable **recipe** (list of
+`Operation`s) is authored once and replayed on any medium — one still, a batch,
+GIF frames, or video frames. `core/media.py` is the thin dispatch layer that
+routes a recipe to the right renderer per media type, and it is headless-testable
+(the GUI is a thin shell over it).
+
 ## 7. Sources
 
 - [The best photo editing software in 2026 — Digital Camera World](https://www.digitalcameraworld.com/buying-guides/the-best-photo-editing-software)

@@ -32,13 +32,26 @@ from core import (
     load_plugins,
     registered_operations,
 )
+from core.media import detect_media_type, export_media, first_frame
+from core.builder import build_gif
+from core.document import operations_from_recipe
 from ai_tools import AutoCrop, RemoveBackground
 from cv_tools import BilateralFilter, CLAHE, Denoise, UnsharpMask
 
 OPEN_FILETYPES = [
+    ("All media", "*.jpg *.jpeg *.png *.bmp *.webp *.gif *.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
     ("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp"),
+    ("Animated GIF", "*.gif"),
+    ("Video Files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
     ("RAW Files", "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2"),
 ]
+
+# what export_media writes for each media type, and the save dialog defaults
+EXPORT_DEFAULTS = {
+    "image": (".png", [("PNG files", "*.png"), ("JPEG files", "*.jpg")]),
+    "gif": (".gif", [("Animated GIF", "*.gif")]),
+    "video": (".mp4", [("MP4 video", "*.mp4")]),
+}
 
 # =============================
 # --- GUI Implementation using Tkinter ---
@@ -50,12 +63,14 @@ class AppGUI:
         master.title("Advanced Photo Editor")
 
         self.document = None
+        self.media_type = None
+        self.source_path = None
         self._buttons = []
 
         self.main_frame = tk.Frame(master, padx=10, pady=10)
         self.main_frame.pack(fill="both", expand=True)
 
-        self.image_label = tk.Label(self.main_frame, bg="grey", text="Open an image to start editing", width=100, height=30)
+        self.image_label = tk.Label(self.main_frame, bg="grey", text="Open an image, GIF or video to start editing", width=100, height=30)
         self.image_label.pack(pady=10, padx=10, fill="both", expand=True)
 
         self.status_var = tk.StringVar(value="Ready")
@@ -63,8 +78,9 @@ class AppGUI:
 
         # Toolbar for file operations
         file_frame = self._toolbar_row()
-        self._button(file_frame, "📂 Open Image", self.select_file)
-        self._button(file_frame, "💾 Save Image", self.save_action)
+        self._button(file_frame, "📂 Open", self.select_file)
+        self._button(file_frame, "🎞 Build from Images", self.build_action)
+        self._button(file_frame, "💾 Export", self.save_action)
         self._button(file_frame, "📋 Save Recipe", self.save_recipe_action)
         self._button(file_frame, "📥 Load Recipe", self.load_recipe_action)
         self._button(file_frame, "↩ Undo", self.undo_action)
@@ -227,28 +243,79 @@ class AppGUI:
     # --- actions -----------------------------------------------------------
 
     def select_file(self):
-        path = filedialog.askopenfilename(title="Select an Image File", filetypes=OPEN_FILETYPES)
-        if path:
-            try:
-                self.document = Document.open(path)
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not load image: {e}")
-                return
-            self.display_image()
+        path = filedialog.askopenfilename(title="Open image, GIF or video", filetypes=OPEN_FILETYPES)
+        if not path:
+            return
+        try:
+            media_type = detect_media_type(path)
+            base = first_frame(path, media_type)  # first frame is the edit preview
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open file: {e}")
+            return
+        self.source_path = path
+        self.media_type = media_type
+        # edit the preview frame; export re-applies the recipe to the whole media
+        self.document = Document(base, source_path=path)
+        self._update_media_status()
+        self.display_image()
+
+    def _update_media_status(self, extra=""):
+        label = {"image": "Image", "gif": "Animated GIF", "video": "Video"}.get(self.media_type, "")
+        note = " — editing first frame; export applies to all frames" if self.media_type in ("gif", "video") else ""
+        self.status_var.set(f"{label}{note}{extra}" if label else "Ready")
 
     def save_action(self):
         if not self.document:
             return
+        media_type = self.media_type or "image"
+        default_ext, filetypes = EXPORT_DEFAULTS[media_type]
         path = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            title="Save Edited Image As",
-            filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg")]
+            defaultextension=default_ext,
+            title=f"Export {media_type}",
+            filetypes=filetypes,
         )
-        if path:
+        if not path:
+            return
+        # export re-applies the current operation recipe to the full media
+        operations = list(self.document.operations)
+        self._set_busy(True, f"Exporting {media_type}…")
+
+        def work():
             try:
-                self.document.export(path)
+                export_media(media_type, self.source_path, operations, path)
+                error = None
             except Exception as e:
-                messagebox.showerror("Save Error", f"Failed to save image: {e}")
+                error = e
+            self.master.after(0, lambda: self._export_done(error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _export_done(self, error):
+        self._set_busy(False)
+        self._update_media_status()
+        if error:
+            messagebox.showerror("Export Error", f"Failed to export: {error}")
+
+    def build_action(self):
+        """Build an animated GIF from a set of still images (stills -> animation)."""
+        paths = filedialog.askopenfilenames(
+            title="Select images to build into a GIF (in order)",
+            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp *.webp")],
+        )
+        if not paths:
+            return
+        out = filedialog.asksaveasfilename(
+            defaultextension=".gif", title="Save built GIF as",
+            filetypes=[("Animated GIF", "*.gif")],
+        )
+        if not out:
+            return
+        try:
+            count = build_gif(list(paths), out)
+        except Exception as e:
+            messagebox.showerror("Build Error", f"Failed to build GIF: {e}")
+            return
+        messagebox.showinfo("Build", f"Built {out} from {count} image(s).")
 
     def save_recipe_action(self):
         if not self.document:
@@ -265,14 +332,21 @@ class AppGUI:
                 messagebox.showerror("Save Error", f"Failed to save recipe: {e}")
 
     def load_recipe_action(self):
+        if not self.document:
+            messagebox.showinfo("Load Recipe", "Open an image, GIF or video first.")
+            return
         path = filedialog.askopenfilename(title="Load Edit Recipe", filetypes=[("Recipe files", "*.json")])
-        if path:
-            try:
-                self.document = Document.load_recipe(path)
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not load recipe: {e}")
-                return
-            self._render_async()
+        if not path:
+            return
+        try:
+            operations = operations_from_recipe(path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load recipe: {e}")
+            return
+        # apply the recipe's operations onto the currently-open media
+        for operation in operations:
+            self.document.add_operation(operation)
+        self._render_async()
 
     def undo_action(self):
         if self.document and self.document.undo():
