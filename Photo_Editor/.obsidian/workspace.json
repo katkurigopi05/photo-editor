@@ -198,6 +198,9 @@
   },
   "active": "10dd8e8235d4557b",
   "lastOpenFiles": [
+    "Phases/Phase 6 Export.md",
+    "Crates/export-engine.md",
+    "Packages/export-engine.md",
     "Phases/Phase 5 Editing UI.md",
     "Packages/ui-kit.md",
     "Phases/Phase 4 Audio.md",
@@ -226,9 +229,6 @@
     "Packages/command-schema.md",
     "Packages/canonical-json.md",
     "Packages",
-    "Data Model/Track.md",
-    "Data Model/TimelineClip.md",
-    "Data Model/Sequence.md",
     "Data Model",
     "Concepts"
   ]

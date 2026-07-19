@@ -28,6 +28,7 @@ codebase in this workspace.
 - [[Packages/editor-state|@director/editor-state]]
 - [[Packages/playback-controller|@director/playback-controller]]
 - [[Packages/ui-kit|@director/ui-kit]]
+- [[Packages/export-engine|@director/export-engine]]
 
 ## Crates (Rust)
 
@@ -35,6 +36,7 @@ codebase in this workspace.
 - [[Crates/timeline-engine|timeline-engine]]
 - [[Crates/project-store|project-store]]
 - [[Crates/audio-engine|audio-engine]]
+- [[Crates/export-engine|export-engine]]
 
 ## Phases
 
@@ -44,6 +46,7 @@ codebase in this workspace.
 - [[Phases/Phase 3 Playback|Phase 3 — Playback]] 🟡 transport core built
 - [[Phases/Phase 4 Audio|Phase 4 — Audio]] 🟡 DSP core + state built
 - [[Phases/Phase 5 Editing UI|Phase 5 — Editing UI]] 🟡 command boundary + session built
+- [[Phases/Phase 6 Export|Phase 6 — Export]] 🟡 presets + plan + job built
 
 ## Decisions
 
@@ -52,5 +55,5 @@ codebase in this workspace.
 
 ## Status
 
-- TypeScript: format ✅ lint ✅ typecheck ✅ 165 tests ✅ build ✅
-- Rust: fmt ✅ clippy ✅ 22 tests ✅
+- TypeScript: format ✅ lint ✅ typecheck ✅ 177 tests ✅ build ✅
+- Rust: fmt ✅ clippy ✅ 26 tests ✅

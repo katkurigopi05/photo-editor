@@ -5,6 +5,7 @@ members = [
     "crates/timeline-engine",
     "crates/project-store",
     "crates/audio-engine",
+    "crates/export-engine",
 ]
 
 [workspace.package]

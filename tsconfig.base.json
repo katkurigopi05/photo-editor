@@ -27,7 +27,8 @@
       "@director/playback-controller": [
         "packages/playback-controller/src/index.ts"
       ],
-      "@director/ui-kit": ["packages/ui-kit/src/index.ts"]
+      "@director/ui-kit": ["packages/ui-kit/src/index.ts"],
+      "@director/export-engine": ["packages/export-engine/src/index.ts"]
     }
   }
 }
