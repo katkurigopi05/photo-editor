@@ -26,6 +26,7 @@
     "@director/project-schema": "workspace:*",
     "@director/raster-tools": "workspace:*",
     "@director/ui-kit": "workspace:*",
+    "mp4-muxer": "^5.2.2",
     "onnxruntime-web": "^1.20.1"
   },
   "devDependencies": {

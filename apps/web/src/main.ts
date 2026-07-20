@@ -29,7 +29,18 @@ import {
   frameToStartTimeUs,
   type PlaybackState,
 } from "@director/playback-controller";
-import { planExport } from "@director/export-engine";
+import {
+  planExport,
+  planVideoFrames,
+  startExport,
+  advanceExport,
+  failExport,
+  cancelExport,
+  type ExportJob,
+  type ExportPreset,
+  type ExportPlan,
+} from "@director/export-engine";
+import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import {
   PRESETS,
   PRESET_LABELS,
@@ -2885,31 +2896,267 @@ function exportPhotoImage(): void {
   }, "image/png");
 }
 
-function doExport(): void {
-  if (mode === "photo") {
-    exportPhotoImage();
+let videoExportAbort: { cancelled: boolean } | null = null;
+
+/** Renders the deterministic audio mixdown for every audio clip in the plan
+ * (respecting each clip's trim, gain, and pan) via `OfflineAudioContext`,
+ * encodes it with WebCodecs `AudioEncoder` (Opus), and feeds the resulting
+ * chunks into `muxer`. No-ops if the plan has no audio clips. */
+async function renderAndEncodeAudio(
+  plan: ExportPlan,
+  preset: ExportPreset,
+  muxer: Muxer<ArrayBufferTarget>,
+): Promise<void> {
+  if (plan.audioClips.length === 0) return;
+
+  const channels = 2;
+  const durationSec = Number(plan.durationUs) / 1_000_000;
+  const offline = new OfflineAudioContext(
+    channels,
+    Math.max(1, Math.ceil(durationSec * preset.audioSampleRate)),
+    preset.audioSampleRate,
+  );
+
+  const decodedByAsset = new Map<string, AudioBuffer>();
+  for (const clip of plan.audioClips) {
+    if (decodedByAsset.has(clip.assetId)) continue;
+    const asset = findAsset(clip.assetId);
+    if (!asset) continue;
+    const bytes = await (await fetch(asset.originalUri)).arrayBuffer();
+    try {
+      decodedByAsset.set(clip.assetId, await offline.decodeAudioData(bytes));
+    } catch {
+      // Source has no decodable audio track (e.g. a silent test clip) — skip it.
+    }
+  }
+
+  for (const clip of plan.audioClips) {
+    const buffer = decodedByAsset.get(clip.assetId);
+    if (!buffer) continue;
+    const source = offline.createBufferSource();
+    source.buffer = buffer;
+    const gain = offline.createGain();
+    gain.gain.value = 10 ** (clip.gainDb / 20);
+    const panner = offline.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, clip.pan));
+    source.connect(gain).connect(panner).connect(offline.destination);
+
+    const startSec = Number(clip.timelineStartUs) / 1_000_000;
+    const offsetSec = Number(clip.sourceInUs) / 1_000_000;
+    const clipDurationSec =
+      (Number(clip.sourceOutUs) - Number(clip.sourceInUs)) / 1_000_000;
+    if (clipDurationSec <= 0) continue;
+    source.start(startSec, offsetSec, clipDurationSec);
+  }
+
+  const rendered = await offline.startRendering();
+
+  let audioEncodeError: Error | null = null;
+  const audioEncoder = new AudioEncoder({
+    output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+    error: (err) => {
+      audioEncodeError = err instanceof Error ? err : new Error(String(err));
+    },
+  });
+  audioEncoder.configure({
+    codec: "opus",
+    sampleRate: preset.audioSampleRate,
+    numberOfChannels: channels,
+    bitrate: 128_000,
+  });
+
+  const FRAME_SIZE = 4800; // 100ms at 48kHz — arbitrary, just a chunking size
+  const channelData = [rendered.getChannelData(0), rendered.getChannelData(1)];
+  for (let offset = 0; offset < rendered.length; offset += FRAME_SIZE) {
+    const count = Math.min(FRAME_SIZE, rendered.length - offset);
+    const planar = new Float32Array(count * channels);
+    planar.set(channelData[0]!.subarray(offset, offset + count), 0);
+    planar.set(channelData[1]!.subarray(offset, offset + count), count);
+    const audioData = new AudioData({
+      format: "f32-planar",
+      sampleRate: preset.audioSampleRate,
+      numberOfFrames: count,
+      numberOfChannels: channels,
+      timestamp: Math.round((offset / preset.audioSampleRate) * 1_000_000),
+      data: planar,
+    });
+    audioEncoder.encode(audioData);
+    audioData.close();
+    if (audioEncodeError) throw audioEncodeError;
+  }
+  await audioEncoder.flush();
+  if (audioEncodeError) throw audioEncodeError;
+  audioEncoder.close();
+}
+
+/** Real, working video export: renders every planned frame (effects baked
+ * in, via the same drawLayer() used for live preview) to an offscreen
+ * canvas, encodes with the browser-native WebCodecs API, and muxes video and
+ * (when present) a real audio mixdown into a downloadable MP4. */
+async function exportVideo(): Promise<void> {
+  if (videoExportAbort) {
+    videoExportAbort.cancelled = true;
     return;
   }
   const project = session.getProject();
   if (!project) return;
-  const result = planExport(project, SEQUENCE_ID, {
+
+  const preset: ExportPreset = {
     width: 1920,
     height: 1080,
     frameRate: FRAME_RATE,
     videoCodec: "h264",
     container: "mp4",
     videoBitrateKbps: 8000,
-    audioCodec: "aac",
+    // Opus, not AAC: it's what we actually encode with below (royalty-free,
+    // reliably software-encoded in every Chromium build; AAC support in
+    // WebCodecs is inconsistent/hardware-dependent).
+    audioCodec: "opus",
     audioSampleRate: 48000,
-  });
+  };
+  const result = planExport(project, SEQUENCE_ID, preset);
   if (!result.ok) {
     toast(`Export: ${result.error.message}`, true);
     return;
   }
-  const { framesTotal, durationUs, audioSampleCount } = result.plan;
-  toast(
-    `Export plan: ${framesTotal} frames, ${formatTime(durationUs)}, ${audioSampleCount} audio samples (H.264/MP4). Real video export not built yet.`,
-  );
+  const { plan } = result;
+  const fps = preset.frameRate.numerator / preset.frameRate.denominator;
+
+  const abort = { cancelled: false };
+  videoExportAbort = abort;
+  let job: ExportJob = startExport(plan);
+  const exportBtn = $<HTMLButtonElement>("btn-export");
+  const originalLabel = exportBtn.textContent;
+  exportBtn.textContent = "⏹ Cancel Export";
+
+  try {
+    // A VideoEncoder's `error` callback fires from the codec's own internal
+    // task, not from any code we called — throwing there does NOT propagate
+    // to this function's try/catch. Record it and check explicitly instead.
+    let encodeError: Error | null = null;
+
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target,
+      video: { codec: "avc", width: preset.width, height: preset.height, frameRate: fps },
+      ...(plan.audioClips.length > 0
+        ? {
+            audio: {
+              codec: "opus" as const,
+              numberOfChannels: 2,
+              sampleRate: preset.audioSampleRate,
+            },
+          }
+        : {}),
+      fastStart: "in-memory",
+    });
+    const videoEncoder = new VideoEncoder({
+      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      error: (err) => {
+        encodeError = err instanceof Error ? err : new Error(String(err));
+      },
+    });
+    videoEncoder.configure({
+      // Baseline profile, level 4.0 (0x28) — level 3.1 (0x1f) caps the coded
+      // area at 921,600px, too small for 1920x1080 (2,073,600px).
+      codec: "avc1.420028",
+      width: preset.width,
+      height: preset.height,
+      bitrate: preset.videoBitrateKbps * 1000,
+      framerate: fps,
+    });
+
+    const offCanvas = document.createElement("canvas");
+    offCanvas.width = preset.width;
+    offCanvas.height = preset.height;
+    const offCtx = offCanvas.getContext("2d")!;
+
+    const BATCH = 30;
+    outer: for (let start = 0; start < plan.framesTotal; start += BATCH) {
+      const count = Math.min(BATCH, plan.framesTotal - start);
+      const requests = planVideoFrames(project, SEQUENCE_ID, preset, start, count);
+      for (const req of requests) {
+        if (abort.cancelled) break outer;
+        offCtx.clearRect(0, 0, offCanvas.width, offCanvas.height);
+        const visual = req.layers.filter((l) => {
+          const a = findAsset(l.assetId);
+          return a && a.kind !== "audio";
+        });
+        for (const layer of [...visual].reverse()) {
+          const loc = locateClip(layer.clipId);
+          if (!loc) continue;
+          const asset = findAsset(loc.clip.assetId);
+          const media = asset ? mediaCache.get(asset.originalUri) : undefined;
+          if (media instanceof HTMLVideoElement) {
+            await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
+          }
+          drawLayer(offCtx, loc.clip, layer.sourceTimeUs, offCanvas.width, offCanvas.height);
+        }
+
+        const ptsUs = Number(req.timelineTimeUs);
+        const nextPtsUs = Number(frameToStartTimeUs(req.frameIndex + 1, preset.frameRate));
+        const frame = new VideoFrame(offCanvas, {
+          timestamp: ptsUs,
+          duration: nextPtsUs - ptsUs,
+        });
+        videoEncoder.encode(frame, { keyFrame: req.frameIndex % 60 === 0 });
+        frame.close();
+        if (encodeError) throw encodeError;
+
+        job = advanceExport(job, req.frameIndex + 1);
+        if (req.frameIndex % 10 === 0 || req.frameIndex === plan.framesTotal - 1) {
+          toast(`Exporting… ${job.framesDone}/${job.framesTotal} frames`);
+        }
+      }
+      // Yield to the event loop between batches so the UI (and a Cancel
+      // click) stays responsive during a long export.
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    if (encodeError) throw encodeError;
+
+    if (abort.cancelled) {
+      job = cancelExport(job);
+      videoEncoder.close();
+      toast("Export cancelled.");
+      return;
+    }
+
+    await videoEncoder.flush();
+    videoEncoder.close();
+
+    if (plan.audioClips.length > 0) {
+      toast(`Exporting… mixing down ${plan.audioClips.length} audio clip(s)`);
+      await renderAndEncodeAudio(plan, preset, muxer);
+    }
+    muxer.finalize();
+
+    const blob = new Blob([target.buffer], { type: "video/mp4" });
+    downloadBlob(blob, "export.mp4");
+    const audioNote =
+      plan.audioClips.length > 0
+        ? `${plan.audioClips.length} audio clip(s) mixed in`
+        : "silent, no audio clips";
+    toast(
+      `Exported ${plan.framesTotal} frames, ${formatTime(plan.durationUs)} (H.264/Opus/MP4, ${audioNote}).`,
+    );
+  } catch (err) {
+    job = failExport(job, {
+      code: "ENCODE_FAILED",
+      message: err instanceof Error ? err.message : String(err),
+    });
+    toast(err instanceof Error ? err.message : "Export failed.", true);
+  } finally {
+    videoExportAbort = null;
+    exportBtn.textContent = originalLabel;
+  }
+}
+
+function doExport(): void {
+  if (mode === "photo") {
+    exportPhotoImage();
+    return;
+  }
+  void exportVideo();
 }
 
 // ==========================================================================
