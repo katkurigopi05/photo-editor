@@ -19,3 +19,6 @@ env/
 
 # local reference material, not part of the project
 example_photos/
+
+# generated knowledge-graph output (graphify), regenerate with /graphify
+graphify-out/

@@ -9,3 +9,4 @@ photo_editor.py
 # Python track (separate toolchain; not formatted by Prettier)
 web/
 .claude/
+graphify-out/

@@ -675,11 +675,42 @@ function drawPreview(): void {
   // Paint highest track index last (on top): resolve order is track order.
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
-    if (loc) drawLayer(loc.clip, layer.sourceTimeUs, cw, ch);
+    if (loc) drawLayer(cctx, loc.clip, layer.sourceTimeUs, cw, ch);
   }
 }
 
+/** Crop/reframe is a non-destructive effect: it narrows the source rect
+ * sampled from the media rather than touching the media itself. Shared by
+ * live preview and export so both agree on the exact same rect. */
+function resolveCropRect(
+  clip: TimelineClip,
+  mw: number,
+  mh: number,
+): { sx: number; sy: number; sw: number; sh: number } {
+  const cropFx = clip.effects.find(
+    (e) => e.enabled && e.type === "transform.crop",
+  );
+  if (!cropFx) return { sx: 0, sy: 0, sw: mw, sh: mh };
+  const p = cropFx.params as {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  return {
+    sx: p.x * mw,
+    sy: p.y * mh,
+    sw: Math.max(1, p.width * mw),
+    sh: Math.max(1, p.height * mh),
+  };
+}
+
+/** Renders one composited clip layer — including all baked-in effects — onto
+ * `ctx`. Used for both the live preview canvas and offscreen export
+ * rendering, so effects are guaranteed identical between what you see and
+ * what you export. */
 function drawLayer(
+  ctx: CanvasRenderingContext2D,
   clip: TimelineClip,
   sourceTimeUs: string,
   cw: number,
@@ -705,27 +736,7 @@ function drawLayer(
     }
   }
 
-  // Crop/reframe is a non-destructive effect: it narrows the source rect we
-  // sample from, rather than touching the media itself.
-  const cropFx = clip.effects.find(
-    (e) => e.enabled && e.type === "transform.crop",
-  );
-  let sx = 0;
-  let sy = 0;
-  let sw = mw;
-  let sh = mh;
-  if (cropFx) {
-    const p = cropFx.params as {
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-    };
-    sx = p.x * mw;
-    sy = p.y * mh;
-    sw = Math.max(1, p.width * mw);
-    sh = Math.max(1, p.height * mh);
-  }
+  const { sx, sy, sw, sh } = resolveCropRect(clip, mw, mh);
 
   const scale = Math.min(cw / sw, ch / sh);
   const dw = sw * scale;
@@ -744,18 +755,18 @@ function drawLayer(
     ? removeBackground(media, mw, mh, bgFx)
     : media;
 
-  cctx.save();
-  cctx.globalAlpha = alpha;
-  cctx.filter = filter || "none";
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.filter = filter || "none";
   const ccx = dx + dw / 2;
   const ccy = dy + dh / 2;
-  cctx.translate(ccx, ccy);
-  if (rotateDeg) cctx.rotate((rotateDeg * Math.PI) / 180);
-  if (flipX || flipY) cctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-  cctx.drawImage(drawable, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
-  cctx.restore();
+  ctx.translate(ccx, ccy);
+  if (rotateDeg) ctx.rotate((rotateDeg * Math.PI) / 180);
+  if (flipX || flipY) ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+  ctx.drawImage(drawable, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
+  ctx.restore();
 
-  drawOverlays(clip, dx, dy, dw, dh);
+  drawOverlays(ctx, clip, dx, dy, dw, dh);
 }
 
 function previewTransform(clip: TimelineClip): {
@@ -828,6 +839,7 @@ function previewTransform(clip: TimelineClip): {
 }
 
 function drawOverlays(
+  ctx: CanvasRenderingContext2D,
   clip: TimelineClip,
   dx: number,
   dy: number,
@@ -838,7 +850,7 @@ function drawOverlays(
     if (!fx.enabled) continue;
     if (fx.type === "color.vignette") {
       const amount = getParamNumber(fx, "amount", 0.5);
-      const grad = cctx.createRadialGradient(
+      const grad = ctx.createRadialGradient(
         dx + dw / 2,
         dy + dh / 2,
         Math.min(dw, dh) * 0.3,
@@ -848,8 +860,8 @@ function drawOverlays(
       );
       grad.addColorStop(0, "rgba(0,0,0,0)");
       grad.addColorStop(1, `rgba(0,0,0,${amount})`);
-      cctx.fillStyle = grad;
-      cctx.fillRect(dx, dy, dw, dh);
+      ctx.fillStyle = grad;
+      ctx.fillRect(dx, dy, dw, dh);
     } else if (fx.type === "color.tint" || fx.type === "color.duotone") {
       const color =
         fx.type === "color.tint"
@@ -857,24 +869,24 @@ function drawOverlays(
           : getParamString(fx, "highlightsHex", "#ff5a00");
       const amount =
         fx.type === "color.tint" ? getParamNumber(fx, "amount", 0.2) : 0.3;
-      cctx.save();
-      cctx.globalAlpha = amount;
-      cctx.globalCompositeOperation = "overlay";
-      cctx.fillStyle = color;
-      cctx.fillRect(dx, dy, dw, dh);
-      cctx.restore();
+      ctx.save();
+      ctx.globalAlpha = amount;
+      ctx.globalCompositeOperation = "overlay";
+      ctx.fillStyle = color;
+      ctx.fillRect(dx, dy, dw, dh);
+      ctx.restore();
     } else if (fx.type === "fx.retro_noise") {
       const spacing = getParamNumber(fx, "scanlineSpacing", 6);
-      cctx.save();
-      cctx.globalAlpha = getParamNumber(fx, "noiseAmount", 0.25);
-      cctx.fillStyle = "#000";
-      for (let y = dy; y < dy + dh; y += spacing) cctx.fillRect(dx, y, dw, 1);
-      cctx.restore();
+      ctx.save();
+      ctx.globalAlpha = getParamNumber(fx, "noiseAmount", 0.25);
+      ctx.fillStyle = "#000";
+      for (let y = dy; y < dy + dh; y += spacing) ctx.fillRect(dx, y, dw, 1);
+      ctx.restore();
     } else if (fx.type === "fx.border") {
       const w = getParamNumber(fx, "borderWidthPx", 12);
-      cctx.strokeStyle = getParamString(fx, "borderColorHex", "#ffffff");
-      cctx.lineWidth = w;
-      cctx.strokeRect(dx + w / 2, dy + w / 2, dw - w, dh - w);
+      ctx.strokeStyle = getParamString(fx, "borderColorHex", "#ffffff");
+      ctx.lineWidth = w;
+      ctx.strokeRect(dx + w / 2, dy + w / 2, dw - w, dh - w);
     }
   }
 }
@@ -2799,7 +2811,85 @@ function splitSelectedClip(): void {
   );
 }
 
+/** Triggers a real browser download of `blob` named `filename`. */
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Give the download a tick to start before revoking the object URL.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Renders the current visual layer(s) at full native resolution — same
+ * effects as the live preview, baked in — onto a fresh offscreen canvas.
+ * Returns null if there's nothing visible to export. */
+function renderExportFrame(): HTMLCanvasElement | null {
+  const seq = activeSequence();
+  const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
+  const visual = layers.filter((l) => {
+    const a = findAsset(l.assetId);
+    return a && a.kind !== "audio";
+  });
+  if (visual.length === 0) return null;
+
+  // Export resolution: the topmost visual layer's own (post-crop) frame
+  // size, so a cropped photo exports at the cropped size, not upscaled.
+  const top = visual[0]!;
+  const topLoc = locateClip(top.clipId);
+  if (!topLoc) return null;
+  const topAsset = findAsset(topLoc.clip.assetId);
+  if (!topAsset) return null;
+  const media = mediaCache.get(topAsset.originalUri);
+  let mw = topAsset.metadata.width ?? 1920;
+  let mh = topAsset.metadata.height ?? 1080;
+  if (media instanceof HTMLImageElement) {
+    mw = media.naturalWidth || mw;
+    mh = media.naturalHeight || mh;
+  } else if (media instanceof HTMLVideoElement) {
+    mw = media.videoWidth || mw;
+    mh = media.videoHeight || mh;
+  }
+  const { sw, sh } = resolveCropRect(topLoc.clip, mw, mh);
+
+  const out = document.createElement("canvas");
+  out.width = Math.round(sw);
+  out.height = Math.round(sh);
+  const octx = out.getContext("2d")!;
+  for (const layer of [...visual].reverse()) {
+    const loc = locateClip(layer.clipId);
+    if (loc) drawLayer(octx, loc.clip, layer.sourceTimeUs, out.width, out.height);
+  }
+  return out;
+}
+
+/** Real, working image export: renders the current frame (effects baked in)
+ * at full native resolution and downloads it as a PNG. No plan, no fake job —
+ * a real file. */
+function exportPhotoImage(): void {
+  const canvasEl = renderExportFrame();
+  if (!canvasEl) {
+    toast("Nothing to export.", true);
+    return;
+  }
+  canvasEl.toBlob((blob) => {
+    if (!blob) {
+      toast("Export failed: could not encode image.", true);
+      return;
+    }
+    downloadBlob(blob, "export.png");
+    toast(`Exported ${canvasEl.width}×${canvasEl.height} PNG.`);
+  }, "image/png");
+}
+
 function doExport(): void {
+  if (mode === "photo") {
+    exportPhotoImage();
+    return;
+  }
   const project = session.getProject();
   if (!project) return;
   const result = planExport(project, SEQUENCE_ID, {
@@ -2818,7 +2908,7 @@ function doExport(): void {
   }
   const { framesTotal, durationUs, audioSampleCount } = result.plan;
   toast(
-    `Export plan: ${framesTotal} frames, ${formatTime(durationUs)}, ${audioSampleCount} audio samples (H.264/MP4).`,
+    `Export plan: ${framesTotal} frames, ${formatTime(durationUs)}, ${audioSampleCount} audio samples (H.264/MP4). Real video export not built yet.`,
   );
 }
 
