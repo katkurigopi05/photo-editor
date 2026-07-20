@@ -412,6 +412,18 @@ function toast(message: string, isError = false): void {
   toastTimer = window.setTimeout(() => el.classList.add("hidden"), 3200);
 }
 
+// Module-level (not scoped to bindEvents) so any drop target — the window-
+// level fallback, the stage, or a timeline lane, each in a different
+// function's closure — can force the overlay closed. A target that calls
+// stopPropagation() on its own "drop" (to avoid double-importing the same
+// files) opts out of the window-level "drop" listener too, so it must clean
+// the overlay up itself or it gets stuck visible forever.
+let dropOverlayDepth = 0;
+function hideDropOverlay(): void {
+  dropOverlayDepth = 0;
+  $<HTMLDivElement>("drop-overlay").classList.add("hidden");
+}
+
 function formatTime(us: string | number): string {
   const totalMs = Math.round(Number(us) / 1000);
   const ms = totalMs % 1000;
@@ -961,6 +973,7 @@ function renderTimeline(): void {
       e.preventDefault();
       e.stopPropagation();
       lane.classList.remove("dragover");
+      hideDropOverlay();
       const assetId = e.dataTransfer?.getData("application/x-asset-id");
       if (assetId) {
         const asset = findAsset(assetId);
@@ -2599,6 +2612,7 @@ function bindEvents(): void {
     e.preventDefault();
     e.stopPropagation();
     stageEl.classList.remove("dragover");
+    hideDropOverlay();
     const assetId = e.dataTransfer?.getData("application/x-asset-id");
     if (assetId) {
       const asset = findAsset(assetId);
@@ -2718,11 +2732,10 @@ function bindEvents(): void {
   const overlay = $<HTMLDivElement>("drop-overlay");
   const hasFiles = (e: DragEvent): boolean =>
     e.dataTransfer?.types.includes("Files") ?? false;
-  let dragDepth = 0;
   window.addEventListener("dragenter", (e) => {
     if (!hasFiles(e)) return;
     e.preventDefault();
-    dragDepth += 1;
+    dropOverlayDepth += 1;
     overlay.classList.remove("hidden");
   });
   window.addEventListener("dragover", (e) => {
@@ -2730,12 +2743,11 @@ function bindEvents(): void {
   });
   window.addEventListener("dragleave", (e) => {
     if (!hasFiles(e)) return;
-    dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) overlay.classList.add("hidden");
+    dropOverlayDepth = Math.max(0, dropOverlayDepth - 1);
+    if (dropOverlayDepth === 0) overlay.classList.add("hidden");
   });
   window.addEventListener("drop", (e) => {
-    dragDepth = 0;
-    overlay.classList.add("hidden");
+    hideDropOverlay();
     if (e.dataTransfer?.files.length) {
       e.preventDefault();
       void importFiles(e.dataTransfer.files);
