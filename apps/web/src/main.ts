@@ -315,6 +315,17 @@ let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
 const mediaCache = new Map<string, HTMLImageElement | HTMLVideoElement>();
 
+// -- Live audio monitoring (preview A/V sync; Phase 3 sync + Phase 4 mixing).
+// Session state, outside the command engine — like playback itself. Each
+// media element is routed once through gain→pan→destination so the timeline
+// is actually audible while playing, with each clip's gain/pan applied. --
+let audioCtx: AudioContext | null = null;
+interface AudioRoute {
+  gain: GainNode;
+  pan: StereoPannerNode;
+}
+const audioRoutes = new Map<HTMLMediaElement, AudioRoute>();
+
 // -- Raster photo editing (Photo mode only; local session state, outside
 // the deterministic command engine — see raster.ts) --
 type RasterTool =
@@ -1417,6 +1428,74 @@ function syncTransport(): void {
   );
 }
 
+/** dB → linear amplitude. */
+function dbToGain(db: number): number {
+  return 10 ** (db / 20);
+}
+
+/** Lazily build (once) and return gain/pan routing for a media element.
+ * `createMediaElementSource` can only run once per element and permanently
+ * reroutes the element's audio into the graph, so we cache the nodes and
+ * unmute (level is controlled by the GainNode from here on). */
+function audioRouteFor(el: HTMLMediaElement): AudioRoute {
+  let route = audioRoutes.get(el);
+  if (!route) {
+    const ctx = audioCtx!;
+    const source = ctx.createMediaElementSource(el);
+    const gain = ctx.createGain();
+    const pan = ctx.createStereoPanner();
+    source.connect(gain).connect(pan).connect(ctx.destination);
+    el.muted = false;
+    route = { gain, pan };
+    audioRoutes.set(el, route);
+  }
+  return route;
+}
+
+/** Drive live media playback to match the transport: every audio/video clip
+ * active at the playhead plays its element at the right source offset with
+ * that clip's gain/pan; inactive (or all, when paused) elements are paused.
+ * Called on play/pause/seek and every animation tick. */
+function syncAudioMonitors(): void {
+  const seq = activeSequence();
+  const active =
+    audioCtx && seq && playback.playing
+      ? resolveAtTime(seq, playback.currentTimeUs)
+      : [];
+  const live = new Set<HTMLMediaElement>();
+
+  for (const layer of active) {
+    const asset = findAsset(layer.assetId);
+    if (!asset || asset.kind === "image") continue;
+    const el = mediaCache.get(asset.originalUri);
+    if (!(el instanceof HTMLMediaElement)) continue;
+    const loc = locateClip(layer.clipId);
+    if (!loc) continue;
+
+    const route = audioRouteFor(el);
+    route.gain.gain.value = dbToGain(loc.clip.audioGainDb);
+    route.pan.pan.value = Math.max(-1, Math.min(1, loc.clip.audioPan));
+
+    // Resync the element clock only when it has drifted (or just started /
+    // was seeked); small drift is left alone so playback stays smooth.
+    const targetSec = Number(layer.sourceTimeUs) / 1_000_000;
+    if (Math.abs(el.currentTime - targetSec) > 0.25) el.currentTime = targetSec;
+    if (el.paused) void el.play().catch(() => undefined);
+    live.add(el);
+  }
+
+  for (const [el] of audioRoutes) {
+    if (!live.has(el) && !el.paused) el.pause();
+  }
+}
+
+/** Resume/create the AudioContext on a user gesture (browsers require one).
+ * Call from the play button before monitoring starts. */
+function ensureAudioContextResumed(): void {
+  if (!audioCtx) audioCtx = new AudioContext();
+  if (audioCtx.state === "suspended") void audioCtx.resume();
+}
+
 let lastFrame = performance.now();
 function animate(now: number): void {
   const dt = now - lastFrame;
@@ -1424,6 +1503,7 @@ function animate(now: number): void {
   if (playback.playing) {
     playback = tick(playback, String(Math.round(dt * 1000)));
     syncTransport();
+    syncAudioMonitors();
     drawPreview();
     renderTimeline();
   }
@@ -1719,6 +1799,7 @@ function startRasterSession(
   cloneSource = null;
   playback = pause(playback);
   syncTransport();
+  syncAudioMonitors();
   bindRasterCanvasEvents();
   updateUI();
 }
@@ -2667,12 +2748,15 @@ function bindEvents(): void {
   });
 
   $("btn-play").addEventListener("click", () => {
+    if (!playback.playing) ensureAudioContextResumed();
     playback = playback.playing ? pause(playback) : play(playback);
     syncTransport();
+    syncAudioMonitors();
   });
   $("btn-start").addEventListener("click", () => {
     playback = seek(playback, "0");
     syncTransport();
+    syncAudioMonitors();
     drawPreview();
     renderTimeline();
   });
@@ -2686,6 +2770,7 @@ function bindEvents(): void {
       String(Math.round((Number(seekEl.value) / 1000) * dur)),
     );
     syncTransport();
+    syncAudioMonitors();
     drawPreview();
     renderTimeline();
   });
@@ -2760,8 +2845,10 @@ function bindEvents(): void {
       selectedClipId = null;
     } else if (e.code === "Space") {
       e.preventDefault();
+      if (!playback.playing) ensureAudioContextResumed();
       playback = playback.playing ? pause(playback) : play(playback);
       syncTransport();
+      syncAudioMonitors();
     }
   });
 
