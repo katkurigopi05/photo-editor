@@ -2722,6 +2722,22 @@ function bindEvents(): void {
   $("btn-split").addEventListener("click", splitSelectedClip);
   $("btn-export").addEventListener("click", doExport);
 
+  // Export modal.
+  $("btn-export-start").addEventListener("click", () =>
+    void startExportFromModal(),
+  );
+  $("btn-export-close").addEventListener("click", () => {
+    // While an export is running this button cancels it (the run's finally
+    // path closes the modal); otherwise it just dismisses the dialog.
+    if (exportInFlight && videoExportAbort) {
+      videoExportAbort.cancelled = true;
+    } else {
+      closeExportModal();
+    }
+  });
+  $("export-resolution").addEventListener("change", updateExportSummary);
+  $("export-quality").addEventListener("change", updateExportSummary);
+
   window.addEventListener("keydown", (e) => {
     if (e.target !== document.body) return;
     if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
@@ -2989,45 +3005,53 @@ async function renderAndEncodeAudio(
   audioEncoder.close();
 }
 
+/** Whether this browser can encode video client-side (WebCodecs). Older
+ * Safari and any non-secure context lack it, so we check before starting an
+ * export rather than throwing mid-run. */
+function webCodecsSupported(): boolean {
+  return (
+    typeof VideoEncoder !== "undefined" &&
+    typeof AudioEncoder !== "undefined" &&
+    typeof VideoFrame !== "undefined"
+  );
+}
+
+export type VideoExportResult =
+  | {
+      status: "done";
+      framesTotal: number;
+      durationUs: string;
+      audioClips: number;
+    }
+  | { status: "cancelled" }
+  | { status: "empty" }
+  | { status: "failed"; message: string };
+
+type ExportProgress = (phase: string, done: number, total: number) => void;
+
 /** Real, working video export: renders every planned frame (effects baked
  * in, via the same drawLayer() used for live preview) to an offscreen
  * canvas, encodes with the browser-native WebCodecs API, and muxes video and
- * (when present) a real audio mixdown into a downloadable MP4. */
-async function exportVideo(): Promise<void> {
-  if (videoExportAbort) {
-    videoExportAbort.cancelled = true;
-    return;
-  }
+ * (when present) a real audio mixdown into a downloadable MP4.
+ *
+ * Reports progress through `onProgress`; caller drives the UI. `abort` can be
+ * flipped by the caller (a Cancel button) to stop between frames. */
+async function runVideoExport(
+  preset: ExportPreset,
+  onProgress: ExportProgress,
+  abort: { cancelled: boolean },
+): Promise<VideoExportResult> {
   const project = session.getProject();
-  if (!project) return;
+  if (!project) return { status: "empty" };
 
-  const preset: ExportPreset = {
-    width: 1920,
-    height: 1080,
-    frameRate: FRAME_RATE,
-    videoCodec: "h264",
-    container: "mp4",
-    videoBitrateKbps: 8000,
-    // Opus, not AAC: it's what we actually encode with below (royalty-free,
-    // reliably software-encoded in every Chromium build; AAC support in
-    // WebCodecs is inconsistent/hardware-dependent).
-    audioCodec: "opus",
-    audioSampleRate: 48000,
-  };
   const result = planExport(project, SEQUENCE_ID, preset);
   if (!result.ok) {
-    toast(`Export: ${result.error.message}`, true);
-    return;
+    return { status: "failed", message: result.error.message };
   }
   const { plan } = result;
   const fps = preset.frameRate.numerator / preset.frameRate.denominator;
 
-  const abort = { cancelled: false };
-  videoExportAbort = abort;
   let job: ExportJob = startExport(plan);
-  const exportBtn = $<HTMLButtonElement>("btn-export");
-  const originalLabel = exportBtn.textContent;
-  exportBtn.textContent = "⏹ Cancel Export";
 
   try {
     // A VideoEncoder's `error` callback fires from the codec's own internal
@@ -3104,9 +3128,7 @@ async function exportVideo(): Promise<void> {
         if (encodeError) throw encodeError;
 
         job = advanceExport(job, req.frameIndex + 1);
-        if (req.frameIndex % 10 === 0 || req.frameIndex === plan.framesTotal - 1) {
-          toast(`Exporting… ${job.framesDone}/${job.framesTotal} frames`);
-        }
+        onProgress("Rendering frames…", job.framesDone, job.framesTotal);
       }
       // Yield to the event loop between batches so the UI (and a Cancel
       // click) stays responsive during a long export.
@@ -3117,38 +3139,155 @@ async function exportVideo(): Promise<void> {
     if (abort.cancelled) {
       job = cancelExport(job);
       videoEncoder.close();
-      toast("Export cancelled.");
-      return;
+      return { status: "cancelled" };
     }
 
     await videoEncoder.flush();
     videoEncoder.close();
 
     if (plan.audioClips.length > 0) {
-      toast(`Exporting… mixing down ${plan.audioClips.length} audio clip(s)`);
+      onProgress("Mixing audio…", plan.framesTotal, plan.framesTotal);
       await renderAndEncodeAudio(plan, preset, muxer);
     }
+    onProgress("Finalizing…", plan.framesTotal, plan.framesTotal);
     muxer.finalize();
 
     const blob = new Blob([target.buffer], { type: "video/mp4" });
     downloadBlob(blob, "export.mp4");
-    const audioNote =
-      plan.audioClips.length > 0
-        ? `${plan.audioClips.length} audio clip(s) mixed in`
-        : "silent, no audio clips";
-    toast(
-      `Exported ${plan.framesTotal} frames, ${formatTime(plan.durationUs)} (H.264/Opus/MP4, ${audioNote}).`,
-    );
+    return {
+      status: "done",
+      framesTotal: plan.framesTotal,
+      durationUs: plan.durationUs,
+      audioClips: plan.audioClips.length,
+    };
   } catch (err) {
     job = failExport(job, {
       code: "ENCODE_FAILED",
       message: err instanceof Error ? err.message : String(err),
     });
-    toast(err instanceof Error ? err.message : "Export failed.", true);
-  } finally {
-    videoExportAbort = null;
-    exportBtn.textContent = originalLabel;
+    return {
+      status: "failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
   }
+}
+
+// ---- Export modal (video presets + real progress) -----------------------
+
+let exportInFlight = false;
+
+function readExportPreset(): ExportPreset {
+  const [w, h] = $<HTMLSelectElement>("export-resolution")
+    .value.split("x")
+    .map(Number);
+  const bitrate = Number($<HTMLSelectElement>("export-quality").value);
+  return {
+    width: w ?? 1280,
+    height: h ?? 720,
+    frameRate: FRAME_RATE,
+    videoCodec: "h264",
+    container: "mp4",
+    videoBitrateKbps: bitrate,
+    // Opus, not AAC: it's what we actually encode with (royalty-free, reliably
+    // software-encoded in every Chromium build; AAC support in WebCodecs is
+    // inconsistent/hardware-dependent).
+    audioCodec: "opus",
+    audioSampleRate: 48000,
+  };
+}
+
+/** Refresh the "N frames · MM:SS" line under the options from the current
+ * project + selected preset. */
+function updateExportSummary(): void {
+  const summary = $("export-summary");
+  const project = session.getProject();
+  if (!project) {
+    summary.textContent = "";
+    return;
+  }
+  const result = planExport(project, SEQUENCE_ID, readExportPreset());
+  summary.textContent = result.ok
+    ? `${result.plan.framesTotal} frames · ${formatTime(result.plan.durationUs)}${
+        result.plan.audioClips.length > 0
+          ? ` · ${result.plan.audioClips.length} audio clip(s)`
+          : " · silent"
+      }`
+    : result.error.message;
+}
+
+function openExportModal(): void {
+  if (!webCodecsSupported()) {
+    toast(
+      "Video export needs the WebCodecs API, which this browser doesn't support. Try the latest Chrome or Edge.",
+      true,
+    );
+    return;
+  }
+  // Reset to the options view.
+  $("export-options").classList.remove("hidden");
+  $("export-progress-wrap").classList.add("hidden");
+  const startBtn = $<HTMLButtonElement>("btn-export-start");
+  startBtn.disabled = false;
+  startBtn.textContent = "Start Export";
+  $("btn-export-close").textContent = "Cancel";
+  updateExportSummary();
+  $("export-modal").classList.remove("hidden");
+}
+
+function closeExportModal(): void {
+  $("export-modal").classList.add("hidden");
+}
+
+async function startExportFromModal(): Promise<void> {
+  if (exportInFlight) return;
+  exportInFlight = true;
+  const abort = { cancelled: false };
+  videoExportAbort = abort;
+
+  const startBtn = $<HTMLButtonElement>("btn-export-start");
+  startBtn.disabled = true;
+  $("export-options").classList.add("hidden");
+  $("export-progress-wrap").classList.remove("hidden");
+  $("btn-export-close").textContent = "Cancel Export";
+
+  const barFill = $<HTMLDivElement>("export-bar-fill");
+  const phaseEl = $("export-phase");
+  const countEl = $("export-count");
+  const onProgress: ExportProgress = (phase, done, total) => {
+    phaseEl.textContent = phase;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    barFill.style.width = `${pct}%`;
+    countEl.textContent = `${done} / ${total} frames`;
+  };
+
+  const preset = readExportPreset();
+  const result = await runVideoExport(preset, onProgress, abort);
+
+  exportInFlight = false;
+  videoExportAbort = null;
+
+  switch (result.status) {
+    case "done": {
+      const audioNote =
+        result.audioClips > 0
+          ? `${result.audioClips} audio clip(s) mixed in`
+          : "silent, no audio clips";
+      toast(
+        `Exported ${result.framesTotal} frames, ${formatTime(result.durationUs)} (H.264/Opus/MP4, ${audioNote}).`,
+      );
+      break;
+    }
+    case "cancelled":
+      toast("Export cancelled.");
+      break;
+    case "empty":
+      toast("Nothing to export.", true);
+      break;
+    case "failed":
+      toast(`Export failed: ${result.message}`, true);
+      break;
+  }
+  closeExportModal();
 }
 
 function doExport(): void {
@@ -3156,7 +3295,7 @@ function doExport(): void {
     exportPhotoImage();
     return;
   }
-  void exportVideo();
+  openExportModal();
 }
 
 // ==========================================================================

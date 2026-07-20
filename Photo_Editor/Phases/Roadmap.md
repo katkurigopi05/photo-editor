@@ -15,7 +15,7 @@ contract with the same rigor as the Foundation; phases are not built all at once
 | [[Phases/Phase 3 Playback\|3 — Playback & Scrubbing]] | transport, frame-accurate seek | 🟡 transport core built |
 | [[Phases/Phase 4 Audio\|4 — Audio Engine]] | mixing, waveform | 🟡 DSP core + state built, no UI wiring |
 | [[Phases/Phase 5 Editing UI\|5 — Editing UI]] | timeline, viewer, inspector | 🟢 ahead of plan — raster toolset, AI bg removal, video crop, theming all shipped |
-| [[Phases/Phase 6 Export\|6 — Export]] | encode + mux | 🟢 real image + video export built (client-side WebCodecs + mp4-muxer, effects and audio baked in) |
+| [[Phases/Phase 6 Export\|6 — Export]] | encode + mux | ✅ complete — real image + video export (WebCodecs + mp4-muxer), preset picker (resolution/quality), live progress bar, capability check |
 
 **Suggested order:** 0 → 1 → 2 → 3 → 5 → 4 → 6.
 

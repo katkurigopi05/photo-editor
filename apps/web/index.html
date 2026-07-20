@@ -189,6 +189,43 @@
     <div id="drop-overlay" class="drop-overlay hidden">
       <div class="drop-card">⤓ Drop media to import</div>
     </div>
+    <div id="export-modal" class="export-modal hidden">
+      <div class="export-card">
+        <div class="export-title">Export Video</div>
+        <div id="export-options" class="export-options">
+          <label class="export-field"
+            >Resolution
+            <select id="export-resolution">
+              <option value="1920x1080">1080p — 1920×1080</option>
+              <option value="1280x720" selected>720p — 1280×720</option>
+              <option value="854x480">480p — 854×480</option>
+            </select>
+          </label>
+          <label class="export-field"
+            >Quality
+            <select id="export-quality">
+              <option value="12000">High (12 Mbps)</option>
+              <option value="8000" selected>Medium (8 Mbps)</option>
+              <option value="4000">Low (4 Mbps)</option>
+            </select>
+          </label>
+          <div id="export-summary" class="export-summary"></div>
+        </div>
+        <div id="export-progress-wrap" class="export-progress-wrap hidden">
+          <div id="export-phase" class="export-phase">Rendering frames…</div>
+          <div class="export-bar">
+            <div id="export-bar-fill" class="export-bar-fill"></div>
+          </div>
+          <div id="export-count" class="export-count"></div>
+        </div>
+        <div class="export-actions">
+          <button id="btn-export-close" class="tool">Cancel</button>
+          <button id="btn-export-start" class="tool primary">
+            Start Export
+          </button>
+        </div>
+      </div>
+    </div>
     <div id="toast" class="toast hidden"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
