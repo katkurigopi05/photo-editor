@@ -974,6 +974,10 @@ select {
   outline: 2px dashed var(--accent);
   outline-offset: -3px;
 }
+.stage.dragover {
+  outline: 3px dashed var(--accent);
+  outline-offset: -4px;
+}
 .clip {
   position: absolute;
   top: 7px;

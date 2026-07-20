@@ -2588,6 +2588,28 @@ function bindEvents(): void {
   $("mode-video").addEventListener("click", () => setMode("video"));
   $("mode-photo").addEventListener("click", () => setMode("photo"));
 
+  // Photo mode hides the timeline (nothing to scrub for a still image), so
+  // drag-and-drop needs a target there too — the stage itself.
+  stageEl.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    stageEl.classList.add("dragover");
+  });
+  stageEl.addEventListener("dragleave", () => stageEl.classList.remove("dragover"));
+  stageEl.addEventListener("drop", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    stageEl.classList.remove("dragover");
+    const assetId = e.dataTransfer?.getData("application/x-asset-id");
+    if (assetId) {
+      const asset = findAsset(assetId);
+      if (asset) {
+        addAssetToTimeline(asset.id, asset.kind, asset.metadata.durationUs ?? "5000000");
+      }
+    } else if (e.dataTransfer?.files.length) {
+      void importFiles(e.dataTransfer.files);
+    }
+  });
+
   $("theme-dark").addEventListener("click", () => applyTheme("dark"));
   $("theme-light").addEventListener("click", () => applyTheme("light"));
   $("theme-system").addEventListener("click", () => applyTheme("system"));
