@@ -326,6 +326,13 @@ interface AudioRoute {
 }
 const audioRoutes = new Map<HTMLMediaElement, AudioRoute>();
 
+// Cached normalized waveform peaks (0..1) per audio asset id, for the
+// timeline. Decoded once, asynchronously, then the timeline re-renders.
+const WAVEFORM_BUCKETS = 1400;
+const waveformCache = new Map<string, number[]>();
+const waveformPending = new Set<string>();
+let decodeCtx: OfflineAudioContext | null = null;
+
 // -- Raster photo editing (Photo mode only; local session state, outside
 // the deterministic command engine — see raster.ts) --
 type RasterTool =
@@ -978,6 +985,65 @@ function removeBackground(
 // ==========================================================================
 // Timeline rendering
 // ==========================================================================
+
+/** Decode an audio asset once and cache a fixed-size peak array, then trigger
+ * a timeline re-render so its clips draw a real waveform. OfflineAudioContext
+ * decodes without needing a user gesture. */
+async function ensureWaveform(asset: MediaAsset): Promise<void> {
+  if (asset.kind !== "audio") return;
+  if (waveformCache.has(asset.id) || waveformPending.has(asset.id)) return;
+  waveformPending.add(asset.id);
+  try {
+    const bytes = await (await fetch(asset.originalUri)).arrayBuffer();
+    if (!decodeCtx) decodeCtx = new OfflineAudioContext(1, 1, 44100);
+    const buffer = await decodeCtx.decodeAudioData(bytes);
+    const data = buffer.getChannelData(0);
+    const per = Math.max(1, Math.floor(data.length / WAVEFORM_BUCKETS));
+    const peaks: number[] = [];
+    for (let b = 0; b < WAVEFORM_BUCKETS; b++) {
+      let max = 0;
+      const start = b * per;
+      for (let i = 0; i < per && start + i < data.length; i++) {
+        const v = Math.abs(data[start + i]!);
+        if (v > max) max = v;
+      }
+      peaks.push(max);
+    }
+    waveformCache.set(asset.id, peaks);
+    renderTimeline();
+  } catch {
+    // Undecodable source (or no audio track): leave it without a waveform.
+  } finally {
+    waveformPending.delete(asset.id);
+  }
+}
+
+/** Draw the peaks for a clip's trimmed source window onto its canvas. */
+function drawWaveform(
+  canvas: HTMLCanvasElement,
+  peaks: number[],
+  clip: TimelineClip,
+  asset: MediaAsset,
+): void {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const assetDurUs = Number(asset.metadata.durationUs ?? "0") || 1;
+  const inFrac = Number(clip.sourceInUs) / assetDurUs;
+  const outFrac = Number(clip.sourceOutUs) / assetDurUs;
+  const span = Math.max(0.0001, outFrac - inFrac);
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  const mid = h / 2;
+  for (let x = 0; x < w; x++) {
+    const frac = inFrac + (x / w) * span;
+    const peak = peaks[Math.min(peaks.length - 1, Math.floor(frac * peaks.length))] ?? 0;
+    const half = Math.max(0.5, peak * (h / 2 - 1));
+    ctx.fillRect(x, mid - half, 1, half * 2);
+  }
+}
+
 function renderTimeline(): void {
   const seq = activeSequence();
   timelineBody.innerHTML = "";
@@ -1030,9 +1096,30 @@ function renderTimeline(): void {
         clip.id === selectedClipId ? " selected" : ""
       }`;
       el.style.left = `${usToPixels(clip.timelineStartUs, zoom)}px`;
-      el.style.width = `${Math.max(24, usToPixels(clip.timelineDurationUs, zoom))}px`;
+      const clipWidth = Math.max(24, usToPixels(clip.timelineDurationUs, zoom));
+      el.style.width = `${clipWidth}px`;
       const asset = findAsset(clip.assetId);
-      el.textContent = asset ? assetName(asset) : clip.id;
+
+      // Audio clips draw a real waveform of their trimmed source window
+      // behind the label; decoded lazily and cached (see ensureWaveform).
+      if (asset && asset.kind === "audio") {
+        const peaks = waveformCache.get(asset.id);
+        if (peaks) {
+          const wf = document.createElement("canvas");
+          wf.className = "clip-waveform";
+          wf.width = Math.round(clipWidth);
+          wf.height = 44;
+          drawWaveform(wf, peaks, clip, asset);
+          el.appendChild(wf);
+        } else {
+          void ensureWaveform(asset);
+        }
+      }
+
+      const label = document.createElement("span");
+      label.className = "clip-label";
+      label.textContent = asset ? assetName(asset) : clip.id;
+      el.appendChild(label);
       el.addEventListener("pointerdown", (e) => startClipDrag(e, clip, track));
       lane.appendChild(el);
     }
