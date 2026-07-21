@@ -591,6 +591,32 @@ body {
   font-weight: 700;
   padding: 0 4px;
 }
+.media-remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+.media-item:hover .media-remove {
+  opacity: 1;
+}
+.media-remove:hover {
+  background: var(--danger);
+  color: #fff;
+}
 .history-item {
   padding: 6px 10px;
   border-left: 2px solid var(--line);

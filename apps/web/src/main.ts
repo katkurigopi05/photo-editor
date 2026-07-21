@@ -317,6 +317,9 @@ const mediaCache = new Map<string, HTMLImageElement | HTMLVideoElement>();
 // Display-only friendly names per asset id (original filename at import, or a
 // generated label for edited exports). Not part of the deterministic project.
 const assetNames = new Map<string, string>();
+// Asset ids hidden from the media bin (there's no public asset-removal
+// command; this is a display filter, like mediaCache/assetNames).
+const removedAssets = new Set<string>();
 
 // -- Live audio monitoring (preview A/V sync; Phase 3 sync + Phase 4 mixing).
 // Session state, outside the command engine — like playback itself. Each
@@ -1489,6 +1492,7 @@ function renderEffectsPalette(): void {
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
   for (const asset of session.getProject()?.assets ?? []) {
+    if (removedAssets.has(asset.id)) continue;
     const el = document.createElement("div");
     el.className = "media-item";
     el.draggable = true;
@@ -1517,7 +1521,15 @@ function renderMedia(): void {
     add.className = "media-add";
     add.textContent = "＋";
     add.title = "Add to timeline";
-    el.append(thumb, meta, add);
+    const remove = document.createElement("button");
+    remove.className = "media-remove";
+    remove.textContent = "✕";
+    remove.title = "Remove from project";
+    remove.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeAsset(asset.id);
+    });
+    el.append(thumb, meta, add, remove);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
@@ -1527,6 +1539,26 @@ function renderMedia(): void {
     );
     mediaListEl.appendChild(el);
   }
+}
+
+/** Remove a media item from the bin and delete any timeline clips that used
+ * it. There is no public asset-removal command (only its internal inverse),
+ * so the bin entry is hidden client-side while the clip deletions go through
+ * the command engine (undoable). */
+function removeAsset(assetId: string): void {
+  const seq = activeSequence();
+  const clipIds: string[] = [];
+  for (const track of seq?.tracks ?? []) {
+    for (const clip of track.clips) {
+      if (clip.assetId === assetId) clipIds.push(clip.id);
+    }
+  }
+  for (const id of clipIds) {
+    commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId: id }));
+  }
+  removedAssets.add(assetId);
+  updateUI();
+  toast("Removed from project.");
 }
 
 // ==========================================================================
