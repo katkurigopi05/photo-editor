@@ -2851,7 +2851,71 @@ async function applyRasterEdit(): Promise<void> {
       img.onerror = () => resolve();
     });
     mediaCache.set(url, img);
-    toast("Applied. Your edit is now a new photo in the Media bin — drag it onto the timeline.");
+
+    // Swap the edited photo in for the original on the timeline, so the
+    // preview and export show the edit. There's no "change clip asset"
+    // command, so replace the clip (delete + re-add) preserving its position,
+    // trim, effects, and audio.
+    const freshLoc = locateClip(rasterEditingClipId);
+    if (freshLoc) {
+      const old = freshLoc.clip;
+      const newClipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+      commit(
+        buildDeleteClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: old.id,
+        }),
+      );
+      const added = commit(
+        buildAddClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          trackId: freshLoc.track.id,
+          clip: {
+            id: newClipId,
+            assetId,
+            timelineStartUs: old.timelineStartUs,
+            sourceInUs: old.sourceInUs,
+            sourceOutUs: old.sourceOutUs,
+            playbackRate: old.playbackRate,
+          },
+        }),
+      );
+      if (added) {
+        for (const fx of old.effects) {
+          commit(
+            buildAddEffect(nextCtx(), {
+              sequenceId: SEQUENCE_ID,
+              clipId: newClipId,
+              effect: fx,
+            }),
+          );
+        }
+        if (old.audioGainDb !== 0) {
+          commit(
+            buildSetClipAudioGain(nextCtx(), {
+              sequenceId: SEQUENCE_ID,
+              clipId: newClipId,
+              gainDb: old.audioGainDb,
+            }),
+          );
+        }
+        if (old.audioPan !== 0) {
+          commit(
+            buildSetClipAudioPan(nextCtx(), {
+              sequenceId: SEQUENCE_ID,
+              clipId: newClipId,
+              pan: old.audioPan,
+            }),
+          );
+        }
+        selectClip(newClipId);
+      }
+      toast("Applied. The edited photo replaced the original on the timeline.");
+    } else {
+      toast(
+        "Applied. Your edit is a new photo in the Media bin — drag it onto the timeline.",
+      );
+    }
     exitRasterMode();
   } catch (err) {
     toast(err instanceof Error ? err.message : "Failed to apply the edit.", true);
