@@ -314,6 +314,9 @@ let selectedClipId: string | null = null;
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
 const mediaCache = new Map<string, HTMLImageElement | HTMLVideoElement>();
+// Display-only friendly names per asset id (original filename at import, or a
+// generated label for edited exports). Not part of the deterministic project.
+const assetNames = new Map<string, string>();
 
 // -- Live audio monitoring (preview A/V sync; Phase 3 sync + Phase 4 mixing).
 // Session state, outside the command engine — like playback itself. Each
@@ -602,6 +605,7 @@ async function importFile(file: File): Promise<void> {
 
   const checksum = await sha256Hex(await file.arrayBuffer());
   const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  assetNames.set(assetId, file.name);
   const metadata: MediaAsset["metadata"] = {
     fileSizeBytes: String(file.size),
     durationUs,
@@ -1159,8 +1163,11 @@ function renderTimeline(): void {
 }
 
 function assetName(asset: MediaAsset): string {
-  const parts = asset.originalUri.split("/");
-  return parts[parts.length - 1] || asset.id;
+  const friendly = assetNames.get(asset.id);
+  if (friendly) return friendly;
+  // originalUri is a blob: URL whose last segment is an opaque UUID — never a
+  // useful label. Fall back to a short kind-based name, not the raw UUID.
+  return `${asset.kind} clip`;
 }
 
 // Drag a clip horizontally to move it (dispatches timeline.move_clip).
@@ -1292,7 +1299,8 @@ function renderInspector(): void {
   fxSection.appendChild(addWrap);
   inspectorEl.appendChild(fxSection);
 
-  // --- Audio ---
+  // --- Audio (only for clips that actually carry audio) ---
+  if (asset?.kind === "image") return;
   const audioSection = section("Audio");
   audioSection.appendChild(
     sliderControl(
@@ -1654,6 +1662,12 @@ function setMode(next: "video" | "photo"): void {
   // Photo mode edits a single still image — the scrub timeline and transport
   // (play/seek/timecode) only make sense once there's a video to play through.
   $("app").classList.toggle("mode-photo", mode === "photo");
+  // Mode-appropriate empty-state guidance (the timeline is hidden in photo
+  // mode, so "add it to the timeline" would be confusing there).
+  stageEmpty.textContent =
+    mode === "photo"
+      ? "Import a photo to start editing."
+      : "Import media, then add it to the timeline to preview.";
   renderInspector();
   renderEffectsPalette();
 }
@@ -2777,6 +2791,8 @@ async function applyRasterEdit(): Promise<void> {
     const checksum = await sha256Hex(await blob.arrayBuffer());
     const url = URL.createObjectURL(blob);
     const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+    const baseName = sourceAsset ? assetName(sourceAsset) : "photo";
+    assetNames.set(assetId, `edited-${baseName.replace(/\.[^.]+$/, "")}.png`);
     const registered = commit(
       buildRegisterAsset(nextCtx(), {
         asset: {
