@@ -119,7 +119,16 @@
       <main id="workspace">
         <!-- LEFT: media bin + history -->
         <aside id="left-panel" class="panel">
-          <div class="panel-title">Media</div>
+          <div class="panel-title panel-title-row">
+            <span>Media</span>
+            <button
+              id="btn-gallery-toggle"
+              class="view-toggle"
+              title="Toggle grid / list view"
+            >
+              ▦ Grid
+            </button>
+          </div>
           <button id="btn-import" class="import-btn">＋ Import media…</button>
           <input
             id="file-input"
@@ -128,6 +137,8 @@
             hidden
           />
           <div id="media-list" class="media-list"></div>
+          <div class="panel-title">Looks (one click)</div>
+          <div id="looks-row" class="looks-row"></div>
           <div class="panel-title">Effects &amp; Filters</div>
           <div id="effects-palette" class="effects-palette"></div>
           <div class="panel-title">History</div>
@@ -138,6 +149,13 @@
         <section id="center-panel" class="panel">
           <div id="stage" class="stage">
             <canvas id="preview"></canvas>
+            <button
+              id="btn-compare"
+              class="compare-btn"
+              title="Hold to see the original (before your edits)"
+            >
+              ⇆ Hold: Before / After
+            </button>
             <div id="stage-empty" class="stage-empty">
               Import media, then add it to the timeline to preview.
             </div>

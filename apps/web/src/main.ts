@@ -393,6 +393,8 @@ const rasterOptions = {
 };
 
 let aiSegmentationBusy = false;
+// While true (Before/After button held), the preview shows the raw original.
+let compareShowOriginal = false;
 
 // ==========================================================================
 // DOM references
@@ -405,6 +407,7 @@ const cctx = canvas.getContext("2d")!;
 const stageEl = $<HTMLDivElement>("stage");
 const stageEmpty = $<HTMLDivElement>("stage-empty");
 const mediaListEl = $<HTMLDivElement>("media-list");
+let galleryGrid = false; // media bin: grid (gallery) vs list view
 const historyEl = $<HTMLDivElement>("history-list");
 const inspectorEl = $<HTMLDivElement>("inspector");
 const timelineBody = $<HTMLDivElement>("timeline-body");
@@ -415,6 +418,7 @@ const seekEl = $<HTMLInputElement>("seek");
 const playBtn = $<HTMLButtonElement>("btn-play");
 const fileInput = $<HTMLInputElement>("file-input");
 const paletteEl = $<HTMLDivElement>("effects-palette");
+const looksRow = $<HTMLDivElement>("looks-row");
 
 // ==========================================================================
 // Helpers
@@ -782,6 +786,21 @@ function drawLayer(
       if (Math.abs(media.currentTime - target) > 0.05)
         media.currentTime = target;
     }
+  }
+
+  // Before/After compare: while held, draw the clip's raw media with no
+  // effects, crop, or overlays — the "before". Preview-only (export never
+  // sets this flag), so what you export is always the edited result.
+  if (compareShowOriginal) {
+    const s = Math.min(cw / mw, ch / mh);
+    const w = mw * s;
+    const h = mh * s;
+    ctx.save();
+    ctx.filter = "none";
+    ctx.globalAlpha = 1;
+    ctx.drawImage(media, (cw - w) / 2, (ch - h) / 2, w, h);
+    ctx.restore();
+    return;
   }
 
   const { sx, sy, sw, sh } = resolveCropRect(clip, mw, mh);
@@ -1489,8 +1508,102 @@ function renderEffectsPalette(): void {
   }
 }
 
+// One-click "looks": named stacks of effects. Reimplemented from scratch — a
+// standard photo-editor feature (Odysseus lists "presets"), not copied.
+interface Look {
+  name: string;
+  stack: { type: EffectType; params: Record<string, number | string | boolean> }[];
+}
+const LOOKS: Look[] = [
+  {
+    name: "Vivid",
+    stack: [
+      { type: "color.saturate", params: { amount: 1.6 } },
+      { type: "color.contrast", params: { amount: 1.2 } },
+      { type: "color.brightness", params: { amount: 0.05 } },
+    ],
+  },
+  {
+    name: "B&W",
+    stack: [
+      { type: "color.grayscale", params: { amount: 1 } },
+      { type: "color.contrast", params: { amount: 1.2 } },
+    ],
+  },
+  {
+    name: "Warm",
+    stack: [
+      { type: "color.tint", params: { colorHex: "#ff7a2a", amount: 0.25 } },
+      { type: "color.saturate", params: { amount: 1.15 } },
+      { type: "color.brightness", params: { amount: 0.04 } },
+    ],
+  },
+  {
+    name: "Cinematic",
+    stack: [
+      { type: "color.contrast", params: { amount: 1.3 } },
+      { type: "color.saturate", params: { amount: 1.1 } },
+      { type: "color.tint", params: { colorHex: "#12b3c9", amount: 0.12 } },
+      { type: "color.vignette", params: { amount: 0.55 } },
+    ],
+  },
+  {
+    name: "Fade",
+    stack: [
+      { type: "color.contrast", params: { amount: 0.82 } },
+      { type: "color.brightness", params: { amount: 0.12 } },
+      { type: "color.saturate", params: { amount: 0.82 } },
+    ],
+  },
+];
+
+function applyLook(look: Look): void {
+  if (!selectedClipId) {
+    toast("Select a clip first, then pick a Look.", true);
+    return;
+  }
+  let added = 0;
+  for (const layer of look.stack) {
+    const spec = effectSpec(layer.type);
+    if (!spec) continue;
+    const effect = {
+      id: `fx-${crypto.randomUUID().slice(0, 8)}`,
+      type: layer.type,
+      enabled: true,
+      params: { ...defaultParams(spec), ...layer.params },
+    } as unknown as EffectInstance;
+    if (
+      commit(
+        buildAddEffect(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: selectedClipId,
+          effect,
+        }),
+      )
+    )
+      added++;
+  }
+  if (added) toast(`Applied "${look.name}" look. Undo or tweak in the Inspector.`);
+}
+
+function renderLooks(): void {
+  looksRow.innerHTML = "";
+  for (const look of LOOKS) {
+    const chip = document.createElement("button");
+    chip.className = "look-chip";
+    chip.textContent = look.name;
+    chip.disabled = selectedClipId === null;
+    chip.title = selectedClipId
+      ? `Apply the ${look.name} look to the selected clip`
+      : "Select a clip first";
+    chip.addEventListener("click", () => applyLook(look));
+    looksRow.appendChild(chip);
+  }
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
+  mediaListEl.classList.toggle("grid", galleryGrid);
   for (const asset of session.getProject()?.assets ?? []) {
     if (removedAssets.has(asset.id)) continue;
     const el = document.createElement("div");
@@ -1679,6 +1792,7 @@ function updateUI(): void {
   syncPlaybackDuration();
   renderMedia();
   renderEffectsPalette();
+  renderLooks();
   renderHistory();
   renderTimeline();
   renderInspector();
@@ -1702,6 +1816,7 @@ function setMode(next: "video" | "photo"): void {
       : "Import media, then add it to the timeline to preview.";
   renderInspector();
   renderEffectsPalette();
+  renderLooks();
 }
 
 // ==========================================================================
@@ -2962,6 +3077,29 @@ function bindEvents(): void {
     const file = fileInput.files?.[0];
     if (file) void importFile(file);
     fileInput.value = "";
+  });
+
+  // Before/After: hold the button (or the preview) to peek at the original.
+  const compareBtn = $<HTMLButtonElement>("btn-compare");
+  const showBefore = (on: boolean) => {
+    if (rasterSession) return; // raster editor draws its own canvas
+    compareShowOriginal = on;
+    compareBtn.classList.toggle("active", on);
+    drawPreview();
+  };
+  compareBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    showBefore(true);
+  });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"] as const) {
+    compareBtn.addEventListener(ev, () => showBefore(false));
+  }
+
+  // Media bin: toggle between list and gallery grid.
+  $("btn-gallery-toggle").addEventListener("click", () => {
+    galleryGrid = !galleryGrid;
+    $("btn-gallery-toggle").textContent = galleryGrid ? "☰ List" : "▦ Grid";
+    renderMedia();
   });
 
   $("btn-undo").addEventListener("click", () => {
