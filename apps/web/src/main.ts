@@ -3515,6 +3515,10 @@ function doExport(): void {
 // ==========================================================================
 configureOnnxRuntime({ wasm: ortWasmUrl, mjs: ortMjsUrl });
 seed();
+// The seed (project + sequence + tracks) is app scaffolding, not a user edit —
+// clear history so Undo can never pop it and null the project (which made
+// later imports fail with "no project exists").
+session.clearHistory();
 bindEvents();
 initTheme();
 setMode("photo");

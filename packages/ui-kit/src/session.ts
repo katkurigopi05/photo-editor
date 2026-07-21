@@ -29,6 +29,20 @@ export class EditorSession {
     return this.state;
   }
 
+  /** Drop all undo/redo history, keeping the current project as an
+   * un-undoable baseline. Call after seeding scaffolding (project, sequence,
+   * tracks) so the user can never undo the project out of existence. Keeps
+   * the invariant that `undoStack` mirrors `operationLog` (both empty). */
+  clearHistory(): void {
+    this.state = {
+      ...this.state,
+      operationLog: [],
+      undoStack: [],
+      redoStack: [],
+    };
+    this.lastError = null;
+  }
+
   getProject(): Project | null {
     return this.state.project;
   }
