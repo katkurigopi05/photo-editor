@@ -665,6 +665,12 @@ function addAssetToTimeline(
   if (added) selectClip(clipId);
 }
 
+/** Remove a clip from the timeline via the command engine (undoable). */
+function deleteClip(clipId: string): void {
+  if (selectedClipId === clipId) selectedClipId = null;
+  commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId }));
+}
+
 /** Select a clip and move the playhead onto it, so the preview shows the clip
  * you are editing (effects/adjustments become visible immediately). */
 function selectClip(clipId: string | null): void {
@@ -683,12 +689,18 @@ function drawPreview(): void {
     redrawRasterCanvas();
     return;
   }
+  // Back the canvas with physical device pixels (retina = devicePixelRatio 2+)
+  // so full-res media isn't downsampled to CSS pixels and shown blurry. CSS
+  // (#preview max-width/height:100%) scales it back down for a crisp preview.
+  const dpr = window.devicePixelRatio || 1;
   const cw = stageEl.clientWidth;
   const ch = stageEl.clientHeight;
-  if (canvas.width !== cw || canvas.height !== ch) {
-    canvas.width = cw;
-    canvas.height = ch;
+  if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
   }
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cctx.imageSmoothingQuality = "high";
   cctx.clearRect(0, 0, cw, ch);
 
   const seq = activeSequence();
@@ -1120,6 +1132,19 @@ function renderTimeline(): void {
       label.className = "clip-label";
       label.textContent = asset ? assetName(asset) : clip.id;
       el.appendChild(label);
+
+      const remove = document.createElement("button");
+      remove.className = "clip-remove";
+      remove.textContent = "✕";
+      remove.title = "Remove clip";
+      // Swallow pointerdown so it deletes instead of starting a clip drag.
+      remove.addEventListener("pointerdown", (e) => e.stopPropagation());
+      remove.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteClip(clip.id);
+      });
+      el.appendChild(remove);
+
       el.addEventListener("pointerdown", (e) => startClipDrag(e, clip, track));
       lane.appendChild(el);
     }
@@ -2885,10 +2910,7 @@ function bindEvents(): void {
   });
 
   $("btn-delete").addEventListener("click", () => {
-    if (!selectedClipId) return;
-    const id = selectedClipId;
-    selectedClipId = null;
-    commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId: id }));
+    if (selectedClipId) deleteClip(selectedClipId);
   });
 
   $("btn-split").addEventListener("click", splitSelectedClip);
