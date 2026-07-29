@@ -1,0 +1,70 @@
+/* Shared skin tokens: direction-agnostic highlight/shade values, re-tuned per
+   theme so one skin rule reads correctly on both dark and light backgrounds. */
+
+:root {
+  --skin-hi: rgba(255, 255, 255, 0.14);
+  --skin-hi-strong: rgba(255, 255, 255, 0.3);
+  --skin-lo: rgba(0, 0, 0, 0.42);
+  --skin-lo-soft: rgba(0, 0, 0, 0.22);
+  --skin-edge: rgba(255, 255, 255, 0.18);
+}
+
+:root[data-theme="light"] {
+  --skin-hi: rgba(255, 255, 255, 0.92);
+  --skin-hi-strong: rgba(255, 255, 255, 1);
+  --skin-lo: rgba(24, 28, 46, 0.24);
+  --skin-lo-soft: rgba(24, 28, 46, 0.12);
+  --skin-edge: rgba(24, 28, 46, 0.12);
+}
+
+/* Accent-filled states must survive every skin. A skin's control rule
+   (`:root[data-skin="x"] .tool`) outranks the base `.tool.primary`, which would
+   otherwise leave --on-accent text on a plain surface fill — invisible. These
+   restore the fill at a higher specificity than any skin's control rule; a skin
+   that deliberately treats accents differently (neumorphism, minimalism)
+   re-states them at equal specificity and wins on import order. */
+:root[data-skin] .tool.primary,
+:root[data-skin] .mini.active,
+:root[data-skin] .raster-tool-btn.active {
+  background: var(--accent-grad);
+  color: var(--on-accent);
+}
+
+:root[data-skin] .compare-btn.active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* The Looks chips are accent-filled in the base UI, so their label is
+   --on-accent. Every skin re-fills them with its own material, which would
+   leave the label painted for a fill that is no longer there; the disabled
+   opacity is lifted too, because 0.3 on an unfilled chip is unreadable. */
+:root[data-skin] .look-chip {
+  color: var(--text);
+}
+
+:root[data-skin] .look-chip:disabled {
+  opacity: 0.5;
+}
+
+/* Every skin animates the same surface properties; declaring the transition
+   once here keeps skin switching from flashing. */
+:root[data-skin] .tool,
+:root[data-skin] .mini,
+:root[data-skin] .fx-chip,
+:root[data-skin] .look-chip,
+:root[data-skin] .media-item,
+:root[data-skin] .import-btn {
+  transition:
+    background 0.18s,
+    border-color 0.18s,
+    box-shadow 0.18s,
+    transform 0.08s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-skin] * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

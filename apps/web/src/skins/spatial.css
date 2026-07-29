@@ -1,0 +1,145 @@
+/* Spatial — visionOS-style. Panels read as slabs floating at different depths
+   in front of an infinite dark ground: heavy ambient shadow underneath, a thin
+   luminous rim, generous corner radius, and hover that lifts a surface toward
+   the viewer instead of tinting it. */
+
+:root[data-skin="spatial"] {
+  --radius: 18px;
+  --radius-lg: 28px;
+  --sp-fill: color-mix(in srgb, var(--panel) 40%, transparent);
+  --sp-fill-strong: color-mix(in srgb, var(--panel) 62%, transparent);
+  --sp-rim: rgba(255, 255, 255, 0.16);
+  --sp-blur: blur(30px) saturate(150%);
+  --sp-lift: 0 30px 60px -18px rgba(0, 0, 0, 0.7);
+  --sp-rest: 0 18px 40px -16px rgba(0, 0, 0, 0.6);
+  --shadow: var(--sp-lift);
+  --shadow-soft: var(--sp-rest);
+}
+
+:root[data-theme="light"][data-skin="spatial"] {
+  --sp-fill: color-mix(in srgb, var(--panel) 56%, transparent);
+  --sp-fill-strong: color-mix(in srgb, var(--panel) 78%, transparent);
+  --sp-rim: rgba(40, 50, 90, 0.12);
+  --sp-lift: 0 30px 60px -18px rgba(40, 50, 90, 0.34);
+  --sp-rest: 0 18px 40px -16px rgba(40, 50, 90, 0.24);
+}
+
+/* Deep ground with a single distant light source, so the slabs have something
+   to float in front of. */
+:root[data-skin="spatial"] body {
+  background-image:
+    radial-gradient(
+      1100px 700px at 50% -20%,
+      color-mix(in srgb, var(--accent) 34%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(900px 700px at 50% 120%, var(--radial-glow), transparent 60%),
+    linear-gradient(180deg, var(--bg-2), var(--bg));
+}
+
+:root[data-skin="spatial"] #topbar,
+:root[data-skin="spatial"] .panel,
+:root[data-skin="spatial"] .theme-panel,
+:root[data-skin="spatial"] .export-card,
+:root[data-skin="spatial"] .drop-card,
+:root[data-skin="spatial"] .toast {
+  background: var(--sp-fill);
+  border: 1px solid var(--sp-rim);
+  -webkit-backdrop-filter: var(--sp-blur);
+  backdrop-filter: var(--sp-blur);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    var(--sp-rest);
+}
+
+/* Depth ordering: the center stage sits closest to the viewer, the rails
+   behind it, the top bar furthest back. */
+:root[data-skin="spatial"] #center-panel {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    var(--sp-lift);
+}
+
+:root[data-skin="spatial"] #topbar {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 10px 26px -14px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-skin="spatial"] .tool,
+:root[data-skin="spatial"] .mini,
+:root[data-skin="spatial"] .import-btn,
+:root[data-skin="spatial"] .fx-chip,
+:root[data-skin="spatial"] .look-chip,
+:root[data-skin="spatial"] .raster-tool-btn,
+:root[data-skin="spatial"] .compare-btn,
+:root[data-skin="spatial"] .view-toggle,
+:root[data-skin="spatial"] select {
+  background: var(--sp-fill);
+  border: 1px solid var(--sp-rim);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+:root[data-skin="spatial"] .media-item,
+:root[data-skin="spatial"] .history-item {
+  background: var(--sp-fill);
+  border: 1px solid var(--sp-rim);
+  border-radius: var(--radius);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+/* Hover = come forward, not change color. */
+:root[data-skin="spatial"] .tool:hover,
+:root[data-skin="spatial"] .mini:hover,
+:root[data-skin="spatial"] .fx-chip:hover,
+:root[data-skin="spatial"] .look-chip:hover,
+:root[data-skin="spatial"] .media-item:hover,
+:root[data-skin="spatial"] .import-btn:hover {
+  background: var(--sp-fill-strong);
+  border-color: rgba(255, 255, 255, 0.32);
+  transform: translateY(-2px) scale(1.015);
+  box-shadow: 0 14px 28px -12px rgba(0, 0, 0, 0.6);
+}
+
+:root[data-skin="spatial"] .tool:active,
+:root[data-skin="spatial"] .mini:active,
+:root[data-skin="spatial"] .fx-chip:active,
+:root[data-skin="spatial"] .look-chip:active {
+  transform: translateY(0) scale(0.98);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-skin="spatial"] .tool.primary {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 12px 26px -12px rgba(0, 0, 0, 0.6);
+}
+
+:root[data-skin="spatial"] .mode-switch,
+:root[data-skin="spatial"] .theme-switch {
+  background: color-mix(in srgb, var(--bg-2) 34%, transparent);
+  border-color: var(--sp-rim);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+
+:root[data-skin="spatial"] .stage,
+:root[data-skin="spatial"] .timeline-body {
+  background-color: color-mix(in srgb, var(--bg-2) 34%, transparent);
+  border-color: var(--sp-rim);
+  border-radius: var(--radius);
+}
+
+:root[data-skin="spatial"] .clip {
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 12px;
+  box-shadow: 0 10px 20px -10px rgba(0, 0, 0, 0.7);
+}
+
+:root[data-skin="spatial"] .panel-title {
+  color: var(--muted);
+  letter-spacing: 1.4px;
+}

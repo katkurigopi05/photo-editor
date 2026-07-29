@@ -1,0 +1,149 @@
+/* Liquid Glass — thick optical glass rather than frosted film. Heavy blur with
+   strong saturation, capsule geometry, and a specular rim: a bright top edge
+   fading to a dim bottom edge, plus a moving-light sheen laid over surfaces
+   with ::after so the glass looks refracted rather than merely translucent. */
+
+:root[data-skin="liquid-glass"] {
+  --radius: 16px;
+  --radius-lg: 26px;
+  --lg-fill: color-mix(in srgb, var(--panel) 34%, transparent);
+  --lg-fill-strong: color-mix(in srgb, var(--panel) 52%, transparent);
+  --lg-blur: blur(26px) saturate(190%);
+  --lg-rim:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.14),
+    inset 1px 0 0 rgba(255, 255, 255, 0.16),
+    inset -1px 0 0 rgba(255, 255, 255, 0.16);
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="light"][data-skin="liquid-glass"] {
+  --lg-fill: color-mix(in srgb, var(--panel) 48%, transparent);
+  --lg-fill-strong: color-mix(in srgb, var(--panel) 70%, transparent);
+  --shadow: 0 24px 60px rgba(40, 50, 90, 0.2);
+  --shadow-soft: 0 12px 32px rgba(40, 50, 90, 0.14);
+}
+
+:root[data-skin="liquid-glass"] body {
+  background-image:
+    radial-gradient(
+      820px 620px at 8% 0%,
+      color-mix(in srgb, var(--accent) 62%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      700px 600px at 92% 100%,
+      color-mix(in srgb, var(--accent-2) 58%, transparent),
+      transparent 62%
+    ),
+    linear-gradient(150deg, var(--bg-2), var(--bg));
+}
+
+:root[data-skin="liquid-glass"] #topbar,
+:root[data-skin="liquid-glass"] .panel,
+:root[data-skin="liquid-glass"] .theme-panel,
+:root[data-skin="liquid-glass"] .export-card,
+:root[data-skin="liquid-glass"] .drop-card,
+:root[data-skin="liquid-glass"] .toast {
+  background: var(--lg-fill);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  -webkit-backdrop-filter: var(--lg-blur);
+  backdrop-filter: var(--lg-blur);
+  box-shadow: var(--lg-rim), var(--shadow-soft);
+}
+
+/* Specular sheen: a diagonal band of light across the top-left of the slab,
+   painted as a background layer (not a ::after overlay) so it stays pinned to
+   the border box inside scrolling panels and never intercepts pointer events.
+   #center-panel is left out on purpose — nothing tints the image being edited. */
+:root[data-skin="liquid-glass"] #topbar,
+:root[data-skin="liquid-glass"] #left-panel,
+:root[data-skin="liquid-glass"] #right-panel,
+:root[data-skin="liquid-glass"] .export-card {
+  background-image: linear-gradient(
+    118deg,
+    rgba(255, 255, 255, 0.26) 0%,
+    rgba(255, 255, 255, 0.06) 22%,
+    transparent 46%
+  );
+}
+
+:root[data-skin="liquid-glass"] .tool,
+:root[data-skin="liquid-glass"] .mini,
+:root[data-skin="liquid-glass"] .import-btn,
+:root[data-skin="liquid-glass"] .fx-chip,
+:root[data-skin="liquid-glass"] .look-chip,
+:root[data-skin="liquid-glass"] .raster-tool-btn,
+:root[data-skin="liquid-glass"] .compare-btn,
+:root[data-skin="liquid-glass"] .view-toggle,
+:root[data-skin="liquid-glass"] .media-item,
+:root[data-skin="liquid-glass"] .history-item,
+:root[data-skin="liquid-glass"] select {
+  background: var(--lg-fill);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+  box-shadow: var(--lg-rim);
+}
+
+:root[data-skin="liquid-glass"] .media-item,
+:root[data-skin="liquid-glass"] .history-item {
+  border-radius: var(--radius);
+}
+
+:root[data-skin="liquid-glass"] .tool:hover,
+:root[data-skin="liquid-glass"] .mini:hover,
+:root[data-skin="liquid-glass"] .fx-chip:hover,
+:root[data-skin="liquid-glass"] .look-chip:hover,
+:root[data-skin="liquid-glass"] .media-item:hover,
+:root[data-skin="liquid-glass"] .import-btn:hover {
+  background: var(--lg-fill-strong);
+  border-color: rgba(255, 255, 255, 0.44);
+  box-shadow: var(--lg-rim), 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+
+:root[data-skin="liquid-glass"] .tool:active,
+:root[data-skin="liquid-glass"] .mini:active,
+:root[data-skin="liquid-glass"] .fx-chip:active {
+  transform: scale(0.97);
+}
+
+:root[data-skin="liquid-glass"] .tool.primary {
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: var(--lg-rim), 0 8px 22px rgba(0, 0, 0, 0.3);
+}
+
+:root[data-skin="liquid-glass"] .mode-switch,
+:root[data-skin="liquid-glass"] .theme-switch {
+  background: color-mix(in srgb, var(--bg-2) 32%, transparent);
+  border-color: rgba(255, 255, 255, 0.2);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+:root[data-skin="liquid-glass"] .mode-btn.active,
+:root[data-skin="liquid-glass"] .theme-btn.active {
+  box-shadow: var(--lg-rim);
+}
+
+:root[data-skin="liquid-glass"] .stage,
+:root[data-skin="liquid-glass"] .timeline-body {
+  background-color: color-mix(in srgb, var(--bg-2) 30%, transparent);
+  border-color: rgba(255, 255, 255, 0.18);
+  border-radius: var(--radius-lg);
+}
+
+:root[data-skin="liquid-glass"] .clip {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 58%, transparent),
+    color-mix(in srgb, var(--accent) 26%, transparent)
+  );
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 12px;
+  -webkit-backdrop-filter: blur(12px) saturate(170%);
+  backdrop-filter: blur(12px) saturate(170%);
+  box-shadow: var(--lg-rim);
+}

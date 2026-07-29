@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Project Director — Editor</title>
     <link rel="stylesheet" href="/src/index.css" />
+    <link rel="stylesheet" href="/src/skins/skins.css" />
     <script>
-      // Apply the persisted theme before first paint, to avoid a flash of the
-      // wrong theme. "system" resolves via prefers-color-scheme.
+      // Apply the persisted theme and UI skin before first paint, to avoid a
+      // flash of the wrong surface. "system" resolves via prefers-color-scheme.
       (function () {
         var stored = localStorage.getItem("director-theme") || "system";
         var resolved =
@@ -18,6 +19,10 @@
             : stored;
         document.documentElement.setAttribute("data-theme", resolved);
         document.documentElement.setAttribute("data-theme-pref", stored);
+        var skin = localStorage.getItem("director-skin");
+        if (skin && skin !== "default") {
+          document.documentElement.setAttribute("data-skin", skin);
+        }
       })();
     </script>
   </head>
@@ -58,6 +63,8 @@
               🎨
             </button>
             <div id="theme-panel" class="theme-panel hidden">
+              <div class="theme-panel-title">UI style</div>
+              <div id="skin-grid" class="skin-grid"></div>
               <div class="theme-panel-title">Color theme</div>
               <div id="theme-preset-grid" class="theme-preset-grid"></div>
               <div id="theme-custom-list" class="theme-custom-list"></div>

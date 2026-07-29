@@ -44,6 +44,9 @@ import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import {
   PRESETS,
   PRESET_LABELS,
+  presetTokens,
+  counterpartSeeds,
+  seedsAreDark,
   deriveTheme,
   applyThemeTokens,
   loadCustomThemes,
@@ -52,6 +55,7 @@ import {
   MAX_CUSTOM_THEMES,
   type ThemeTokens,
 } from "./theme.js";
+import { SKINS, currentSkin, applySkin } from "./skin.js";
 import { RasterSession, canvasPointToImage } from "./raster.js";
 import {
   stampBrush,
@@ -1847,21 +1851,39 @@ function setThemeSelection(selection: string): void {
   localStorage.setItem(THEME_SELECTION_KEY, selection);
 }
 
-function resolveSelectionTokens(selection: string): ThemeTokens | null {
+/** Tokens for the current selection *in the given mode*. Presets ship a
+ * palette per mode; a custom theme is flipped into the mode it was not
+ * authored for. Both matter because these land as inline vars on <html>, which
+ * outrank the [data-theme] rules — resolving without the mode is what makes
+ * the dark/light switch look dead once a palette is picked. */
+function resolveSelectionTokens(
+  selection: string,
+  mode: "dark" | "light",
+): ThemeTokens | null {
   if (selection === "default") return null;
-  if (selection in PRESETS) return PRESETS[selection] ?? null;
+  if (selection in PRESETS) return presetTokens(selection, mode);
   if (selection.startsWith("custom:")) {
     const name = selection.slice("custom:".length);
     const entry = loadCustomThemes().find((c) => c.name === name);
     if (!entry) return null;
-    return deriveTheme(
-      entry.seeds.bg,
-      entry.seeds.panel,
-      entry.seeds.text,
-      entry.seeds.accent,
-    );
+    const authored = entry.seeds;
+    const s =
+      seedsAreDark(authored) === (mode === "dark")
+        ? authored
+        : counterpartSeeds(authored);
+    return deriveTheme(s.bg, s.panel, s.text, s.accent);
   }
   return null;
+}
+
+/** Re-apply the selected palette for whatever mode is currently resolved. */
+function refreshThemeTokens(): void {
+  applyThemeTokens(
+    resolveSelectionTokens(
+      currentThemeSelection(),
+      resolveTheme(currentThemePreference()),
+    ),
+  );
 }
 
 function applyTheme(pref: ThemePreference): void {
@@ -1872,12 +1894,37 @@ function applyTheme(pref: ThemePreference): void {
   for (const id of ["theme-dark", "theme-light", "theme-system"] as const) {
     $(id).classList.toggle("active", id === `theme-${pref}`);
   }
+  refreshThemeTokens();
+  renderThemePanel();
 }
 
 function applyThemeSelection(selection: string): void {
   setThemeSelection(selection);
-  applyThemeTokens(resolveSelectionTokens(selection));
+  refreshThemeTokens();
   renderThemePanel();
+}
+
+/** UI style (skin) swatches — orthogonal to the color theme below them. */
+function renderSkinPanel(): void {
+  const active = currentSkin();
+  const grid = $<HTMLDivElement>("skin-grid");
+  grid.innerHTML = "";
+  for (const skin of SKINS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `skin-swatch${skin.id === active ? " active" : ""}`;
+    btn.style.background = skin.preview;
+    btn.title = skin.blurb;
+    const label = document.createElement("span");
+    label.className = "skin-swatch-label";
+    label.textContent = skin.label;
+    btn.appendChild(label);
+    btn.addEventListener("click", () => {
+      applySkin(skin.id);
+      renderSkinPanel();
+    });
+    grid.appendChild(btn);
+  }
 }
 
 function renderThemePanel(): void {
@@ -1894,11 +1941,14 @@ function renderThemePanel(): void {
   defaultSwatch.addEventListener("click", () => applyThemeSelection("default"));
   grid.appendChild(defaultSwatch);
 
-  for (const [key, tokens] of Object.entries(PRESETS)) {
+  // Swatches preview the palette in the mode the editor is actually in.
+  const mode = resolveTheme(currentThemePreference());
+  for (const [key, preset] of Object.entries(PRESETS)) {
+    const seeds = preset[mode];
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `theme-swatch${selection === key ? " active" : ""}`;
-    btn.style.background = `linear-gradient(135deg, ${tokens.bg}, ${tokens.accent})`;
+    btn.style.background = `linear-gradient(135deg, ${seeds.bg}, ${seeds.accent})`;
     btn.title = PRESET_LABELS[key] ?? key;
     btn.innerHTML = `<span class="theme-swatch-label">${PRESET_LABELS[key] ?? key}</span>`;
     btn.addEventListener("click", () => applyThemeSelection(key));
@@ -1935,8 +1985,12 @@ function renderThemePanel(): void {
 }
 
 function initTheme(): void {
+  // applyTheme also lands the selected palette for the resolved mode.
   applyTheme(currentThemePreference());
-  applyThemeTokens(resolveSelectionTokens(currentThemeSelection()));
+  // Re-apply the persisted skin: index.html sets it pre-paint without
+  // validating, so this is where an unknown id falls back to "default".
+  applySkin(currentSkin());
+  renderSkinPanel();
   renderThemePanel();
   // If the user is following the system theme, react to OS changes live.
   systemThemeQuery.addEventListener("change", () => {
@@ -1999,7 +2053,7 @@ function bindThemePicker(): void {
   }
   cancelBtn.addEventListener("click", () => {
     form.classList.add("hidden");
-    applyThemeTokens(resolveSelectionTokens(currentThemeSelection()));
+    refreshThemeTokens();
   });
   form.addEventListener("submit", (e) => {
     e.preventDefault();

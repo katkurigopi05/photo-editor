@@ -1,0 +1,27 @@
+/* UI skins — the material layer of the interface.
+ *
+ * Each skin is keyed off `data-skin` on <html> (set by src/skin.ts) and only
+ * restyles *surfaces*: fill, border, elevation, radius, blur, texture. Skins
+ * deliberately never redefine the palette tokens (--panel, --accent, ...)
+ * because custom color themes set those as inline styles on <html>, which
+ * would win the cascade; skins reference the tokens instead. That keeps every
+ * skin composable with every theme and with dark/light.
+ *
+ * Shared surface groups used across the skin files:
+ *   surfaces : #topbar, .panel, .theme-panel, .export-card, .toast
+ *   controls : .tool, .mini, .import-btn, .fx-chip, .look-chip, select, ...
+ *   items    : .media-item, .history-item
+ *
+ * @import must lead the file, so the shared highlight/shade tokens live in
+ * tokens.css rather than inline below.
+ */
+
+@import "./tokens.css";
+@import "./skeuomorphism.css";
+@import "./neumorphism.css";
+@import "./glassmorphism.css";
+@import "./claymorphism.css";
+@import "./minimalism.css";
+@import "./maximalism.css";
+@import "./liquid-glass.css";
+@import "./spatial.css";
