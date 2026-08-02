@@ -56,6 +56,7 @@ import {
   type ThemeTokens,
 } from "./theme.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
+import { detectKind, isMediaFile } from "./media-types.js";
 import {
   boomerangOrder,
   clampGifFps,
@@ -592,11 +593,7 @@ function seed(): void {
 // ==========================================================================
 async function importFile(file: File): Promise<void> {
   const url = URL.createObjectURL(file);
-  const kind: MediaAsset["kind"] = file.type.startsWith("video/")
-    ? "video"
-    : file.type.startsWith("audio/")
-      ? "audio"
-      : "image";
+  const kind = detectKind(file);
 
   let width = 1920;
   let height = 1080;
@@ -605,23 +602,47 @@ async function importFile(file: File): Promise<void> {
   if (kind === "image") {
     const img = new Image();
     img.src = url;
-    await img.decode().catch(() => undefined);
-    width = img.naturalWidth || width;
-    height = img.naturalHeight || height;
+    const decoded = await img
+      .decode()
+      .then(() => true)
+      .catch(() => false);
+    // Registering an undecodable file would put a permanently blank clip on
+    // the timeline and silently export black frames — say so instead.
+    if (!decoded || !img.naturalWidth) {
+      URL.revokeObjectURL(url);
+      toast(`Could not decode ${file.name} — unsupported image format.`, true);
+      return;
+    }
+    width = img.naturalWidth;
+    height = img.naturalHeight;
     mediaCache.set(url, img);
   } else {
     const el = document.createElement(kind === "video" ? "video" : "audio") as
-      HTMLVideoElement | HTMLAudioElement;
+      | HTMLVideoElement
+      | HTMLAudioElement;
     el.src = url;
     el.muted = true;
-    el.preload = "metadata";
-    await new Promise<void>((resolve) => {
-      el.onloadedmetadata = () => resolve();
-      el.onerror = () => resolve();
+    // Video needs actual frame data to paint the first preview, not just the
+    // metadata header; audio only ever needs the duration up front.
+    el.preload = kind === "video" ? "auto" : "metadata";
+    const loaded = await new Promise<boolean>((resolve) => {
+      el.onloadedmetadata = () => resolve(true);
+      el.onerror = () => resolve(false);
     });
-    durationUs = String(
-      Math.max(1, Math.round((el.duration || 5) * 1_000_000)),
-    );
+    if (!loaded) {
+      URL.revokeObjectURL(url);
+      toast(
+        `Could not decode ${file.name} — this browser cannot play that ${kind} format.`,
+        true,
+      );
+      return;
+    }
+    // Streams written without a duration header report Infinity; the clip
+    // still works, it just cannot be sized from metadata.
+    const seconds = Number.isFinite(el.duration) && el.duration > 0
+      ? el.duration
+      : 5;
+    durationUs = String(Math.max(1, Math.round(seconds * 1_000_000)));
     if (el instanceof HTMLVideoElement) {
       width = el.videoWidth || width;
       height = el.videoHeight || height;
@@ -659,8 +680,16 @@ async function importFile(file: File): Promise<void> {
 }
 
 async function importFiles(files: FileList | File[]): Promise<void> {
-  for (const file of Array.from(files)) {
-    if (/^(image|video|audio)\//.test(file.type)) await importFile(file);
+  const media = Array.from(files).filter(isMediaFile);
+  const skipped = Array.from(files).length - media.length;
+  for (const file of media) {
+    await importFile(file);
+  }
+  if (skipped > 0) {
+    toast(
+      `Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ${skipped === 1 ? "is" : "are"} not image, video or audio.`,
+      true,
+    );
   }
 }
 
@@ -780,6 +809,38 @@ function resolveCropRect(
  * `ctx`. Used for both the live preview canvas and offscreen export
  * rendering, so effects are guaranteed identical between what you see and
  * what you export. */
+/** Videos with a seek in flight. One pending redraw per element is enough —
+ * the redraw reads whatever the latest requested time is. */
+const seekingVideos = new WeakSet<HTMLVideoElement>();
+
+/**
+ * Schedules a preview redraw for when `video` has a frame to give.
+ *
+ * Two cases need it: a seek that has not decoded yet, and a freshly imported
+ * clip sitting at time 0 that has never decoded anything at all. The second is
+ * not a seek — the element is already at the requested time — so `seeked`
+ * alone would never fire; `loadeddata` covers it.
+ *
+ * `requestVideoFrameCallback` is the precise signal where available (it fires
+ * when a frame is ready to present). The redraw cannot loop: by the time it
+ * runs the element is within tolerance of the target and has data, so
+ * drawLayer does not schedule again.
+ */
+function redrawWhenFrameReady(video: HTMLVideoElement): void {
+  if (seekingVideos.has(video)) return;
+  seekingVideos.add(video);
+  const settle = (): void => {
+    if (!seekingVideos.has(video)) return;
+    seekingVideos.delete(video);
+    drawPreview();
+  };
+  if (typeof video.requestVideoFrameCallback === "function") {
+    video.requestVideoFrameCallback(() => settle());
+  }
+  video.addEventListener("seeked", settle, { once: true });
+  video.addEventListener("loadeddata", settle, { once: true });
+}
+
 function drawLayer(
   ctx: CanvasRenderingContext2D,
   clip: TimelineClip,
@@ -802,8 +863,18 @@ function drawLayer(
     mh = media.videoHeight || mh;
     if (playback.playing === false) {
       const target = Number(sourceTimeUs) / 1_000_000;
-      if (Math.abs(media.currentTime - target) > 0.05)
+      if (Math.abs(media.currentTime - target) > 0.05) {
         media.currentTime = target;
+        // Decoding is asynchronous: the frame for `target` is not available to
+        // the drawImage below, which would paint the previous one and leave it
+        // there. Redraw once the frame actually lands.
+        redrawWhenFrameReady(media);
+      } else if (media.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        // Already at the right time but nothing decoded yet — a clip that was
+        // just imported and sits at 0. Without this the preview stays empty
+        // until the playhead is moved.
+        redrawWhenFrameReady(media);
+      }
     }
   }
 
@@ -3271,8 +3342,8 @@ function bindEvents(): void {
 
   $("btn-import").addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
-    const file = fileInput.files?.[0];
-    if (file) void importFile(file);
+    const files = fileInput.files;
+    if (files && files.length > 0) void importFiles(files);
     fileInput.value = "";
   });
 

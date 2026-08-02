@@ -44,6 +44,32 @@ FFMPEG=/path/to/ffmpeg python3 scripts/make_test_media.py
 | `audio/tone-sweep-5s.wav` | Waveform rendering, audio gain/pan, audio in export. Clicks land on each second boundary, so trim and sync are checkable by ear |
 | `video/motion-1280x720-5s.mp4` | Video decode, seeking, frame-accurate export. H.264, 1280x720, 24fps, exactly 120 frames. The marker crosses the frame once per clip and the bottom ticks light one per second, so the displayed frame can be read off the picture — a preview that lags the playhead is visible rather than merely suspected |
 
+## Format coverage
+
+The alternate-format files exist so "does it open a .mov / .mp3 / .webp" can be
+answered by importing one. All of the below were verified importing in a single
+multi-select into Chromium: correct kind, correct duration, decoded preview.
+
+| Format | Fixture | Imports as |
+|---|---|---|
+| PNG | `photos/*.png` | image |
+| JPEG | `photos/*.jpg` | image |
+| WebP | `photos/colour-chart-512x512.webp` | image |
+| GIF | `animation/spinner-240x240.gif` | image (first frame) |
+| MP4 / H.264 | `video/motion-1280x720-5s.mp4` | video |
+| QuickTime | `video/motion-640x360-3s.mov` | video |
+| WebM / VP9 | `video/motion-640x360-3s.webm` | video |
+| MP3 | `audio/tone-sweep-5s.mp3` | audio |
+| AAC in M4A | `audio/tone-sweep-5s.m4a` | audio |
+| Opus in Ogg | `audio/tone-sweep-5s.ogg` | audio |
+| FLAC | `audio/tone-sweep-5s.flac` | audio |
+| WAV | `audio/tone-sweep-5s.wav` | audio |
+
+No fixture is committed for AVIF, HEIC, MKV or AVI. The importer classifies
+them by extension, but whether they decode depends entirely on the browser
+build, and a fixture that fails on half of them is worse than none. Undecodable
+files are reported by name and never reach the timeline.
+
 ## Notes
 
 - The audio file is stereo and deliberately asymmetric — the left channel

@@ -381,6 +381,83 @@ def motion_clip(path: Path, seconds: int = 5, fps: int = 24) -> bool:
     return True
 
 
+def alternate_formats(media: Path) -> None:
+    """Transcode the base clip and tone into the other containers people
+    actually hand an editor.
+
+    These exist so "does it open a .mov / .mp3 / .webp" is answerable without
+    hunting for a file. All are short and re-encoded from fixtures generated
+    above, so they inherit the same public-domain status. Skipped wholesale
+    when ffmpeg is missing.
+    """
+    source_video = media / "video" / "motion-1280x720-5s.mp4"
+    source_audio = media / "audio" / "tone-sweep-5s.wav"
+    source_image = media / "photos" / "colour-chart-1024x1024.png"
+
+    # WebP through Pillow: ffmpeg builds frequently omit the encoder, and
+    # Pillow has had it since 9.x.
+    if source_image.exists():
+        webp = media / "photos" / "colour-chart-512x512.webp"
+        try:
+            with Image.open(source_image) as original:
+                original.resize((512, 512), Image.LANCZOS).save(
+                    webp, "WEBP", quality=82, method=6
+                )
+            print(f"  {webp.relative_to(ROOT)}  "
+                  f"{webp.stat().st_size / 1024:.0f} KB")
+        except (OSError, ValueError) as error:
+            print(f"  skipped {webp.name}: {error}")
+
+    ffmpeg = _find_ffmpeg()
+    if ffmpeg is None:
+        print("  skipped the rest: no ffmpeg")
+        return
+
+    # (output, input, extra ffmpeg args). Sizes stay small: the point is
+    # container/codec coverage, not picture quality.
+    jobs: list[tuple[Path, Path, list[str]]] = []
+    if source_video.exists():
+        jobs += [
+            (media / "video" / "motion-640x360-3s.mov", source_video,
+             ["-t", "3", "-vf", "scale=640:360", "-c:v", "libx264",
+              "-crf", "30", "-pix_fmt", "yuv420p"]),
+            (media / "video" / "motion-640x360-3s.webm", source_video,
+             ["-t", "3", "-vf", "scale=640:360", "-c:v", "libvpx-vp9",
+              "-crf", "42", "-b:v", "0", "-pix_fmt", "yuv420p"]),
+        ]
+    if source_audio.exists():
+        jobs += [
+            (media / "audio" / "tone-sweep-5s.mp3", source_audio,
+             ["-c:a", "libmp3lame", "-b:a", "96k"]),
+            (media / "audio" / "tone-sweep-5s.m4a", source_audio,
+             ["-c:a", "aac", "-b:a", "96k"]),
+            (media / "audio" / "tone-sweep-5s.ogg", source_audio,
+             ["-c:a", "libopus", "-b:a", "64k"]),
+            (media / "audio" / "tone-sweep-5s.flac", source_audio,
+             ["-c:a", "flac", "-compression_level", "8"]),
+        ]
+    if source_image.exists():
+        jobs += [
+            (media / "photos" / "colour-chart-512x512.jpg", source_image,
+             ["-vf", "scale=512:512", "-q:v", "4"]),
+        ]
+
+    for output, source, args in jobs:
+        _new_dir(output.parent)
+        result = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", str(source),
+             *args, str(output)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not output.exists():
+            # One missing codec should not sink the rest of the set.
+            detail = result.stderr.strip().splitlines()[-1:] or ["unknown"]
+            print(f"  skipped {output.name}: {detail[0]}")
+            continue
+        print(f"  {output.relative_to(ROOT)}  "
+              f"{output.stat().st_size / 1024:.0f} KB")
+
+
 def main() -> None:
     photos = _new_dir(MEDIA / "photos")
     animation = _new_dir(MEDIA / "animation")
@@ -406,6 +483,9 @@ def main() -> None:
         pass
     else:
         print("  skipped: no usable ffmpeg (install ffmpeg, or set $FFMPEG)")
+
+    print("alternate formats")
+    alternate_formats(MEDIA)
 
 
 if __name__ == "__main__":

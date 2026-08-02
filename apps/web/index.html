@@ -177,10 +177,14 @@
             </button>
           </div>
           <button id="btn-import" class="import-btn">＋ Import media…</button>
+          <!-- `multiple` so a whole shoot can be brought in at once. The
+               accept list stays broad: the extension fallback in main.ts
+               classifies anything the OS reports without a MIME type. -->
           <input
             id="file-input"
             type="file"
             accept="image/*,video/*,audio/*"
+            multiple
             hidden
           />
           <div id="media-list" class="media-list"></div>
