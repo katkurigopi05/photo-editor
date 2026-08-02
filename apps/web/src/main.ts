@@ -29,10 +29,24 @@ import {
   frameToStartTimeUs,
   type PlaybackState,
 } from "@director/playback-controller";
-import { planExport } from "@director/export-engine";
+import {
+  planExport,
+  planVideoFrames,
+  startExport,
+  advanceExport,
+  failExport,
+  cancelExport,
+  type ExportJob,
+  type ExportPreset,
+  type ExportPlan,
+} from "@director/export-engine";
+import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import {
   PRESETS,
   PRESET_LABELS,
+  presetTokens,
+  counterpartSeeds,
+  seedsAreDark,
   deriveTheme,
   applyThemeTokens,
   loadCustomThemes,
@@ -41,6 +55,15 @@ import {
   MAX_CUSTOM_THEMES,
   type ThemeTokens,
 } from "./theme.js";
+import { SKINS, currentSkin, applySkin } from "./skin.js";
+import { detectKind, isMediaFile } from "./media-types.js";
+import {
+  boomerangOrder,
+  clampGifFps,
+  createGifEncoder,
+  isGifEncoderLoaded,
+  loadGifEncoder,
+} from "./gif.js";
 import { RasterSession, canvasPointToImage } from "./raster.js";
 import {
   stampBrush,
@@ -298,11 +321,43 @@ const ACTOR = { type: "user", id: "user-1" } as const;
 const FRAME_RATE = { numerator: 30, denominator: 1 };
 
 const session = new EditorSession();
-let mode: "video" | "photo" = "photo";
+/** GIF is a third output mode, not a third editor: it shares the timeline and
+ * the effect stack with video, and differs only in how frames leave the app. */
+type EditorMode = "video" | "photo" | "gif";
+const MODE_ORDER: readonly EditorMode[] = ["photo", "video", "gif"];
+/** Wheel geometry and gesture thresholds — see the .mode-wheel CSS block. */
+const MODE_WHEEL_STEP_DEG = 60;
+const MODE_WHEEL_SCROLL_PX = 40;
+const MODE_WHEEL_DRAG_PX = 22;
+let mode: EditorMode = "photo";
 let selectedClipId: string | null = null;
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
 const mediaCache = new Map<string, HTMLImageElement | HTMLVideoElement>();
+// Display-only friendly names per asset id (original filename at import, or a
+// generated label for edited exports). Not part of the deterministic project.
+const assetNames = new Map<string, string>();
+// Asset ids hidden from the media bin (there's no public asset-removal
+// command; this is a display filter, like mediaCache/assetNames).
+const removedAssets = new Set<string>();
+
+// -- Live audio monitoring (preview A/V sync; Phase 3 sync + Phase 4 mixing).
+// Session state, outside the command engine — like playback itself. Each
+// media element is routed once through gain→pan→destination so the timeline
+// is actually audible while playing, with each clip's gain/pan applied. --
+let audioCtx: AudioContext | null = null;
+interface AudioRoute {
+  gain: GainNode;
+  pan: StereoPannerNode;
+}
+const audioRoutes = new Map<HTMLMediaElement, AudioRoute>();
+
+// Cached normalized waveform peaks (0..1) per audio asset id, for the
+// timeline. Decoded once, asynchronously, then the timeline re-renders.
+const WAVEFORM_BUCKETS = 1400;
+const waveformCache = new Map<string, number[]>();
+const waveformPending = new Set<string>();
+let decodeCtx: OfflineAudioContext | null = null;
 
 // -- Raster photo editing (Photo mode only; local session state, outside
 // the deterministic command engine — see raster.ts) --
@@ -358,6 +413,8 @@ const rasterOptions = {
 };
 
 let aiSegmentationBusy = false;
+// While true (Before/After button held), the preview shows the raw original.
+let compareShowOriginal = false;
 
 // ==========================================================================
 // DOM references
@@ -370,6 +427,7 @@ const cctx = canvas.getContext("2d")!;
 const stageEl = $<HTMLDivElement>("stage");
 const stageEmpty = $<HTMLDivElement>("stage-empty");
 const mediaListEl = $<HTMLDivElement>("media-list");
+let galleryGrid = false; // media bin: grid (gallery) vs list view
 const historyEl = $<HTMLDivElement>("history-list");
 const inspectorEl = $<HTMLDivElement>("inspector");
 const timelineBody = $<HTMLDivElement>("timeline-body");
@@ -380,6 +438,7 @@ const seekEl = $<HTMLInputElement>("seek");
 const playBtn = $<HTMLButtonElement>("btn-play");
 const fileInput = $<HTMLInputElement>("file-input");
 const paletteEl = $<HTMLDivElement>("effects-palette");
+const looksRow = $<HTMLDivElement>("looks-row");
 
 // ==========================================================================
 // Helpers
@@ -534,11 +593,7 @@ function seed(): void {
 // ==========================================================================
 async function importFile(file: File): Promise<void> {
   const url = URL.createObjectURL(file);
-  const kind: MediaAsset["kind"] = file.type.startsWith("video/")
-    ? "video"
-    : file.type.startsWith("audio/")
-      ? "audio"
-      : "image";
+  const kind = detectKind(file);
 
   let width = 1920;
   let height = 1080;
@@ -547,23 +602,47 @@ async function importFile(file: File): Promise<void> {
   if (kind === "image") {
     const img = new Image();
     img.src = url;
-    await img.decode().catch(() => undefined);
-    width = img.naturalWidth || width;
-    height = img.naturalHeight || height;
+    const decoded = await img
+      .decode()
+      .then(() => true)
+      .catch(() => false);
+    // Registering an undecodable file would put a permanently blank clip on
+    // the timeline and silently export black frames — say so instead.
+    if (!decoded || !img.naturalWidth) {
+      URL.revokeObjectURL(url);
+      toast(`Could not decode ${file.name} — unsupported image format.`, true);
+      return;
+    }
+    width = img.naturalWidth;
+    height = img.naturalHeight;
     mediaCache.set(url, img);
   } else {
     const el = document.createElement(kind === "video" ? "video" : "audio") as
-      HTMLVideoElement | HTMLAudioElement;
+      | HTMLVideoElement
+      | HTMLAudioElement;
     el.src = url;
     el.muted = true;
-    el.preload = "metadata";
-    await new Promise<void>((resolve) => {
-      el.onloadedmetadata = () => resolve();
-      el.onerror = () => resolve();
+    // Video needs actual frame data to paint the first preview, not just the
+    // metadata header; audio only ever needs the duration up front.
+    el.preload = kind === "video" ? "auto" : "metadata";
+    const loaded = await new Promise<boolean>((resolve) => {
+      el.onloadedmetadata = () => resolve(true);
+      el.onerror = () => resolve(false);
     });
-    durationUs = String(
-      Math.max(1, Math.round((el.duration || 5) * 1_000_000)),
-    );
+    if (!loaded) {
+      URL.revokeObjectURL(url);
+      toast(
+        `Could not decode ${file.name} — this browser cannot play that ${kind} format.`,
+        true,
+      );
+      return;
+    }
+    // Streams written without a duration header report Infinity; the clip
+    // still works, it just cannot be sized from metadata.
+    const seconds = Number.isFinite(el.duration) && el.duration > 0
+      ? el.duration
+      : 5;
+    durationUs = String(Math.max(1, Math.round(seconds * 1_000_000)));
     if (el instanceof HTMLVideoElement) {
       width = el.videoWidth || width;
       height = el.videoHeight || height;
@@ -573,6 +652,7 @@ async function importFile(file: File): Promise<void> {
 
   const checksum = await sha256Hex(await file.arrayBuffer());
   const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  assetNames.set(assetId, file.name);
   const metadata: MediaAsset["metadata"] = {
     fileSizeBytes: String(file.size),
     durationUs,
@@ -600,8 +680,16 @@ async function importFile(file: File): Promise<void> {
 }
 
 async function importFiles(files: FileList | File[]): Promise<void> {
-  for (const file of Array.from(files)) {
-    if (/^(image|video|audio)\//.test(file.type)) await importFile(file);
+  const media = Array.from(files).filter(isMediaFile);
+  const skipped = Array.from(files).length - media.length;
+  for (const file of media) {
+    await importFile(file);
+  }
+  if (skipped > 0) {
+    toast(
+      `Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ${skipped === 1 ? "is" : "are"} not image, video or audio.`,
+      true,
+    );
   }
 }
 
@@ -636,6 +724,12 @@ function addAssetToTimeline(
   if (added) selectClip(clipId);
 }
 
+/** Remove a clip from the timeline via the command engine (undoable). */
+function deleteClip(clipId: string): void {
+  if (selectedClipId === clipId) selectedClipId = null;
+  commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId }));
+}
+
 /** Select a clip and move the playhead onto it, so the preview shows the clip
  * you are editing (effects/adjustments become visible immediately). */
 function selectClip(clipId: string | null): void {
@@ -654,12 +748,18 @@ function drawPreview(): void {
     redrawRasterCanvas();
     return;
   }
+  // Back the canvas with physical device pixels (retina = devicePixelRatio 2+)
+  // so full-res media isn't downsampled to CSS pixels and shown blurry. CSS
+  // (#preview max-width/height:100%) scales it back down for a crisp preview.
+  const dpr = window.devicePixelRatio || 1;
   const cw = stageEl.clientWidth;
   const ch = stageEl.clientHeight;
-  if (canvas.width !== cw || canvas.height !== ch) {
-    canvas.width = cw;
-    canvas.height = ch;
+  if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
   }
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cctx.imageSmoothingQuality = "high";
   cctx.clearRect(0, 0, cw, ch);
 
   const seq = activeSequence();
@@ -675,11 +775,74 @@ function drawPreview(): void {
   // Paint highest track index last (on top): resolve order is track order.
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
-    if (loc) drawLayer(loc.clip, layer.sourceTimeUs, cw, ch);
+    if (loc) drawLayer(cctx, loc.clip, layer.sourceTimeUs, cw, ch);
   }
 }
 
+/** Crop/reframe is a non-destructive effect: it narrows the source rect
+ * sampled from the media rather than touching the media itself. Shared by
+ * live preview and export so both agree on the exact same rect. */
+function resolveCropRect(
+  clip: TimelineClip,
+  mw: number,
+  mh: number,
+): { sx: number; sy: number; sw: number; sh: number } {
+  const cropFx = clip.effects.find(
+    (e) => e.enabled && e.type === "transform.crop",
+  );
+  if (!cropFx) return { sx: 0, sy: 0, sw: mw, sh: mh };
+  const p = cropFx.params as {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  return {
+    sx: p.x * mw,
+    sy: p.y * mh,
+    sw: Math.max(1, p.width * mw),
+    sh: Math.max(1, p.height * mh),
+  };
+}
+
+/** Renders one composited clip layer — including all baked-in effects — onto
+ * `ctx`. Used for both the live preview canvas and offscreen export
+ * rendering, so effects are guaranteed identical between what you see and
+ * what you export. */
+/** Videos with a seek in flight. One pending redraw per element is enough —
+ * the redraw reads whatever the latest requested time is. */
+const seekingVideos = new WeakSet<HTMLVideoElement>();
+
+/**
+ * Schedules a preview redraw for when `video` has a frame to give.
+ *
+ * Two cases need it: a seek that has not decoded yet, and a freshly imported
+ * clip sitting at time 0 that has never decoded anything at all. The second is
+ * not a seek — the element is already at the requested time — so `seeked`
+ * alone would never fire; `loadeddata` covers it.
+ *
+ * `requestVideoFrameCallback` is the precise signal where available (it fires
+ * when a frame is ready to present). The redraw cannot loop: by the time it
+ * runs the element is within tolerance of the target and has data, so
+ * drawLayer does not schedule again.
+ */
+function redrawWhenFrameReady(video: HTMLVideoElement): void {
+  if (seekingVideos.has(video)) return;
+  seekingVideos.add(video);
+  const settle = (): void => {
+    if (!seekingVideos.has(video)) return;
+    seekingVideos.delete(video);
+    drawPreview();
+  };
+  if (typeof video.requestVideoFrameCallback === "function") {
+    video.requestVideoFrameCallback(() => settle());
+  }
+  video.addEventListener("seeked", settle, { once: true });
+  video.addEventListener("loadeddata", settle, { once: true });
+}
+
 function drawLayer(
+  ctx: CanvasRenderingContext2D,
   clip: TimelineClip,
   sourceTimeUs: string,
   cw: number,
@@ -700,32 +863,37 @@ function drawLayer(
     mh = media.videoHeight || mh;
     if (playback.playing === false) {
       const target = Number(sourceTimeUs) / 1_000_000;
-      if (Math.abs(media.currentTime - target) > 0.05)
+      if (Math.abs(media.currentTime - target) > 0.05) {
         media.currentTime = target;
+        // Decoding is asynchronous: the frame for `target` is not available to
+        // the drawImage below, which would paint the previous one and leave it
+        // there. Redraw once the frame actually lands.
+        redrawWhenFrameReady(media);
+      } else if (media.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        // Already at the right time but nothing decoded yet — a clip that was
+        // just imported and sits at 0. Without this the preview stays empty
+        // until the playhead is moved.
+        redrawWhenFrameReady(media);
+      }
     }
   }
 
-  // Crop/reframe is a non-destructive effect: it narrows the source rect we
-  // sample from, rather than touching the media itself.
-  const cropFx = clip.effects.find(
-    (e) => e.enabled && e.type === "transform.crop",
-  );
-  let sx = 0;
-  let sy = 0;
-  let sw = mw;
-  let sh = mh;
-  if (cropFx) {
-    const p = cropFx.params as {
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-    };
-    sx = p.x * mw;
-    sy = p.y * mh;
-    sw = Math.max(1, p.width * mw);
-    sh = Math.max(1, p.height * mh);
+  // Before/After compare: while held, draw the clip's raw media with no
+  // effects, crop, or overlays — the "before". Preview-only (export never
+  // sets this flag), so what you export is always the edited result.
+  if (compareShowOriginal) {
+    const s = Math.min(cw / mw, ch / mh);
+    const w = mw * s;
+    const h = mh * s;
+    ctx.save();
+    ctx.filter = "none";
+    ctx.globalAlpha = 1;
+    ctx.drawImage(media, (cw - w) / 2, (ch - h) / 2, w, h);
+    ctx.restore();
+    return;
   }
+
+  const { sx, sy, sw, sh } = resolveCropRect(clip, mw, mh);
 
   const scale = Math.min(cw / sw, ch / sh);
   const dw = sw * scale;
@@ -744,18 +912,18 @@ function drawLayer(
     ? removeBackground(media, mw, mh, bgFx)
     : media;
 
-  cctx.save();
-  cctx.globalAlpha = alpha;
-  cctx.filter = filter || "none";
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.filter = filter || "none";
   const ccx = dx + dw / 2;
   const ccy = dy + dh / 2;
-  cctx.translate(ccx, ccy);
-  if (rotateDeg) cctx.rotate((rotateDeg * Math.PI) / 180);
-  if (flipX || flipY) cctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-  cctx.drawImage(drawable, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
-  cctx.restore();
+  ctx.translate(ccx, ccy);
+  if (rotateDeg) ctx.rotate((rotateDeg * Math.PI) / 180);
+  if (flipX || flipY) ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+  ctx.drawImage(drawable, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
+  ctx.restore();
 
-  drawOverlays(clip, dx, dy, dw, dh);
+  drawOverlays(ctx, clip, dx, dy, dw, dh);
 }
 
 function previewTransform(clip: TimelineClip): {
@@ -828,6 +996,7 @@ function previewTransform(clip: TimelineClip): {
 }
 
 function drawOverlays(
+  ctx: CanvasRenderingContext2D,
   clip: TimelineClip,
   dx: number,
   dy: number,
@@ -838,7 +1007,7 @@ function drawOverlays(
     if (!fx.enabled) continue;
     if (fx.type === "color.vignette") {
       const amount = getParamNumber(fx, "amount", 0.5);
-      const grad = cctx.createRadialGradient(
+      const grad = ctx.createRadialGradient(
         dx + dw / 2,
         dy + dh / 2,
         Math.min(dw, dh) * 0.3,
@@ -848,8 +1017,8 @@ function drawOverlays(
       );
       grad.addColorStop(0, "rgba(0,0,0,0)");
       grad.addColorStop(1, `rgba(0,0,0,${amount})`);
-      cctx.fillStyle = grad;
-      cctx.fillRect(dx, dy, dw, dh);
+      ctx.fillStyle = grad;
+      ctx.fillRect(dx, dy, dw, dh);
     } else if (fx.type === "color.tint" || fx.type === "color.duotone") {
       const color =
         fx.type === "color.tint"
@@ -857,24 +1026,24 @@ function drawOverlays(
           : getParamString(fx, "highlightsHex", "#ff5a00");
       const amount =
         fx.type === "color.tint" ? getParamNumber(fx, "amount", 0.2) : 0.3;
-      cctx.save();
-      cctx.globalAlpha = amount;
-      cctx.globalCompositeOperation = "overlay";
-      cctx.fillStyle = color;
-      cctx.fillRect(dx, dy, dw, dh);
-      cctx.restore();
+      ctx.save();
+      ctx.globalAlpha = amount;
+      ctx.globalCompositeOperation = "overlay";
+      ctx.fillStyle = color;
+      ctx.fillRect(dx, dy, dw, dh);
+      ctx.restore();
     } else if (fx.type === "fx.retro_noise") {
       const spacing = getParamNumber(fx, "scanlineSpacing", 6);
-      cctx.save();
-      cctx.globalAlpha = getParamNumber(fx, "noiseAmount", 0.25);
-      cctx.fillStyle = "#000";
-      for (let y = dy; y < dy + dh; y += spacing) cctx.fillRect(dx, y, dw, 1);
-      cctx.restore();
+      ctx.save();
+      ctx.globalAlpha = getParamNumber(fx, "noiseAmount", 0.25);
+      ctx.fillStyle = "#000";
+      for (let y = dy; y < dy + dh; y += spacing) ctx.fillRect(dx, y, dw, 1);
+      ctx.restore();
     } else if (fx.type === "fx.border") {
       const w = getParamNumber(fx, "borderWidthPx", 12);
-      cctx.strokeStyle = getParamString(fx, "borderColorHex", "#ffffff");
-      cctx.lineWidth = w;
-      cctx.strokeRect(dx + w / 2, dy + w / 2, dw - w, dh - w);
+      ctx.strokeStyle = getParamString(fx, "borderColorHex", "#ffffff");
+      ctx.lineWidth = w;
+      ctx.strokeRect(dx + w / 2, dy + w / 2, dw - w, dh - w);
     }
   }
 }
@@ -944,6 +1113,65 @@ function removeBackground(
 // ==========================================================================
 // Timeline rendering
 // ==========================================================================
+
+/** Decode an audio asset once and cache a fixed-size peak array, then trigger
+ * a timeline re-render so its clips draw a real waveform. OfflineAudioContext
+ * decodes without needing a user gesture. */
+async function ensureWaveform(asset: MediaAsset): Promise<void> {
+  if (asset.kind !== "audio") return;
+  if (waveformCache.has(asset.id) || waveformPending.has(asset.id)) return;
+  waveformPending.add(asset.id);
+  try {
+    const bytes = await (await fetch(asset.originalUri)).arrayBuffer();
+    if (!decodeCtx) decodeCtx = new OfflineAudioContext(1, 1, 44100);
+    const buffer = await decodeCtx.decodeAudioData(bytes);
+    const data = buffer.getChannelData(0);
+    const per = Math.max(1, Math.floor(data.length / WAVEFORM_BUCKETS));
+    const peaks: number[] = [];
+    for (let b = 0; b < WAVEFORM_BUCKETS; b++) {
+      let max = 0;
+      const start = b * per;
+      for (let i = 0; i < per && start + i < data.length; i++) {
+        const v = Math.abs(data[start + i]!);
+        if (v > max) max = v;
+      }
+      peaks.push(max);
+    }
+    waveformCache.set(asset.id, peaks);
+    renderTimeline();
+  } catch {
+    // Undecodable source (or no audio track): leave it without a waveform.
+  } finally {
+    waveformPending.delete(asset.id);
+  }
+}
+
+/** Draw the peaks for a clip's trimmed source window onto its canvas. */
+function drawWaveform(
+  canvas: HTMLCanvasElement,
+  peaks: number[],
+  clip: TimelineClip,
+  asset: MediaAsset,
+): void {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const assetDurUs = Number(asset.metadata.durationUs ?? "0") || 1;
+  const inFrac = Number(clip.sourceInUs) / assetDurUs;
+  const outFrac = Number(clip.sourceOutUs) / assetDurUs;
+  const span = Math.max(0.0001, outFrac - inFrac);
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  const mid = h / 2;
+  for (let x = 0; x < w; x++) {
+    const frac = inFrac + (x / w) * span;
+    const peak = peaks[Math.min(peaks.length - 1, Math.floor(frac * peaks.length))] ?? 0;
+    const half = Math.max(0.5, peak * (h / 2 - 1));
+    ctx.fillRect(x, mid - half, 1, half * 2);
+  }
+}
+
 function renderTimeline(): void {
   const seq = activeSequence();
   timelineBody.innerHTML = "";
@@ -996,9 +1224,43 @@ function renderTimeline(): void {
         clip.id === selectedClipId ? " selected" : ""
       }`;
       el.style.left = `${usToPixels(clip.timelineStartUs, zoom)}px`;
-      el.style.width = `${Math.max(24, usToPixels(clip.timelineDurationUs, zoom))}px`;
+      const clipWidth = Math.max(24, usToPixels(clip.timelineDurationUs, zoom));
+      el.style.width = `${clipWidth}px`;
       const asset = findAsset(clip.assetId);
-      el.textContent = asset ? assetName(asset) : clip.id;
+
+      // Audio clips draw a real waveform of their trimmed source window
+      // behind the label; decoded lazily and cached (see ensureWaveform).
+      if (asset && asset.kind === "audio") {
+        const peaks = waveformCache.get(asset.id);
+        if (peaks) {
+          const wf = document.createElement("canvas");
+          wf.className = "clip-waveform";
+          wf.width = Math.round(clipWidth);
+          wf.height = 44;
+          drawWaveform(wf, peaks, clip, asset);
+          el.appendChild(wf);
+        } else {
+          void ensureWaveform(asset);
+        }
+      }
+
+      const label = document.createElement("span");
+      label.className = "clip-label";
+      label.textContent = asset ? assetName(asset) : clip.id;
+      el.appendChild(label);
+
+      const remove = document.createElement("button");
+      remove.className = "clip-remove";
+      remove.textContent = "✕";
+      remove.title = "Remove clip";
+      // Swallow pointerdown so it deletes instead of starting a clip drag.
+      remove.addEventListener("pointerdown", (e) => e.stopPropagation());
+      remove.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteClip(clip.id);
+      });
+      el.appendChild(remove);
+
       el.addEventListener("pointerdown", (e) => startClipDrag(e, clip, track));
       lane.appendChild(el);
     }
@@ -1013,8 +1275,11 @@ function renderTimeline(): void {
 }
 
 function assetName(asset: MediaAsset): string {
-  const parts = asset.originalUri.split("/");
-  return parts[parts.length - 1] || asset.id;
+  const friendly = assetNames.get(asset.id);
+  if (friendly) return friendly;
+  // originalUri is a blob: URL whose last segment is an opaque UUID — never a
+  // useful label. Fall back to a short kind-based name, not the raw UUID.
+  return `${asset.kind} clip`;
 }
 
 // Drag a clip horizontally to move it (dispatches timeline.move_clip).
@@ -1136,7 +1401,7 @@ function renderInspector(): void {
   const select = document.createElement("select");
   const placeholder = new Option("＋ Add effect…", "");
   select.appendChild(placeholder);
-  for (const spec of EFFECTS.filter((s) => s.modes.includes(mode))) {
+  for (const spec of EFFECTS.filter((s) => s.modes.includes(effectMode()))) {
     select.appendChild(new Option(spec.label, spec.type));
   }
   select.addEventListener("change", () => {
@@ -1146,7 +1411,8 @@ function renderInspector(): void {
   fxSection.appendChild(addWrap);
   inspectorEl.appendChild(fxSection);
 
-  // --- Audio ---
+  // --- Audio (only for clips that actually carry audio) ---
+  if (asset?.kind === "image") return;
   const audioSection = section("Audio");
   audioSection.appendChild(
     sliderControl(
@@ -1319,7 +1585,7 @@ function addEffectByType(type: EffectType): void {
 
 function renderEffectsPalette(): void {
   paletteEl.innerHTML = "";
-  for (const spec of EFFECTS.filter((s) => s.modes.includes(mode))) {
+  for (const spec of EFFECTS.filter((s) => s.modes.includes(effectMode()))) {
     const chip = document.createElement("button");
     chip.className = "fx-chip";
     chip.textContent = spec.label;
@@ -1332,9 +1598,104 @@ function renderEffectsPalette(): void {
   }
 }
 
+// One-click "looks": named stacks of effects. Reimplemented from scratch — a
+// standard photo-editor feature (Odysseus lists "presets"), not copied.
+interface Look {
+  name: string;
+  stack: { type: EffectType; params: Record<string, number | string | boolean> }[];
+}
+const LOOKS: Look[] = [
+  {
+    name: "Vivid",
+    stack: [
+      { type: "color.saturate", params: { amount: 1.6 } },
+      { type: "color.contrast", params: { amount: 1.2 } },
+      { type: "color.brightness", params: { amount: 0.05 } },
+    ],
+  },
+  {
+    name: "B&W",
+    stack: [
+      { type: "color.grayscale", params: { amount: 1 } },
+      { type: "color.contrast", params: { amount: 1.2 } },
+    ],
+  },
+  {
+    name: "Warm",
+    stack: [
+      { type: "color.tint", params: { colorHex: "#ff7a2a", amount: 0.25 } },
+      { type: "color.saturate", params: { amount: 1.15 } },
+      { type: "color.brightness", params: { amount: 0.04 } },
+    ],
+  },
+  {
+    name: "Cinematic",
+    stack: [
+      { type: "color.contrast", params: { amount: 1.3 } },
+      { type: "color.saturate", params: { amount: 1.1 } },
+      { type: "color.tint", params: { colorHex: "#12b3c9", amount: 0.12 } },
+      { type: "color.vignette", params: { amount: 0.55 } },
+    ],
+  },
+  {
+    name: "Fade",
+    stack: [
+      { type: "color.contrast", params: { amount: 0.82 } },
+      { type: "color.brightness", params: { amount: 0.12 } },
+      { type: "color.saturate", params: { amount: 0.82 } },
+    ],
+  },
+];
+
+function applyLook(look: Look): void {
+  if (!selectedClipId) {
+    toast("Select a clip first, then pick a Look.", true);
+    return;
+  }
+  let added = 0;
+  for (const layer of look.stack) {
+    const spec = effectSpec(layer.type);
+    if (!spec) continue;
+    const effect = {
+      id: `fx-${crypto.randomUUID().slice(0, 8)}`,
+      type: layer.type,
+      enabled: true,
+      params: { ...defaultParams(spec), ...layer.params },
+    } as unknown as EffectInstance;
+    if (
+      commit(
+        buildAddEffect(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: selectedClipId,
+          effect,
+        }),
+      )
+    )
+      added++;
+  }
+  if (added) toast(`Applied "${look.name}" look. Undo or tweak in the Inspector.`);
+}
+
+function renderLooks(): void {
+  looksRow.innerHTML = "";
+  for (const look of LOOKS) {
+    const chip = document.createElement("button");
+    chip.className = "look-chip";
+    chip.textContent = look.name;
+    chip.disabled = selectedClipId === null;
+    chip.title = selectedClipId
+      ? `Apply the ${look.name} look to the selected clip`
+      : "Select a clip first";
+    chip.addEventListener("click", () => applyLook(look));
+    looksRow.appendChild(chip);
+  }
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
+  mediaListEl.classList.toggle("grid", galleryGrid);
   for (const asset of session.getProject()?.assets ?? []) {
+    if (removedAssets.has(asset.id)) continue;
     const el = document.createElement("div");
     el.className = "media-item";
     el.draggable = true;
@@ -1363,7 +1724,15 @@ function renderMedia(): void {
     add.className = "media-add";
     add.textContent = "＋";
     add.title = "Add to timeline";
-    el.append(thumb, meta, add);
+    const remove = document.createElement("button");
+    remove.className = "media-remove";
+    remove.textContent = "✕";
+    remove.title = "Remove from project";
+    remove.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeAsset(asset.id);
+    });
+    el.append(thumb, meta, add, remove);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
@@ -1373,6 +1742,26 @@ function renderMedia(): void {
     );
     mediaListEl.appendChild(el);
   }
+}
+
+/** Remove a media item from the bin and delete any timeline clips that used
+ * it. There is no public asset-removal command (only its internal inverse),
+ * so the bin entry is hidden client-side while the clip deletions go through
+ * the command engine (undoable). */
+function removeAsset(assetId: string): void {
+  const seq = activeSequence();
+  const clipIds: string[] = [];
+  for (const track of seq?.tracks ?? []) {
+    for (const clip of track.clips) {
+      if (clip.assetId === assetId) clipIds.push(clip.id);
+    }
+  }
+  for (const id of clipIds) {
+    commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId: id }));
+  }
+  removedAssets.add(assetId);
+  updateUI();
+  toast("Removed from project.");
 }
 
 // ==========================================================================
@@ -1394,6 +1783,74 @@ function syncTransport(): void {
   );
 }
 
+/** dB → linear amplitude. */
+function dbToGain(db: number): number {
+  return 10 ** (db / 20);
+}
+
+/** Lazily build (once) and return gain/pan routing for a media element.
+ * `createMediaElementSource` can only run once per element and permanently
+ * reroutes the element's audio into the graph, so we cache the nodes and
+ * unmute (level is controlled by the GainNode from here on). */
+function audioRouteFor(el: HTMLMediaElement): AudioRoute {
+  let route = audioRoutes.get(el);
+  if (!route) {
+    const ctx = audioCtx!;
+    const source = ctx.createMediaElementSource(el);
+    const gain = ctx.createGain();
+    const pan = ctx.createStereoPanner();
+    source.connect(gain).connect(pan).connect(ctx.destination);
+    el.muted = false;
+    route = { gain, pan };
+    audioRoutes.set(el, route);
+  }
+  return route;
+}
+
+/** Drive live media playback to match the transport: every audio/video clip
+ * active at the playhead plays its element at the right source offset with
+ * that clip's gain/pan; inactive (or all, when paused) elements are paused.
+ * Called on play/pause/seek and every animation tick. */
+function syncAudioMonitors(): void {
+  const seq = activeSequence();
+  const active =
+    audioCtx && seq && playback.playing
+      ? resolveAtTime(seq, playback.currentTimeUs)
+      : [];
+  const live = new Set<HTMLMediaElement>();
+
+  for (const layer of active) {
+    const asset = findAsset(layer.assetId);
+    if (!asset || asset.kind === "image") continue;
+    const el = mediaCache.get(asset.originalUri);
+    if (!(el instanceof HTMLMediaElement)) continue;
+    const loc = locateClip(layer.clipId);
+    if (!loc) continue;
+
+    const route = audioRouteFor(el);
+    route.gain.gain.value = dbToGain(loc.clip.audioGainDb);
+    route.pan.pan.value = Math.max(-1, Math.min(1, loc.clip.audioPan));
+
+    // Resync the element clock only when it has drifted (or just started /
+    // was seeked); small drift is left alone so playback stays smooth.
+    const targetSec = Number(layer.sourceTimeUs) / 1_000_000;
+    if (Math.abs(el.currentTime - targetSec) > 0.25) el.currentTime = targetSec;
+    if (el.paused) void el.play().catch(() => undefined);
+    live.add(el);
+  }
+
+  for (const [el] of audioRoutes) {
+    if (!live.has(el) && !el.paused) el.pause();
+  }
+}
+
+/** Resume/create the AudioContext on a user gesture (browsers require one).
+ * Call from the play button before monitoring starts. */
+function ensureAudioContextResumed(): void {
+  if (!audioCtx) audioCtx = new AudioContext();
+  if (audioCtx.state === "suspended") void audioCtx.resume();
+}
+
 let lastFrame = performance.now();
 function animate(now: number): void {
   const dt = now - lastFrame;
@@ -1401,6 +1858,7 @@ function animate(now: number): void {
   if (playback.playing) {
     playback = tick(playback, String(Math.round(dt * 1000)));
     syncTransport();
+    syncAudioMonitors();
     drawPreview();
     renderTimeline();
   }
@@ -1424,23 +1882,159 @@ function updateUI(): void {
   syncPlaybackDuration();
   renderMedia();
   renderEffectsPalette();
+  renderLooks();
   renderHistory();
   renderTimeline();
   renderInspector();
+  renderGifPanel();
   syncTransport();
   drawPreview();
 }
 
-function setMode(next: "video" | "photo"): void {
+/** Effects are declared for "video" or "photo"; GIF is fed by the same
+ * timeline as video, so it offers the same effect set. */
+function effectMode(): "video" | "photo" {
+  return mode === "photo" ? "photo" : "video";
+}
+
+const MODE_EMPTY_HINT: Record<EditorMode, string> = {
+  photo: "Import a photo to start editing.",
+  video: "Import media, then add it to the timeline to preview.",
+  gif: "Import a video or photos, add them to the timeline, then export a GIF.",
+};
+
+/** Rotates the drum so `mode` faces the viewer and fades the others by how far
+ * they have turned away. Angles are absolute (not wrapped), so the wheel never
+ * spins the long way round to reach a neighbour. */
+function renderModeWheel(): void {
+  const activeIndex = MODE_ORDER.indexOf(mode);
+  $("mode-wheel-drum").style.setProperty(
+    "--angle",
+    `${-activeIndex * MODE_WHEEL_STEP_DEG}deg`,
+  );
+  MODE_ORDER.forEach((id, index) => {
+    const item = $(`mode-${id}`);
+    const selected = index === activeIndex;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-checked", String(selected));
+    // Roving tabindex: the group is one tab stop, arrows move within it.
+    item.tabIndex = selected ? 0 : -1;
+    item.style.setProperty("--distance", String(Math.abs(index - activeIndex)));
+  });
+}
+
+function setMode(next: EditorMode): void {
   mode = next;
-  $("mode-video").classList.toggle("active", mode === "video");
-  $("mode-photo").classList.toggle("active", mode === "photo");
   document.body.dataset["mode"] = mode;
+  renderModeWheel();
   // Photo mode edits a single still image — the scrub timeline and transport
   // (play/seek/timecode) only make sense once there's a video to play through.
+  // GIF is built from the timeline, so it keeps both.
   $("app").classList.toggle("mode-photo", mode === "photo");
+  // Mode-appropriate empty-state guidance (the timeline is hidden in photo
+  // mode, so "add it to the timeline" would be confusing there).
+  stageEmpty.textContent = MODE_EMPTY_HINT[mode];
+  $("btn-export").textContent = mode === "gif" ? "⤓ Export GIF" : "⤓ Export";
+  $("gif-section").classList.toggle("hidden", mode !== "gif");
+  // Selecting GIF is the signal to fetch the encoder — by the time settings
+  // are dialled in, the export can start immediately.
+  if (mode === "gif") void warmGifEncoder();
+  renderGifPanel();
   renderInspector();
   renderEffectsPalette();
+  renderLooks();
+}
+
+/** Steps the wheel by `delta` positions, clamped at both ends (the drum is a
+ * three-item list, not an endless loop — wrapping from GIF back to Photo would
+ * read as the wheel jumping backwards). */
+function stepMode(delta: number): void {
+  const next = MODE_ORDER[
+    Math.min(
+      MODE_ORDER.length - 1,
+      Math.max(0, MODE_ORDER.indexOf(mode) + delta),
+    )
+  ] as EditorMode;
+  if (next !== mode) setMode(next);
+}
+
+function bindModeWheel(): void {
+  const wheel = $("mode-wheel");
+  let dragFrom: number | null = null;
+  // Distance of the drag that is finishing, so the click it also produces is
+  // not read as a second, contradictory step.
+  let draggedDistance = 0;
+
+  for (const id of MODE_ORDER) {
+    $(`mode-${id}`).addEventListener("click", () => setMode(id));
+  }
+
+  // A neighbour's sliver is a rotated 3D face — clicking it usually lands on
+  // the drum behind it rather than the face. Treat a click anywhere in the
+  // housing as "turn towards the half that was clicked", which is how a
+  // physical wheel behaves anyway.
+  wheel.addEventListener("click", (e) => {
+    if (draggedDistance > MODE_WHEEL_DRAG_PX) return;
+    if ((e.target as HTMLElement).closest(".mode-wheel-item")) return;
+    const box = wheel.getBoundingClientRect();
+    stepMode(e.clientY < box.top + box.height / 2 ? -1 : 1);
+  });
+
+  // Trackpads emit a stream of small deltas; accumulate so one physical flick
+  // is one step rather than three.
+  let scrolled = 0;
+  wheel.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      scrolled += e.deltaY;
+      while (Math.abs(scrolled) >= MODE_WHEEL_SCROLL_PX) {
+        stepMode(Math.sign(scrolled));
+        scrolled -= Math.sign(scrolled) * MODE_WHEEL_SCROLL_PX;
+      }
+    },
+    { passive: false },
+  );
+
+  wheel.addEventListener("pointerdown", (e) => {
+    dragFrom = e.clientY;
+    draggedDistance = 0;
+    wheel.setPointerCapture(e.pointerId);
+  });
+  wheel.addEventListener("pointermove", (e) => {
+    if (dragFrom === null) return;
+    const travelled = e.clientY - dragFrom;
+    draggedDistance = Math.max(draggedDistance, Math.abs(travelled));
+    if (Math.abs(travelled) < MODE_WHEEL_DRAG_PX) return;
+    // Dragging down brings the previous mode into view, like a physical drum.
+    stepMode(-Math.sign(travelled));
+    dragFrom = e.clientY;
+  });
+  const endDrag = (e: PointerEvent): void => {
+    if (dragFrom === null) return;
+    dragFrom = null;
+    if (wheel.hasPointerCapture(e.pointerId)) {
+      wheel.releasePointerCapture(e.pointerId);
+    }
+  };
+  wheel.addEventListener("pointerup", endDrag);
+  wheel.addEventListener("pointercancel", endDrag);
+
+  wheel.addEventListener("keydown", (e) => {
+    const byKey: Record<string, () => void> = {
+      ArrowDown: () => stepMode(1),
+      ArrowRight: () => stepMode(1),
+      ArrowUp: () => stepMode(-1),
+      ArrowLeft: () => stepMode(-1),
+      Home: () => setMode(MODE_ORDER[0]!),
+      End: () => setMode(MODE_ORDER[MODE_ORDER.length - 1]!),
+    };
+    const action = byKey[e.key];
+    if (!action) return;
+    e.preventDefault();
+    action();
+    $(`mode-${mode}`).focus();
+  });
 }
 
 // ==========================================================================
@@ -1471,21 +2065,39 @@ function setThemeSelection(selection: string): void {
   localStorage.setItem(THEME_SELECTION_KEY, selection);
 }
 
-function resolveSelectionTokens(selection: string): ThemeTokens | null {
+/** Tokens for the current selection *in the given mode*. Presets ship a
+ * palette per mode; a custom theme is flipped into the mode it was not
+ * authored for. Both matter because these land as inline vars on <html>, which
+ * outrank the [data-theme] rules — resolving without the mode is what makes
+ * the dark/light switch look dead once a palette is picked. */
+function resolveSelectionTokens(
+  selection: string,
+  mode: "dark" | "light",
+): ThemeTokens | null {
   if (selection === "default") return null;
-  if (selection in PRESETS) return PRESETS[selection] ?? null;
+  if (selection in PRESETS) return presetTokens(selection, mode);
   if (selection.startsWith("custom:")) {
     const name = selection.slice("custom:".length);
     const entry = loadCustomThemes().find((c) => c.name === name);
     if (!entry) return null;
-    return deriveTheme(
-      entry.seeds.bg,
-      entry.seeds.panel,
-      entry.seeds.text,
-      entry.seeds.accent,
-    );
+    const authored = entry.seeds;
+    const s =
+      seedsAreDark(authored) === (mode === "dark")
+        ? authored
+        : counterpartSeeds(authored);
+    return deriveTheme(s.bg, s.panel, s.text, s.accent);
   }
   return null;
+}
+
+/** Re-apply the selected palette for whatever mode is currently resolved. */
+function refreshThemeTokens(): void {
+  applyThemeTokens(
+    resolveSelectionTokens(
+      currentThemeSelection(),
+      resolveTheme(currentThemePreference()),
+    ),
+  );
 }
 
 function applyTheme(pref: ThemePreference): void {
@@ -1496,12 +2108,37 @@ function applyTheme(pref: ThemePreference): void {
   for (const id of ["theme-dark", "theme-light", "theme-system"] as const) {
     $(id).classList.toggle("active", id === `theme-${pref}`);
   }
+  refreshThemeTokens();
+  renderThemePanel();
 }
 
 function applyThemeSelection(selection: string): void {
   setThemeSelection(selection);
-  applyThemeTokens(resolveSelectionTokens(selection));
+  refreshThemeTokens();
   renderThemePanel();
+}
+
+/** UI style (skin) swatches — orthogonal to the color theme below them. */
+function renderSkinPanel(): void {
+  const active = currentSkin();
+  const grid = $<HTMLDivElement>("skin-grid");
+  grid.innerHTML = "";
+  for (const skin of SKINS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `skin-swatch${skin.id === active ? " active" : ""}`;
+    btn.style.background = skin.preview;
+    btn.title = skin.blurb;
+    const label = document.createElement("span");
+    label.className = "skin-swatch-label";
+    label.textContent = skin.label;
+    btn.appendChild(label);
+    btn.addEventListener("click", () => {
+      applySkin(skin.id);
+      renderSkinPanel();
+    });
+    grid.appendChild(btn);
+  }
 }
 
 function renderThemePanel(): void {
@@ -1518,11 +2155,14 @@ function renderThemePanel(): void {
   defaultSwatch.addEventListener("click", () => applyThemeSelection("default"));
   grid.appendChild(defaultSwatch);
 
-  for (const [key, tokens] of Object.entries(PRESETS)) {
+  // Swatches preview the palette in the mode the editor is actually in.
+  const mode = resolveTheme(currentThemePreference());
+  for (const [key, preset] of Object.entries(PRESETS)) {
+    const seeds = preset[mode];
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `theme-swatch${selection === key ? " active" : ""}`;
-    btn.style.background = `linear-gradient(135deg, ${tokens.bg}, ${tokens.accent})`;
+    btn.style.background = `linear-gradient(135deg, ${seeds.bg}, ${seeds.accent})`;
     btn.title = PRESET_LABELS[key] ?? key;
     btn.innerHTML = `<span class="theme-swatch-label">${PRESET_LABELS[key] ?? key}</span>`;
     btn.addEventListener("click", () => applyThemeSelection(key));
@@ -1559,8 +2199,12 @@ function renderThemePanel(): void {
 }
 
 function initTheme(): void {
+  // applyTheme also lands the selected palette for the resolved mode.
   applyTheme(currentThemePreference());
-  applyThemeTokens(resolveSelectionTokens(currentThemeSelection()));
+  // Re-apply the persisted skin: index.html sets it pre-paint without
+  // validating, so this is where an unknown id falls back to "default".
+  applySkin(currentSkin());
+  renderSkinPanel();
   renderThemePanel();
   // If the user is following the system theme, react to OS changes live.
   systemThemeQuery.addEventListener("change", () => {
@@ -1623,7 +2267,7 @@ function bindThemePicker(): void {
   }
   cancelBtn.addEventListener("click", () => {
     form.classList.add("hidden");
-    applyThemeTokens(resolveSelectionTokens(currentThemeSelection()));
+    refreshThemeTokens();
   });
   form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -1696,6 +2340,7 @@ function startRasterSession(
   cloneSource = null;
   playback = pause(playback);
   syncTransport();
+  syncAudioMonitors();
   bindRasterCanvasEvents();
   updateUI();
 }
@@ -2561,6 +3206,8 @@ async function applyRasterEdit(): Promise<void> {
     const checksum = await sha256Hex(await blob.arrayBuffer());
     const url = URL.createObjectURL(blob);
     const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+    const baseName = sourceAsset ? assetName(sourceAsset) : "photo";
+    assetNames.set(assetId, `edited-${baseName.replace(/\.[^.]+$/, "")}.png`);
     const registered = commit(
       buildRegisterAsset(nextCtx(), {
         asset: {
@@ -2587,7 +3234,71 @@ async function applyRasterEdit(): Promise<void> {
       img.onerror = () => resolve();
     });
     mediaCache.set(url, img);
-    toast("Applied. Your edit is now a new photo in the Media bin — drag it onto the timeline.");
+
+    // Swap the edited photo in for the original on the timeline, so the
+    // preview and export show the edit. There's no "change clip asset"
+    // command, so replace the clip (delete + re-add) preserving its position,
+    // trim, effects, and audio.
+    const freshLoc = locateClip(rasterEditingClipId);
+    if (freshLoc) {
+      const old = freshLoc.clip;
+      const newClipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+      commit(
+        buildDeleteClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: old.id,
+        }),
+      );
+      const added = commit(
+        buildAddClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          trackId: freshLoc.track.id,
+          clip: {
+            id: newClipId,
+            assetId,
+            timelineStartUs: old.timelineStartUs,
+            sourceInUs: old.sourceInUs,
+            sourceOutUs: old.sourceOutUs,
+            playbackRate: old.playbackRate,
+          },
+        }),
+      );
+      if (added) {
+        for (const fx of old.effects) {
+          commit(
+            buildAddEffect(nextCtx(), {
+              sequenceId: SEQUENCE_ID,
+              clipId: newClipId,
+              effect: fx,
+            }),
+          );
+        }
+        if (old.audioGainDb !== 0) {
+          commit(
+            buildSetClipAudioGain(nextCtx(), {
+              sequenceId: SEQUENCE_ID,
+              clipId: newClipId,
+              gainDb: old.audioGainDb,
+            }),
+          );
+        }
+        if (old.audioPan !== 0) {
+          commit(
+            buildSetClipAudioPan(nextCtx(), {
+              sequenceId: SEQUENCE_ID,
+              clipId: newClipId,
+              pan: old.audioPan,
+            }),
+          );
+        }
+        selectClip(newClipId);
+      }
+      toast("Applied. The edited photo replaced the original on the timeline.");
+    } else {
+      toast(
+        "Applied. Your edit is a new photo in the Media bin — drag it onto the timeline.",
+      );
+    }
     exitRasterMode();
   } catch (err) {
     toast(err instanceof Error ? err.message : "Failed to apply the edit.", true);
@@ -2598,8 +3309,8 @@ async function applyRasterEdit(): Promise<void> {
 // Events
 // ==========================================================================
 function bindEvents(): void {
-  $("mode-video").addEventListener("click", () => setMode("video"));
-  $("mode-photo").addEventListener("click", () => setMode("photo"));
+  bindModeWheel();
+  bindGifPanel();
 
   // Photo mode hides the timeline (nothing to scrub for a still image), so
   // drag-and-drop needs a target there too — the stage itself.
@@ -2631,9 +3342,32 @@ function bindEvents(): void {
 
   $("btn-import").addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
-    const file = fileInput.files?.[0];
-    if (file) void importFile(file);
+    const files = fileInput.files;
+    if (files && files.length > 0) void importFiles(files);
     fileInput.value = "";
+  });
+
+  // Before/After: hold the button (or the preview) to peek at the original.
+  const compareBtn = $<HTMLButtonElement>("btn-compare");
+  const showBefore = (on: boolean) => {
+    if (rasterSession) return; // raster editor draws its own canvas
+    compareShowOriginal = on;
+    compareBtn.classList.toggle("active", on);
+    drawPreview();
+  };
+  compareBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    showBefore(true);
+  });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"] as const) {
+    compareBtn.addEventListener(ev, () => showBefore(false));
+  }
+
+  // Media bin: toggle between list and gallery grid.
+  $("btn-gallery-toggle").addEventListener("click", () => {
+    galleryGrid = !galleryGrid;
+    $("btn-gallery-toggle").textContent = galleryGrid ? "☰ List" : "▦ Grid";
+    renderMedia();
   });
 
   $("btn-undo").addEventListener("click", () => {
@@ -2644,12 +3378,15 @@ function bindEvents(): void {
   });
 
   $("btn-play").addEventListener("click", () => {
+    if (!playback.playing) ensureAudioContextResumed();
     playback = playback.playing ? pause(playback) : play(playback);
     syncTransport();
+    syncAudioMonitors();
   });
   $("btn-start").addEventListener("click", () => {
     playback = seek(playback, "0");
     syncTransport();
+    syncAudioMonitors();
     drawPreview();
     renderTimeline();
   });
@@ -2663,6 +3400,7 @@ function bindEvents(): void {
       String(Math.round((Number(seekEl.value) / 1000) * dur)),
     );
     syncTransport();
+    syncAudioMonitors();
     drawPreview();
     renderTimeline();
   });
@@ -2690,14 +3428,27 @@ function bindEvents(): void {
   });
 
   $("btn-delete").addEventListener("click", () => {
-    if (!selectedClipId) return;
-    const id = selectedClipId;
-    selectedClipId = null;
-    commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId: id }));
+    if (selectedClipId) deleteClip(selectedClipId);
   });
 
   $("btn-split").addEventListener("click", splitSelectedClip);
   $("btn-export").addEventListener("click", doExport);
+
+  // Export modal.
+  $("btn-export-start").addEventListener("click", () =>
+    void startExportFromModal(),
+  );
+  $("btn-export-close").addEventListener("click", () => {
+    // While an export is running this button cancels it (the run's finally
+    // path closes the modal); otherwise it just dismisses the dialog.
+    if (exportInFlight && videoExportAbort) {
+      videoExportAbort.cancelled = true;
+    } else {
+      closeExportModal();
+    }
+  });
+  $("export-resolution").addEventListener("change", updateExportSummary);
+  $("export-quality").addEventListener("change", updateExportSummary);
 
   window.addEventListener("keydown", (e) => {
     if (e.target !== document.body) return;
@@ -2721,8 +3472,10 @@ function bindEvents(): void {
       selectedClipId = null;
     } else if (e.code === "Space") {
       e.preventDefault();
+      if (!playback.playing) ensureAudioContextResumed();
       playback = playback.playing ? pause(playback) : play(playback);
       syncTransport();
+      syncAudioMonitors();
     }
   });
 
@@ -2799,27 +3552,688 @@ function splitSelectedClip(): void {
   );
 }
 
-function doExport(): void {
+/** Triggers a real browser download of `blob` named `filename`. */
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Give the download a tick to start before revoking the object URL.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Renders the current visual layer(s) at full native resolution — same
+ * effects as the live preview, baked in — onto a fresh offscreen canvas.
+ * Returns null if there's nothing visible to export. */
+function renderExportFrame(): HTMLCanvasElement | null {
+  const seq = activeSequence();
+  const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
+  const visual = layers.filter((l) => {
+    const a = findAsset(l.assetId);
+    return a && a.kind !== "audio";
+  });
+  if (visual.length === 0) return null;
+
+  // Export resolution: the topmost visual layer's own (post-crop) frame
+  // size, so a cropped photo exports at the cropped size, not upscaled.
+  const top = visual[0]!;
+  const topLoc = locateClip(top.clipId);
+  if (!topLoc) return null;
+  const topAsset = findAsset(topLoc.clip.assetId);
+  if (!topAsset) return null;
+  const media = mediaCache.get(topAsset.originalUri);
+  let mw = topAsset.metadata.width ?? 1920;
+  let mh = topAsset.metadata.height ?? 1080;
+  if (media instanceof HTMLImageElement) {
+    mw = media.naturalWidth || mw;
+    mh = media.naturalHeight || mh;
+  } else if (media instanceof HTMLVideoElement) {
+    mw = media.videoWidth || mw;
+    mh = media.videoHeight || mh;
+  }
+  const { sw, sh } = resolveCropRect(topLoc.clip, mw, mh);
+
+  const out = document.createElement("canvas");
+  out.width = Math.round(sw);
+  out.height = Math.round(sh);
+  const octx = out.getContext("2d")!;
+  for (const layer of [...visual].reverse()) {
+    const loc = locateClip(layer.clipId);
+    if (loc) drawLayer(octx, loc.clip, layer.sourceTimeUs, out.width, out.height);
+  }
+  return out;
+}
+
+/** Real, working image export: renders the current frame (effects baked in)
+ * at full native resolution and downloads it as a PNG. No plan, no fake job —
+ * a real file. */
+function exportPhotoImage(): void {
+  const canvasEl = renderExportFrame();
+  if (!canvasEl) {
+    toast("Nothing to export.", true);
+    return;
+  }
+  canvasEl.toBlob((blob) => {
+    if (!blob) {
+      toast("Export failed: could not encode image.", true);
+      return;
+    }
+    downloadBlob(blob, "export.png");
+    toast(`Exported ${canvasEl.width}×${canvasEl.height} PNG.`);
+  }, "image/png");
+}
+
+let videoExportAbort: { cancelled: boolean } | null = null;
+
+/** Renders the deterministic audio mixdown for every audio clip in the plan
+ * (respecting each clip's trim, gain, and pan) via `OfflineAudioContext`,
+ * encodes it with WebCodecs `AudioEncoder` (Opus), and feeds the resulting
+ * chunks into `muxer`. No-ops if the plan has no audio clips. */
+async function renderAndEncodeAudio(
+  plan: ExportPlan,
+  preset: ExportPreset,
+  muxer: Muxer<ArrayBufferTarget>,
+): Promise<void> {
+  if (plan.audioClips.length === 0) return;
+
+  const channels = 2;
+  const durationSec = Number(plan.durationUs) / 1_000_000;
+  const offline = new OfflineAudioContext(
+    channels,
+    Math.max(1, Math.ceil(durationSec * preset.audioSampleRate)),
+    preset.audioSampleRate,
+  );
+
+  const decodedByAsset = new Map<string, AudioBuffer>();
+  for (const clip of plan.audioClips) {
+    if (decodedByAsset.has(clip.assetId)) continue;
+    const asset = findAsset(clip.assetId);
+    if (!asset) continue;
+    const bytes = await (await fetch(asset.originalUri)).arrayBuffer();
+    try {
+      decodedByAsset.set(clip.assetId, await offline.decodeAudioData(bytes));
+    } catch {
+      // Source has no decodable audio track (e.g. a silent test clip) — skip it.
+    }
+  }
+
+  for (const clip of plan.audioClips) {
+    const buffer = decodedByAsset.get(clip.assetId);
+    if (!buffer) continue;
+    const source = offline.createBufferSource();
+    source.buffer = buffer;
+    const gain = offline.createGain();
+    gain.gain.value = 10 ** (clip.gainDb / 20);
+    const panner = offline.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, clip.pan));
+    source.connect(gain).connect(panner).connect(offline.destination);
+
+    const startSec = Number(clip.timelineStartUs) / 1_000_000;
+    const offsetSec = Number(clip.sourceInUs) / 1_000_000;
+    const clipDurationSec =
+      (Number(clip.sourceOutUs) - Number(clip.sourceInUs)) / 1_000_000;
+    if (clipDurationSec <= 0) continue;
+    source.start(startSec, offsetSec, clipDurationSec);
+  }
+
+  const rendered = await offline.startRendering();
+
+  let audioEncodeError: Error | null = null;
+  const audioEncoder = new AudioEncoder({
+    output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+    error: (err) => {
+      audioEncodeError = err instanceof Error ? err : new Error(String(err));
+    },
+  });
+  audioEncoder.configure({
+    codec: "opus",
+    sampleRate: preset.audioSampleRate,
+    numberOfChannels: channels,
+    bitrate: 128_000,
+  });
+
+  const FRAME_SIZE = 4800; // 100ms at 48kHz — arbitrary, just a chunking size
+  const channelData = [rendered.getChannelData(0), rendered.getChannelData(1)];
+  for (let offset = 0; offset < rendered.length; offset += FRAME_SIZE) {
+    const count = Math.min(FRAME_SIZE, rendered.length - offset);
+    const planar = new Float32Array(count * channels);
+    planar.set(channelData[0]!.subarray(offset, offset + count), 0);
+    planar.set(channelData[1]!.subarray(offset, offset + count), count);
+    const audioData = new AudioData({
+      format: "f32-planar",
+      sampleRate: preset.audioSampleRate,
+      numberOfFrames: count,
+      numberOfChannels: channels,
+      timestamp: Math.round((offset / preset.audioSampleRate) * 1_000_000),
+      data: planar,
+    });
+    audioEncoder.encode(audioData);
+    audioData.close();
+    if (audioEncodeError) throw audioEncodeError;
+  }
+  await audioEncoder.flush();
+  if (audioEncodeError) throw audioEncodeError;
+  audioEncoder.close();
+}
+
+/** Whether this browser can encode video client-side (WebCodecs). Older
+ * Safari and any non-secure context lack it, so we check before starting an
+ * export rather than throwing mid-run. */
+function webCodecsSupported(): boolean {
+  return (
+    typeof VideoEncoder !== "undefined" &&
+    typeof AudioEncoder !== "undefined" &&
+    typeof VideoFrame !== "undefined"
+  );
+}
+
+export type VideoExportResult =
+  | {
+      status: "done";
+      framesTotal: number;
+      durationUs: string;
+      audioClips: number;
+    }
+  | { status: "cancelled" }
+  | { status: "empty" }
+  | { status: "failed"; message: string };
+
+type ExportProgress = (phase: string, done: number, total: number) => void;
+
+/** Real, working video export: renders every planned frame (effects baked
+ * in, via the same drawLayer() used for live preview) to an offscreen
+ * canvas, encodes with the browser-native WebCodecs API, and muxes video and
+ * (when present) a real audio mixdown into a downloadable MP4.
+ *
+ * Reports progress through `onProgress`; caller drives the UI. `abort` can be
+ * flipped by the caller (a Cancel button) to stop between frames. */
+async function runVideoExport(
+  preset: ExportPreset,
+  onProgress: ExportProgress,
+  abort: { cancelled: boolean },
+): Promise<VideoExportResult> {
   const project = session.getProject();
-  if (!project) return;
-  const result = planExport(project, SEQUENCE_ID, {
-    width: 1920,
-    height: 1080,
+  if (!project) return { status: "empty" };
+
+  const result = planExport(project, SEQUENCE_ID, preset);
+  if (!result.ok) {
+    return { status: "failed", message: result.error.message };
+  }
+  const { plan } = result;
+  const fps = preset.frameRate.numerator / preset.frameRate.denominator;
+
+  let job: ExportJob = startExport(plan);
+
+  try {
+    // A VideoEncoder's `error` callback fires from the codec's own internal
+    // task, not from any code we called — throwing there does NOT propagate
+    // to this function's try/catch. Record it and check explicitly instead.
+    let encodeError: Error | null = null;
+
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target,
+      video: { codec: "avc", width: preset.width, height: preset.height, frameRate: fps },
+      ...(plan.audioClips.length > 0
+        ? {
+            audio: {
+              codec: "opus" as const,
+              numberOfChannels: 2,
+              sampleRate: preset.audioSampleRate,
+            },
+          }
+        : {}),
+      fastStart: "in-memory",
+    });
+    const videoEncoder = new VideoEncoder({
+      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      error: (err) => {
+        encodeError = err instanceof Error ? err : new Error(String(err));
+      },
+    });
+    videoEncoder.configure({
+      // Baseline profile, level 4.0 (0x28) — level 3.1 (0x1f) caps the coded
+      // area at 921,600px, too small for 1920x1080 (2,073,600px).
+      codec: "avc1.420028",
+      width: preset.width,
+      height: preset.height,
+      bitrate: preset.videoBitrateKbps * 1000,
+      framerate: fps,
+    });
+
+    const offCanvas = document.createElement("canvas");
+    offCanvas.width = preset.width;
+    offCanvas.height = preset.height;
+    const offCtx = offCanvas.getContext("2d")!;
+
+    const BATCH = 30;
+    outer: for (let start = 0; start < plan.framesTotal; start += BATCH) {
+      const count = Math.min(BATCH, plan.framesTotal - start);
+      const requests = planVideoFrames(project, SEQUENCE_ID, preset, start, count);
+      for (const req of requests) {
+        if (abort.cancelled) break outer;
+        offCtx.clearRect(0, 0, offCanvas.width, offCanvas.height);
+        const visual = req.layers.filter((l) => {
+          const a = findAsset(l.assetId);
+          return a && a.kind !== "audio";
+        });
+        for (const layer of [...visual].reverse()) {
+          const loc = locateClip(layer.clipId);
+          if (!loc) continue;
+          const asset = findAsset(loc.clip.assetId);
+          const media = asset ? mediaCache.get(asset.originalUri) : undefined;
+          if (media instanceof HTMLVideoElement) {
+            await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
+          }
+          drawLayer(offCtx, loc.clip, layer.sourceTimeUs, offCanvas.width, offCanvas.height);
+        }
+
+        const ptsUs = Number(req.timelineTimeUs);
+        const nextPtsUs = Number(frameToStartTimeUs(req.frameIndex + 1, preset.frameRate));
+        const frame = new VideoFrame(offCanvas, {
+          timestamp: ptsUs,
+          duration: nextPtsUs - ptsUs,
+        });
+        videoEncoder.encode(frame, { keyFrame: req.frameIndex % 60 === 0 });
+        frame.close();
+        if (encodeError) throw encodeError;
+
+        job = advanceExport(job, req.frameIndex + 1);
+        onProgress("Rendering frames…", job.framesDone, job.framesTotal);
+      }
+      // Yield to the event loop between batches so the UI (and a Cancel
+      // click) stays responsive during a long export.
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    if (encodeError) throw encodeError;
+
+    if (abort.cancelled) {
+      job = cancelExport(job);
+      videoEncoder.close();
+      return { status: "cancelled" };
+    }
+
+    await videoEncoder.flush();
+    videoEncoder.close();
+
+    if (plan.audioClips.length > 0) {
+      onProgress("Mixing audio…", plan.framesTotal, plan.framesTotal);
+      await renderAndEncodeAudio(plan, preset, muxer);
+    }
+    onProgress("Finalizing…", plan.framesTotal, plan.framesTotal);
+    muxer.finalize();
+
+    const blob = new Blob([target.buffer], { type: "video/mp4" });
+    downloadBlob(blob, "export.mp4");
+    return {
+      status: "done",
+      framesTotal: plan.framesTotal,
+      durationUs: plan.durationUs,
+      audioClips: plan.audioClips.length,
+    };
+  } catch (err) {
+    job = failExport(job, {
+      code: "ENCODE_FAILED",
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      status: "failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// ---- Export modal (video presets + real progress) -----------------------
+
+let exportInFlight = false;
+
+function readExportPreset(): ExportPreset {
+  const [w, h] = $<HTMLSelectElement>("export-resolution")
+    .value.split("x")
+    .map(Number);
+  const bitrate = Number($<HTMLSelectElement>("export-quality").value);
+  return {
+    width: w ?? 1280,
+    height: h ?? 720,
     frameRate: FRAME_RATE,
     videoCodec: "h264",
     container: "mp4",
-    videoBitrateKbps: 8000,
-    audioCodec: "aac",
+    videoBitrateKbps: bitrate,
+    // Opus, not AAC: it's what we actually encode with (royalty-free, reliably
+    // software-encoded in every Chromium build; AAC support in WebCodecs is
+    // inconsistent/hardware-dependent).
+    audioCodec: "opus",
     audioSampleRate: 48000,
-  });
-  if (!result.ok) {
-    toast(`Export: ${result.error.message}`, true);
+  };
+}
+
+/** Refresh the "N frames · MM:SS" line under the options from the current
+ * project + selected preset. */
+function updateExportSummary(): void {
+  const summary = $("export-summary");
+  const project = session.getProject();
+  if (!project) {
+    summary.textContent = "";
     return;
   }
-  const { framesTotal, durationUs, audioSampleCount } = result.plan;
-  toast(
-    `Export plan: ${framesTotal} frames, ${formatTime(durationUs)}, ${audioSampleCount} audio samples (H.264/MP4).`,
+  const result = planExport(project, SEQUENCE_ID, readExportPreset());
+  summary.textContent = result.ok
+    ? `${result.plan.framesTotal} frames · ${formatTime(result.plan.durationUs)}${
+        result.plan.audioClips.length > 0
+          ? ` · ${result.plan.audioClips.length} audio clip(s)`
+          : " · silent"
+      }`
+    : result.error.message;
+}
+
+function openExportModal(): void {
+  if (!webCodecsSupported()) {
+    toast(
+      "Video export needs the WebCodecs API, which this browser doesn't support. Try the latest Chrome or Edge.",
+      true,
+    );
+    return;
+  }
+  // Reset to the options view.
+  $("export-options").classList.remove("hidden");
+  $("export-progress-wrap").classList.add("hidden");
+  const startBtn = $<HTMLButtonElement>("btn-export-start");
+  startBtn.disabled = false;
+  startBtn.textContent = "Start Export";
+  $("btn-export-close").textContent = "Cancel";
+  updateExportSummary();
+  $("export-modal").classList.remove("hidden");
+}
+
+function closeExportModal(): void {
+  $("export-modal").classList.add("hidden");
+}
+
+async function startExportFromModal(): Promise<void> {
+  if (exportInFlight) return;
+  exportInFlight = true;
+  const abort = { cancelled: false };
+  videoExportAbort = abort;
+
+  const startBtn = $<HTMLButtonElement>("btn-export-start");
+  startBtn.disabled = true;
+  $("export-options").classList.add("hidden");
+  $("export-progress-wrap").classList.remove("hidden");
+  $("btn-export-close").textContent = "Cancel Export";
+
+  const barFill = $<HTMLDivElement>("export-bar-fill");
+  const phaseEl = $("export-phase");
+  const countEl = $("export-count");
+  const onProgress: ExportProgress = (phase, done, total) => {
+    phaseEl.textContent = phase;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    barFill.style.width = `${pct}%`;
+    countEl.textContent = `${done} / ${total} frames`;
+  };
+
+  const preset = readExportPreset();
+  const result = await runVideoExport(preset, onProgress, abort);
+
+  exportInFlight = false;
+  videoExportAbort = null;
+
+  switch (result.status) {
+    case "done": {
+      const audioNote =
+        result.audioClips > 0
+          ? `${result.audioClips} audio clip(s) mixed in`
+          : "silent, no audio clips";
+      toast(
+        `Exported ${result.framesTotal} frames, ${formatTime(result.durationUs)} (H.264/Opus/MP4, ${audioNote}).`,
+      );
+      break;
+    }
+    case "cancelled":
+      toast("Export cancelled.");
+      break;
+    case "empty":
+      toast("Nothing to export.", true);
+      break;
+    case "failed":
+      toast(`Export failed: ${result.message}`, true);
+      break;
+  }
+  closeExportModal();
+}
+
+// ==========================================================================
+// GIF output — the third mode's export path
+// ==========================================================================
+
+interface GifSettings {
+  fps: number;
+  width: number;
+  colors: number;
+  loop: boolean;
+  boomerang: boolean;
+}
+
+let gifSettings: GifSettings = {
+  fps: 12,
+  width: 480,
+  colors: 256,
+  loop: true,
+  boomerang: false,
+};
+
+/** A GIF holds every frame in memory as a palettized buffer, and viewers choke
+ * long before this — better a clear cap than a tab that runs out of memory. */
+const GIF_MAX_FRAMES = 300;
+/** Yield to the event loop this often so the UI stays responsive mid-render. */
+const GIF_YIELD_EVERY = 4;
+
+type GifEncoderStatus = "idle" | "loading" | "ready" | "failed";
+let gifEncoderStatus: GifEncoderStatus = "idle";
+let gifExportInFlight = false;
+
+/** Fetches the encoder on entering GIF mode so the first export does not wait
+ * on the network. Re-entrant: a second call while loading is a no-op, and a
+ * previous failure is retried. */
+async function warmGifEncoder(): Promise<void> {
+  if (gifEncoderStatus === "loading" || gifEncoderStatus === "ready") return;
+  gifEncoderStatus = "loading";
+  renderGifPanel();
+  try {
+    await loadGifEncoder();
+    gifEncoderStatus = "ready";
+  } catch {
+    gifEncoderStatus = "failed";
+  }
+  renderGifPanel();
+}
+
+function gifStatusText(): string {
+  switch (gifEncoderStatus) {
+    case "ready":
+      return "✓ GIF encoder ready (gifenc, loaded on demand)";
+    case "failed":
+      return "✕ GIF encoder failed to load — check your connection and reselect GIF.";
+    default:
+      return "Loading GIF encoder…";
+  }
+}
+
+/** Output size: the source frame's aspect at the chosen width. */
+function gifOutputSize(seq: Sequence): { width: number; height: number } | null {
+  const visual = resolveAtTime(seq, "0").filter((l) => {
+    const a = findAsset(l.assetId);
+    return a && a.kind !== "audio";
+  });
+  const top = visual[0];
+  if (!top) return null;
+  const loc = locateClip(top.clipId);
+  const asset = loc ? findAsset(loc.clip.assetId) : undefined;
+  if (!loc || !asset) return null;
+  const media = mediaCache.get(asset.originalUri);
+  let mw = asset.metadata.width ?? 1920;
+  let mh = asset.metadata.height ?? 1080;
+  if (media instanceof HTMLImageElement) {
+    mw = media.naturalWidth || mw;
+    mh = media.naturalHeight || mh;
+  } else if (media instanceof HTMLVideoElement) {
+    mw = media.videoWidth || mw;
+    mh = media.videoHeight || mh;
+  }
+  const { sw, sh } = resolveCropRect(loc.clip, mw, mh);
+  const width = Math.max(2, Math.round(gifSettings.width));
+  return { width, height: Math.max(2, Math.round((width * sh) / sw)) };
+}
+
+/** Frames the current timeline yields at the chosen rate, before boomerang. */
+function gifFrameCount(seq: Sequence): number {
+  const durationUs = Number(sequenceDurationUs(seq));
+  const fps = clampGifFps(gifSettings.fps);
+  const frames = Math.floor((durationUs / 1_000_000) * fps);
+  return Math.max(1, Math.min(GIF_MAX_FRAMES, frames));
+}
+
+function renderGifPanel(): void {
+  const status = $<HTMLDivElement>("gif-status");
+  status.textContent = gifStatusText();
+  status.className = `gif-status${gifEncoderStatus === "ready" ? " ready" : ""}${
+    gifEncoderStatus === "failed" ? " failed" : ""
+  }`;
+
+  $("gif-fps-value").textContent = `${clampGifFps(gifSettings.fps)} fps`;
+  $("gif-width-value").textContent = `${gifSettings.width} px`;
+
+  const seq = activeSequence();
+  const summary = $<HTMLDivElement>("gif-summary");
+  const size = seq ? gifOutputSize(seq) : null;
+  if (!seq || !size) {
+    summary.textContent = "Add a clip to the timeline to build a GIF.";
+  } else {
+    const frames = gifFrameCount(seq);
+    const played = boomerangOrder(frames, gifSettings.boomerang).length;
+    const seconds = (played / clampGifFps(gifSettings.fps)).toFixed(1);
+    summary.textContent = `${played} frames · ${size.width}×${size.height} · ${seconds}s · ${
+      gifSettings.loop ? "loops" : "plays once"
+    }`;
+  }
+
+  $<HTMLButtonElement>("btn-gif-export").disabled =
+    gifExportInFlight || gifEncoderStatus === "failed";
+}
+
+/** Renders the timeline at the GIF's own frame rate and encodes it. Reuses the
+ * same layer/draw path as video export, so effects, crops and z-order are
+ * identical to what the preview shows. */
+async function runGifExport(): Promise<void> {
+  if (gifExportInFlight) return;
+  const seq = activeSequence();
+  if (!seq || sequenceDurationUs(seq) === "0") {
+    toast("Add a clip to the timeline first.", true);
+    return;
+  }
+  const size = gifOutputSize(seq);
+  if (!size) {
+    toast("Nothing visual on the timeline to turn into a GIF.", true);
+    return;
+  }
+
+  gifExportInFlight = true;
+  renderGifPanel();
+  const status = $<HTMLDivElement>("gif-status");
+  const fps = clampGifFps(gifSettings.fps);
+  const frameCount = gifFrameCount(seq);
+
+  try {
+    const sink = await createGifEncoder({
+      fps,
+      loop: gifSettings.loop,
+      boomerang: gifSettings.boomerang,
+      maxColors: gifSettings.colors,
+    });
+    gifEncoderStatus = "ready";
+
+    const off = document.createElement("canvas");
+    off.width = size.width;
+    off.height = size.height;
+    const offCtx = off.getContext("2d", { willReadFrequently: true })!;
+
+    for (let i = 0; i < frameCount; i++) {
+      const timeUs = frameToStartTimeUs(i, { numerator: fps, denominator: 1 });
+      const visual = resolveAtTime(seq, timeUs).filter((l) => {
+        const a = findAsset(l.assetId);
+        return a && a.kind !== "audio";
+      });
+      offCtx.clearRect(0, 0, off.width, off.height);
+      for (const layer of [...visual].reverse()) {
+        const loc = locateClip(layer.clipId);
+        if (!loc) continue;
+        const asset = findAsset(loc.clip.assetId);
+        const media = asset ? mediaCache.get(asset.originalUri) : undefined;
+        if (media instanceof HTMLVideoElement) {
+          await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
+        }
+        drawLayer(offCtx, loc.clip, layer.sourceTimeUs, off.width, off.height);
+      }
+      sink.addFrame(offCtx.getImageData(0, 0, off.width, off.height));
+
+      if (i % GIF_YIELD_EVERY === 0) {
+        status.textContent = `Rendering frame ${i + 1} of ${frameCount}…`;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    status.textContent = "Encoding GIF…";
+    await new Promise((r) => setTimeout(r, 0));
+    const blob = sink.finish();
+    downloadBlob(blob, "export.gif");
+    const kb = Math.round(blob.size / 1024);
+    toast(`Exported ${size.width}×${size.height} GIF · ${kb} KB.`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isGifEncoderLoaded()) gifEncoderStatus = "failed";
+    toast(`GIF export failed: ${message}`, true);
+  } finally {
+    gifExportInFlight = false;
+    renderGifPanel();
+  }
+}
+
+function bindGifPanel(): void {
+  const fps = $<HTMLInputElement>("gif-fps");
+  const width = $<HTMLInputElement>("gif-width");
+  const colors = $<HTMLSelectElement>("gif-colors");
+  const loop = $<HTMLInputElement>("gif-loop");
+  const boomerang = $<HTMLInputElement>("gif-boomerang");
+
+  const update = (patch: Partial<GifSettings>): void => {
+    gifSettings = { ...gifSettings, ...patch };
+    renderGifPanel();
+  };
+
+  fps.addEventListener("input", () => update({ fps: Number(fps.value) }));
+  width.addEventListener("input", () => update({ width: Number(width.value) }));
+  colors.addEventListener("change", () =>
+    update({ colors: Number(colors.value) }),
   );
+  loop.addEventListener("change", () => update({ loop: loop.checked }));
+  boomerang.addEventListener("change", () =>
+    update({ boomerang: boomerang.checked }),
+  );
+  $("btn-gif-export").addEventListener("click", () => void runGifExport());
+}
+
+function doExport(): void {
+  if (mode === "photo") {
+    exportPhotoImage();
+    return;
+  }
+  if (mode === "gif") {
+    void runGifExport();
+    return;
+  }
+  openExportModal();
 }
 
 // ==========================================================================
@@ -2827,6 +4241,10 @@ function doExport(): void {
 // ==========================================================================
 configureOnnxRuntime({ wasm: ortWasmUrl, mjs: ortMjsUrl });
 seed();
+// The seed (project + sequence + tracks) is app scaffolding, not a user edit —
+// clear history so Undo can never pop it and null the project (which made
+// later imports fail with "no project exists").
+session.clearHistory();
 bindEvents();
 initTheme();
 setMode("photo");

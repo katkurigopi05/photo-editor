@@ -1,0 +1,133 @@
+/* Maximalism — more is more. Thick ink borders, hard offset shadows, a
+   patterned ground and saturated gradient fills. Loud is the point, but text
+   still sits on a solid panel fill so the editor stays readable. */
+
+:root[data-skin="maximalism"] {
+  --radius: 0px;
+  --radius-lg: 4px;
+  --max-ink: color-mix(in srgb, var(--text) 82%, transparent);
+  --max-offset: 5px 5px 0 var(--max-ink);
+  --max-offset-sm: 3px 3px 0 var(--max-ink);
+  --shadow: var(--max-offset);
+  --shadow-soft: var(--max-offset-sm);
+}
+
+:root[data-skin="maximalism"] body {
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--accent) 16%, transparent) 0 12px,
+      transparent 12px 24px
+    ),
+    radial-gradient(
+      700px 500px at 90% 0%,
+      color-mix(in srgb, var(--accent-2) 40%, transparent),
+      transparent 60%
+    ),
+    linear-gradient(200deg, var(--bg-2), var(--bg));
+}
+
+:root[data-skin="maximalism"] #topbar,
+:root[data-skin="maximalism"] .panel,
+:root[data-skin="maximalism"] .theme-panel,
+:root[data-skin="maximalism"] .export-card,
+:root[data-skin="maximalism"] .drop-card,
+:root[data-skin="maximalism"] .toast {
+  background: var(--panel);
+  border: 3px solid var(--max-ink);
+  box-shadow: var(--max-offset);
+}
+
+:root[data-skin="maximalism"] .tool,
+:root[data-skin="maximalism"] .mini,
+:root[data-skin="maximalism"] .import-btn,
+:root[data-skin="maximalism"] .fx-chip,
+:root[data-skin="maximalism"] .look-chip,
+:root[data-skin="maximalism"] .raster-tool-btn,
+:root[data-skin="maximalism"] .compare-btn,
+:root[data-skin="maximalism"] .view-toggle,
+:root[data-skin="maximalism"] .media-item,
+:root[data-skin="maximalism"] .history-item,
+:root[data-skin="maximalism"] select {
+  background: var(--panel-3);
+  border: 2px solid var(--max-ink);
+  border-radius: 0;
+  box-shadow: var(--max-offset-sm);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+:root[data-skin="maximalism"] .fx-chip,
+:root[data-skin="maximalism"] .look-chip {
+  background: linear-gradient(
+    120deg,
+    color-mix(in srgb, var(--accent) 30%, var(--panel-3)),
+    color-mix(in srgb, var(--accent-2) 30%, var(--panel-3))
+  );
+}
+
+/* Hover shoves the element into its own shadow — the shadow shrinks by the
+   same amount the element travels, so the pair stays glued. */
+:root[data-skin="maximalism"] .tool:hover,
+:root[data-skin="maximalism"] .mini:hover,
+:root[data-skin="maximalism"] .fx-chip:hover,
+:root[data-skin="maximalism"] .look-chip:hover,
+:root[data-skin="maximalism"] .media-item:hover,
+:root[data-skin="maximalism"] .import-btn:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--max-ink);
+  border-color: var(--max-ink);
+}
+
+:root[data-skin="maximalism"] .tool:active,
+:root[data-skin="maximalism"] .mini:active,
+:root[data-skin="maximalism"] .fx-chip:active,
+:root[data-skin="maximalism"] .look-chip:active,
+:root[data-skin="maximalism"] .import-btn:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--max-ink);
+}
+
+:root[data-skin="maximalism"] .tool.primary {
+  border-color: var(--max-ink);
+  box-shadow: var(--max-offset-sm);
+}
+
+:root[data-skin="maximalism"] .mode-switch,
+:root[data-skin="maximalism"] .theme-switch {
+  background: var(--panel-3);
+  border: 2px solid var(--max-ink);
+  border-radius: 0;
+}
+
+:root[data-skin="maximalism"] .mode-btn.active,
+:root[data-skin="maximalism"] .theme-btn.active {
+  border-radius: 0;
+  outline: 2px solid var(--max-ink);
+  outline-offset: -2px;
+}
+
+:root[data-skin="maximalism"] .panel-title {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: var(--text);
+}
+
+:root[data-skin="maximalism"] .panel-title::after {
+  height: 3px;
+  background: var(--accent-grad);
+}
+
+:root[data-skin="maximalism"] .stage,
+:root[data-skin="maximalism"] .timeline-body {
+  border: 2px solid var(--max-ink);
+  border-radius: 0;
+}
+
+:root[data-skin="maximalism"] .clip {
+  border: 2px solid var(--max-ink);
+  border-radius: 0;
+  box-shadow: var(--max-offset-sm);
+}

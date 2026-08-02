@@ -1,0 +1,131 @@
+/* Skeuomorphism — surfaces pretend to be objects: brushed metal desk, beveled
+   panels, buttons with a real top highlight, a hard bottom edge and a press
+   travel. Depth comes from a light source fixed at the top. */
+
+:root[data-skin="skeuomorphism"] {
+  --radius: 7px;
+  --radius-lg: 10px;
+  --shadow:
+    0 12px 26px rgba(0, 0, 0, 0.5), 0 3px 0 var(--skin-lo);
+  --shadow-soft:
+    0 2px 0 var(--skin-lo), 0 8px 16px var(--skin-lo-soft);
+  --skeu-bevel:
+    inset 0 1px 0 var(--skin-hi-strong), inset 0 -1px 0 var(--skin-lo-soft);
+}
+
+:root[data-skin="skeuomorphism"] body {
+  background-image:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.028) 0 1px,
+      transparent 1px 3px
+    ),
+    radial-gradient(
+      1200px 600px at 80% -10%,
+      var(--radial-glow) 0%,
+      transparent 60%
+    ),
+    linear-gradient(180deg, var(--bg-2), var(--bg));
+}
+
+:root[data-skin="skeuomorphism"] #topbar,
+:root[data-skin="skeuomorphism"] .panel,
+:root[data-skin="skeuomorphism"] .theme-panel,
+:root[data-skin="skeuomorphism"] .export-card,
+:root[data-skin="skeuomorphism"] .toast {
+  background-image: linear-gradient(
+    180deg,
+    var(--skin-hi) 0%,
+    transparent 38%,
+    var(--skin-lo-soft) 100%
+  );
+  border-top-color: var(--skin-hi-strong);
+  box-shadow: var(--skeu-bevel), var(--shadow-soft);
+}
+
+:root[data-skin="skeuomorphism"] .tool,
+:root[data-skin="skeuomorphism"] .mini,
+:root[data-skin="skeuomorphism"] .import-btn,
+:root[data-skin="skeuomorphism"] .fx-chip,
+:root[data-skin="skeuomorphism"] .look-chip,
+:root[data-skin="skeuomorphism"] .raster-tool-btn,
+:root[data-skin="skeuomorphism"] .compare-btn,
+:root[data-skin="skeuomorphism"] select {
+  background-image: linear-gradient(
+    180deg,
+    var(--skin-hi-strong) 0%,
+    transparent 46%,
+    var(--skin-lo-soft) 100%
+  );
+  background-color: var(--panel-2);
+  border-color: var(--line);
+  box-shadow:
+    inset 0 1px 0 var(--skin-hi-strong),
+    0 2px 0 var(--skin-lo),
+    0 4px 7px var(--skin-lo-soft);
+  text-shadow: 0 1px 0 var(--skin-hi);
+}
+
+:root[data-skin="skeuomorphism"] .tool:hover,
+:root[data-skin="skeuomorphism"] .mini:hover,
+:root[data-skin="skeuomorphism"] .fx-chip:hover,
+:root[data-skin="skeuomorphism"] .look-chip:hover {
+  filter: brightness(1.06);
+}
+
+/* Press travel: the button drops onto its own shadow. */
+:root[data-skin="skeuomorphism"] .tool:active,
+:root[data-skin="skeuomorphism"] .mini:active,
+:root[data-skin="skeuomorphism"] .import-btn:active,
+:root[data-skin="skeuomorphism"] .fx-chip:active,
+:root[data-skin="skeuomorphism"] .look-chip:active,
+:root[data-skin="skeuomorphism"] .raster-tool-btn:active {
+  transform: translateY(2px);
+  box-shadow:
+    inset 0 2px 4px var(--skin-lo),
+    0 0 0 var(--skin-lo);
+}
+
+:root[data-skin="skeuomorphism"] .tool.primary {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 2px 0 var(--skin-lo),
+    0 5px 10px var(--skin-lo-soft);
+}
+
+:root[data-skin="skeuomorphism"] .mode-switch,
+:root[data-skin="skeuomorphism"] .theme-switch,
+:root[data-skin="skeuomorphism"] .timeline-body,
+:root[data-skin="skeuomorphism"] .stage {
+  box-shadow:
+    inset 0 2px 5px var(--skin-lo),
+    inset 0 -1px 0 var(--skin-hi);
+}
+
+:root[data-skin="skeuomorphism"] .mode-btn.active,
+:root[data-skin="skeuomorphism"] .theme-btn.active {
+  box-shadow:
+    inset 0 1px 0 var(--skin-hi-strong),
+    0 2px 4px var(--skin-lo);
+}
+
+:root[data-skin="skeuomorphism"] .media-item,
+:root[data-skin="skeuomorphism"] .history-item {
+  background-image: linear-gradient(
+    180deg,
+    var(--skin-hi) 0%,
+    transparent 60%
+  );
+  box-shadow: var(--skeu-bevel);
+}
+
+:root[data-skin="skeuomorphism"] .clip {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 3px 0 rgba(0, 0, 0, 0.45),
+    0 6px 12px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-skin="skeuomorphism"] input[type="range"] {
+  filter: drop-shadow(0 1px 0 var(--skin-hi));
+}

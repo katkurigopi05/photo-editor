@@ -15,7 +15,11 @@ import { isCodecContainerCompatible, type ExportPreset } from "./preset.js";
  */
 
 export type ExportErrorCode =
-  "SEQUENCE_NOT_FOUND" | "EMPTY_SEQUENCE" | "INCOMPATIBLE_CODEC" | "TIMED_OUT";
+  | "SEQUENCE_NOT_FOUND"
+  | "EMPTY_SEQUENCE"
+  | "INCOMPATIBLE_CODEC"
+  | "TIMED_OUT"
+  | "ENCODE_FAILED";
 
 export interface ExportError {
   code: ExportErrorCode;

@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Project Director — Editor</title>
     <link rel="stylesheet" href="/src/index.css" />
+    <link rel="stylesheet" href="/src/skins/skins.css" />
     <script>
-      // Apply the persisted theme before first paint, to avoid a flash of the
-      // wrong theme. "system" resolves via prefers-color-scheme.
+      // Apply the persisted theme and UI skin before first paint, to avoid a
+      // flash of the wrong surface. "system" resolves via prefers-color-scheme.
       (function () {
         var stored = localStorage.getItem("director-theme") || "system";
         var resolved =
@@ -18,6 +19,10 @@
             : stored;
         document.documentElement.setAttribute("data-theme", resolved);
         document.documentElement.setAttribute("data-theme-pref", stored);
+        var skin = localStorage.getItem("director-skin");
+        if (skin && skin !== "default") {
+          document.documentElement.setAttribute("data-skin", skin);
+        }
       })();
     </script>
   </head>
@@ -26,9 +31,49 @@
       <header id="topbar">
         <div class="top-left">
           <span class="logo">🎬 Project Director</span>
-          <div class="mode-switch" role="tablist">
-            <button id="mode-photo" class="mode-btn active">Photo</button>
-            <button id="mode-video" class="mode-btn">Video</button>
+          <!-- Mode wheel: a 3-position drum. The housing keeps the
+               .mode-switch class and the items keep .mode-btn so every skin's
+               recessed-track / raised-selection treatment still applies. -->
+          <div
+            id="mode-wheel"
+            class="mode-switch mode-wheel"
+            role="radiogroup"
+            aria-label="Editor mode"
+          >
+            <div id="mode-wheel-drum" class="mode-wheel-drum">
+              <button
+                id="mode-photo"
+                class="mode-btn mode-wheel-item active"
+                role="radio"
+                aria-checked="true"
+                data-mode="photo"
+                style="--slot: 0"
+              >
+                Photo
+              </button>
+              <button
+                id="mode-video"
+                class="mode-btn mode-wheel-item"
+                role="radio"
+                aria-checked="false"
+                tabindex="-1"
+                data-mode="video"
+                style="--slot: 1"
+              >
+                Video
+              </button>
+              <button
+                id="mode-gif"
+                class="mode-btn mode-wheel-item"
+                role="radio"
+                aria-checked="false"
+                tabindex="-1"
+                data-mode="gif"
+                style="--slot: 2"
+              >
+                GIF
+              </button>
+            </div>
           </div>
         </div>
         <div class="top-center">
@@ -58,6 +103,8 @@
               🎨
             </button>
             <div id="theme-panel" class="theme-panel hidden">
+              <div class="theme-panel-title">UI style</div>
+              <div id="skin-grid" class="skin-grid"></div>
               <div class="theme-panel-title">Color theme</div>
               <div id="theme-preset-grid" class="theme-preset-grid"></div>
               <div id="theme-custom-list" class="theme-custom-list"></div>
@@ -119,15 +166,30 @@
       <main id="workspace">
         <!-- LEFT: media bin + history -->
         <aside id="left-panel" class="panel">
-          <div class="panel-title">Media</div>
+          <div class="panel-title panel-title-row">
+            <span>Media</span>
+            <button
+              id="btn-gallery-toggle"
+              class="view-toggle"
+              title="Toggle grid / list view"
+            >
+              ▦ Grid
+            </button>
+          </div>
           <button id="btn-import" class="import-btn">＋ Import media…</button>
+          <!-- `multiple` so a whole shoot can be brought in at once. The
+               accept list stays broad: the extension fallback in main.ts
+               classifies anything the OS reports without a MIME type. -->
           <input
             id="file-input"
             type="file"
             accept="image/*,video/*,audio/*"
+            multiple
             hidden
           />
           <div id="media-list" class="media-list"></div>
+          <div class="panel-title">Looks (one click)</div>
+          <div id="looks-row" class="looks-row"></div>
           <div class="panel-title">Effects &amp; Filters</div>
           <div id="effects-palette" class="effects-palette"></div>
           <div class="panel-title">History</div>
@@ -138,6 +200,13 @@
         <section id="center-panel" class="panel">
           <div id="stage" class="stage">
             <canvas id="preview"></canvas>
+            <button
+              id="btn-compare"
+              class="compare-btn"
+              title="Hold to see the original (before your edits)"
+            >
+              ⇆ Hold: Before / After
+            </button>
             <div id="stage-empty" class="stage-empty">
               Import media, then add it to the timeline to preview.
             </div>
@@ -164,6 +233,58 @@
 
         <!-- RIGHT: inspector -->
         <aside id="right-panel" class="panel">
+          <!-- GIF output settings. Present only in GIF mode; the encoder is
+               fetched the moment that mode is selected, and this section
+               reports where that load got to. -->
+          <section id="gif-section" class="gif-section hidden">
+            <div class="panel-title">GIF</div>
+            <div id="gif-status" class="gif-status" role="status">
+              Loading GIF encoder…
+            </div>
+            <div class="control">
+              <label for="gif-fps"
+                ><span>Frame rate</span><span id="gif-fps-value">12 fps</span>
+              </label>
+              <input id="gif-fps" type="range" min="2" max="30" value="12" />
+            </div>
+            <div class="control">
+              <label for="gif-width"
+                ><span>Width</span><span id="gif-width-value">480 px</span>
+              </label>
+              <input
+                id="gif-width"
+                type="range"
+                min="120"
+                max="960"
+                step="40"
+                value="480"
+              />
+            </div>
+            <label class="control gif-field" for="gif-colors"
+              ><span>Colors</span>
+              <select id="gif-colors">
+                <option value="256" selected>256 — best quality</option>
+                <option value="128">128 — smaller</option>
+                <option value="64">64 — smallest</option>
+              </select>
+            </label>
+            <div class="gif-toggles">
+              <label class="gif-toggle"
+                ><input id="gif-loop" type="checkbox" checked /><span
+                  >Loop forever</span
+                ></label
+              >
+              <label class="gif-toggle"
+                ><input id="gif-boomerang" type="checkbox" /><span
+                  >Boomerang</span
+                ></label
+              >
+            </div>
+            <div id="gif-summary" class="gif-summary"></div>
+            <button id="btn-gif-export" class="tool primary gif-export-btn">
+              ⤓ Export GIF
+            </button>
+          </section>
           <div class="panel-title">Inspector</div>
           <div id="inspector" class="inspector">
             <p class="hint">Select a clip to edit its effects and audio.</p>
@@ -188,6 +309,43 @@
     </div>
     <div id="drop-overlay" class="drop-overlay hidden">
       <div class="drop-card">⤓ Drop media to import</div>
+    </div>
+    <div id="export-modal" class="export-modal hidden">
+      <div class="export-card">
+        <div class="export-title">Export Video</div>
+        <div id="export-options" class="export-options">
+          <label class="export-field"
+            >Resolution
+            <select id="export-resolution">
+              <option value="1920x1080">1080p — 1920×1080</option>
+              <option value="1280x720" selected>720p — 1280×720</option>
+              <option value="854x480">480p — 854×480</option>
+            </select>
+          </label>
+          <label class="export-field"
+            >Quality
+            <select id="export-quality">
+              <option value="12000">High (12 Mbps)</option>
+              <option value="8000" selected>Medium (8 Mbps)</option>
+              <option value="4000">Low (4 Mbps)</option>
+            </select>
+          </label>
+          <div id="export-summary" class="export-summary"></div>
+        </div>
+        <div id="export-progress-wrap" class="export-progress-wrap hidden">
+          <div id="export-phase" class="export-phase">Rendering frames…</div>
+          <div class="export-bar">
+            <div id="export-bar-fill" class="export-bar-fill"></div>
+          </div>
+          <div id="export-count" class="export-count"></div>
+        </div>
+        <div class="export-actions">
+          <button id="btn-export-close" class="tool">Cancel</button>
+          <button id="btn-export-start" class="tool primary">
+            Start Export
+          </button>
+        </div>
+      </div>
     </div>
     <div id="toast" class="toast hidden"></div>
     <script type="module" src="/src/main.ts"></script>

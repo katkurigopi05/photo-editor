@@ -1,0 +1,117 @@
+/* Neumorphism — everything is extruded from one continuous sheet. No borders,
+   no contrast fills: shape reads only from a paired light shadow (top-left)
+   and dark shadow (bottom-right). Pressed states invert both inward. */
+
+:root[data-skin="neumorphism"] {
+  --radius: 14px;
+  --radius-lg: 22px;
+  --neu-light: rgba(255, 255, 255, 0.06);
+  --neu-dark: rgba(0, 0, 0, 0.55);
+  --neu-out: -5px -5px 12px var(--neu-light), 6px 6px 14px var(--neu-dark);
+  --neu-in: inset -4px -4px 9px var(--neu-light),
+    inset 5px 5px 11px var(--neu-dark);
+  --shadow: var(--neu-out);
+  --shadow-soft: var(--neu-out);
+}
+
+:root[data-theme="light"][data-skin="neumorphism"] {
+  --neu-light: rgba(255, 255, 255, 0.95);
+  --neu-dark: rgba(30, 38, 66, 0.16);
+}
+
+/* One flat sheet behind everything — the glow gradient would break the
+   illusion that panels are raised from the background itself. */
+:root[data-skin="neumorphism"] body {
+  background-image: none;
+  background-color: var(--bg);
+}
+
+:root[data-skin="neumorphism"] #topbar,
+:root[data-skin="neumorphism"] .panel,
+:root[data-skin="neumorphism"] .theme-panel,
+:root[data-skin="neumorphism"] .export-card,
+:root[data-skin="neumorphism"] .toast,
+:root[data-skin="neumorphism"] .drop-card {
+  background: var(--bg);
+  border: 0;
+  box-shadow: var(--neu-out);
+}
+
+:root[data-skin="neumorphism"] .tool,
+:root[data-skin="neumorphism"] .mini,
+:root[data-skin="neumorphism"] .import-btn,
+:root[data-skin="neumorphism"] .fx-chip,
+:root[data-skin="neumorphism"] .look-chip,
+:root[data-skin="neumorphism"] .raster-tool-btn,
+:root[data-skin="neumorphism"] .compare-btn,
+:root[data-skin="neumorphism"] .view-toggle,
+:root[data-skin="neumorphism"] .media-item,
+:root[data-skin="neumorphism"] .history-item,
+:root[data-skin="neumorphism"] select {
+  background: var(--bg);
+  border: 0;
+  box-shadow: var(--neu-out);
+}
+
+:root[data-skin="neumorphism"] .tool:hover,
+:root[data-skin="neumorphism"] .mini:hover,
+:root[data-skin="neumorphism"] .fx-chip:hover,
+:root[data-skin="neumorphism"] .look-chip:hover,
+:root[data-skin="neumorphism"] .media-item:hover,
+:root[data-skin="neumorphism"] .import-btn:hover {
+  box-shadow:
+    -7px -7px 16px var(--neu-light),
+    8px 8px 18px var(--neu-dark);
+}
+
+:root[data-skin="neumorphism"] .tool:active,
+:root[data-skin="neumorphism"] .mini:active,
+:root[data-skin="neumorphism"] .fx-chip:active,
+:root[data-skin="neumorphism"] .look-chip:active,
+:root[data-skin="neumorphism"] .import-btn:active,
+:root[data-skin="neumorphism"] .media-item:active,
+:root[data-skin="neumorphism"] .mini.active,
+:root[data-skin="neumorphism"] .raster-tool-btn.active,
+:root[data-skin="neumorphism"] .compare-btn.active {
+  transform: none;
+  box-shadow: var(--neu-in);
+}
+
+/* For toggles the accent survives as a color, not as a fill: a filled pill
+   would sit on top of the sheet instead of being pressed into it. The primary
+   action keeps its accent fill (restored in tokens.css) so it stays findable. */
+:root[data-skin="neumorphism"] .mini.active,
+:root[data-skin="neumorphism"] .raster-tool-btn.active,
+:root[data-skin="neumorphism"] .compare-btn.active {
+  background: var(--bg);
+  color: var(--accent);
+}
+
+:root[data-skin="neumorphism"] .tool.primary {
+  box-shadow:
+    -5px -5px 12px var(--neu-light),
+    6px 6px 14px var(--neu-dark);
+}
+
+:root[data-skin="neumorphism"] .mode-switch,
+:root[data-skin="neumorphism"] .theme-switch,
+:root[data-skin="neumorphism"] .timeline-body,
+:root[data-skin="neumorphism"] .stage,
+:root[data-skin="neumorphism"] .export-bar {
+  background: var(--bg);
+  border: 0;
+  box-shadow: var(--neu-in);
+}
+
+:root[data-skin="neumorphism"] .mode-btn.active,
+:root[data-skin="neumorphism"] .theme-btn.active {
+  background: var(--bg);
+  color: var(--accent);
+  box-shadow: var(--neu-out);
+}
+
+:root[data-skin="neumorphism"] .panel-title::after,
+:root[data-skin="neumorphism"] .track-row {
+  border-color: transparent;
+  background: transparent;
+}

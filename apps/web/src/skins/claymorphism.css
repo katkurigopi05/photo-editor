@@ -1,0 +1,128 @@
+/* Claymorphism — soft, inflated shapes. Big radii, no hard borders, and a
+   double inner shadow (dark bottom-right, light top-left) that makes each
+   surface look like a pressed piece of modelling clay sitting on the page. */
+
+:root[data-skin="claymorphism"] {
+  --radius: 18px;
+  --radius-lg: 30px;
+  --clay-in:
+    inset -6px -6px 12px rgba(255, 255, 255, 0.14),
+    inset 7px 7px 14px rgba(0, 0, 0, 0.32);
+  --clay-in-sm:
+    inset -3px -3px 7px rgba(255, 255, 255, 0.13),
+    inset 4px 4px 8px rgba(0, 0, 0, 0.28);
+  --clay-out: 0 16px 30px -10px rgba(0, 0, 0, 0.5);
+  --shadow: var(--clay-out);
+  --shadow-soft: 0 10px 20px -8px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-theme="light"][data-skin="claymorphism"] {
+  --clay-in:
+    inset -6px -6px 12px rgba(255, 255, 255, 0.95),
+    inset 7px 7px 14px rgba(88, 96, 140, 0.16);
+  --clay-in-sm:
+    inset -3px -3px 7px rgba(255, 255, 255, 0.9),
+    inset 4px 4px 8px rgba(88, 96, 140, 0.14);
+  --clay-out: 0 16px 30px -10px rgba(88, 96, 140, 0.35);
+}
+
+:root[data-skin="claymorphism"] body {
+  background-image:
+    radial-gradient(
+      680px 460px at 18% 4%,
+      color-mix(in srgb, var(--accent) 26%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      620px 440px at 84% 90%,
+      color-mix(in srgb, var(--accent-2) 24%, transparent),
+      transparent 60%
+    ),
+    var(--bg);
+}
+
+:root[data-skin="claymorphism"] #topbar,
+:root[data-skin="claymorphism"] .panel,
+:root[data-skin="claymorphism"] .theme-panel,
+:root[data-skin="claymorphism"] .export-card,
+:root[data-skin="claymorphism"] .drop-card,
+:root[data-skin="claymorphism"] .toast {
+  background: var(--panel-2);
+  border: 0;
+  box-shadow: var(--clay-in), var(--clay-out);
+}
+
+:root[data-skin="claymorphism"] .tool,
+:root[data-skin="claymorphism"] .mini,
+:root[data-skin="claymorphism"] .import-btn,
+:root[data-skin="claymorphism"] .fx-chip,
+:root[data-skin="claymorphism"] .look-chip,
+:root[data-skin="claymorphism"] .raster-tool-btn,
+:root[data-skin="claymorphism"] .compare-btn,
+:root[data-skin="claymorphism"] .view-toggle,
+:root[data-skin="claymorphism"] .media-item,
+:root[data-skin="claymorphism"] .history-item,
+:root[data-skin="claymorphism"] select {
+  background: var(--panel-3);
+  border: 0;
+  border-radius: var(--radius);
+  box-shadow: var(--clay-in-sm), var(--shadow-soft);
+}
+
+:root[data-skin="claymorphism"] .mini,
+:root[data-skin="claymorphism"] .fx-chip,
+:root[data-skin="claymorphism"] .look-chip {
+  border-radius: 999px;
+}
+
+:root[data-skin="claymorphism"] .tool:hover,
+:root[data-skin="claymorphism"] .mini:hover,
+:root[data-skin="claymorphism"] .fx-chip:hover,
+:root[data-skin="claymorphism"] .look-chip:hover,
+:root[data-skin="claymorphism"] .media-item:hover,
+:root[data-skin="claymorphism"] .import-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--clay-in-sm), var(--clay-out);
+}
+
+/* Squish, not travel: clay deforms rather than sliding down. */
+:root[data-skin="claymorphism"] .tool:active,
+:root[data-skin="claymorphism"] .mini:active,
+:root[data-skin="claymorphism"] .fx-chip:active,
+:root[data-skin="claymorphism"] .look-chip:active,
+:root[data-skin="claymorphism"] .import-btn:active {
+  transform: scale(0.97);
+  box-shadow: var(--clay-in);
+}
+
+:root[data-skin="claymorphism"] .tool.primary {
+  box-shadow:
+    inset -4px -4px 9px rgba(255, 255, 255, 0.28),
+    inset 5px 5px 10px rgba(0, 0, 0, 0.22),
+    var(--clay-out);
+}
+
+:root[data-skin="claymorphism"] .mode-switch,
+:root[data-skin="claymorphism"] .theme-switch,
+:root[data-skin="claymorphism"] .stage,
+:root[data-skin="claymorphism"] .timeline-body,
+:root[data-skin="claymorphism"] .export-bar {
+  background: var(--panel-3);
+  border: 0;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--clay-in);
+}
+
+:root[data-skin="claymorphism"] .mode-btn.active,
+:root[data-skin="claymorphism"] .theme-btn.active {
+  border-radius: 999px;
+  box-shadow: var(--shadow-soft);
+}
+
+:root[data-skin="claymorphism"] .clip {
+  border: 0;
+  border-radius: 14px;
+  box-shadow:
+    inset -3px -3px 7px rgba(255, 255, 255, 0.22),
+    inset 4px 4px 8px rgba(0, 0, 0, 0.3);
+}
