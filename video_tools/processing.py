@@ -36,6 +36,42 @@ def _require_image_sequence_clip():
     return np, ImageSequenceClip
 
 
+def video_to_gif(in_path: str, out_path: str, operations=None, start=None, end=None,
+                 fps: int = 10, size=None, loop: int = 0, boomerang: bool = False) -> int:
+    """Turn a video (or a segment of one) into an animated GIF.
+
+    `start`/`end` are seconds; omit them for the whole clip. `fps` is the GIF's
+    sampling rate — GIFs are usually 8-15fps, well below video, which keeps the
+    file manageable. `size` is a (width, height) to scale to. Operations are
+    applied per frame, like every other recipe path. Returns frame count.
+    """
+    np, VideoFileClip = _require_moviepy()
+    from core.builder import save_gif
+
+    clip = VideoFileClip(in_path)
+    try:
+        if start is not None or end is not None:
+            clip = clip.subclipped(start or 0, end)
+
+        frames = []
+        for raw in clip.iter_frames(fps=fps, dtype="uint8"):
+            frame = Image.fromarray(raw).convert("RGB")
+            if size is not None:
+                frame = frame.resize(tuple(size))
+            for operation in operations or []:
+                frame = operation.apply(frame)
+            frames.append(frame)
+    finally:
+        clip.close()
+
+    if not frames:
+        raise ValueError(f"No frames extracted from {in_path!r}")
+
+    # GIF frame delay is milliseconds; derive it from the sampling rate
+    return save_gif(frames, out_path, duration=round(1000 / fps),
+                    loop=loop, boomerang=boomerang)
+
+
 def build_video(image_paths, out_path, operations=None, fps: int = 24,
                 size=None, codec: str = "libx264") -> int:
     """Assemble still images into a video, optionally applying `operations` to

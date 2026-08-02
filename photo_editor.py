@@ -50,7 +50,9 @@ OPEN_FILETYPES = [
 EXPORT_DEFAULTS = {
     "image": (".png", [("PNG files", "*.png"), ("JPEG files", "*.jpg")]),
     "gif": (".gif", [("Animated GIF", "*.gif")]),
-    "video": (".mp4", [("MP4 video", "*.mp4")]),
+    # a video can be exported as video, or converted to an animated GIF by
+    # simply choosing a .gif filename (export_media routes on the extension)
+    "video": (".mp4", [("MP4 video", "*.mp4"), ("Animated GIF", "*.gif")]),
 }
 
 # =============================
@@ -314,12 +316,14 @@ class AppGUI:
         )
         if not out:
             return
+        boomerang = messagebox.askyesno(
+            "Boomerang?", "Play the GIF forward then backward (ping-pong)?")
         try:
-            count = build_gif(list(paths), out)
+            count = build_gif(list(paths), out, boomerang=boomerang)
         except Exception as e:
             messagebox.showerror("Build Error", f"Failed to build GIF: {e}")
             return
-        messagebox.showinfo("Build", f"Built {out} from {count} image(s).")
+        messagebox.showinfo("Build", f"Built {out} from {count} frame(s).")
 
     def save_recipe_action(self):
         if not self.document:

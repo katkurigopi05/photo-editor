@@ -66,8 +66,14 @@ def export_media(media_type: str, source_path: str, operations, out_path: str):
 
     - image: one still through the operation list
     - gif:   every frame (duration/loop preserved)
-    - video: every frame (audio preserved)
+    - video: every frame (audio preserved), or converted to an animated GIF
+             when `out_path` ends in .gif
     """
+    out_ext = os.path.splitext(out_path)[1].lower()
+    if media_type == "video" and out_ext == ".gif":
+        # exporting a video to .gif converts it rather than re-encoding video
+        from video_tools import video_to_gif
+        return video_to_gif(source_path, out_path, operations)
     if media_type == "gif":
         return apply_to_animation(source_path, operations, out_path)
     if media_type == "video":
