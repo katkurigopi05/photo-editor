@@ -337,6 +337,9 @@ def motion_clip(path: Path, seconds: int = 5, fps: int = 24) -> bool:
         return False
     codec_args, suffix = chosen
     path = path.with_suffix(suffix)
+    # Created here rather than up front: without an encoder there is nothing to
+    # put in it, and an empty directory does not survive a git clone anyway.
+    _new_dir(path.parent)
 
     width, height = 1280, 720
     with tempfile.TemporaryDirectory() as tmp:

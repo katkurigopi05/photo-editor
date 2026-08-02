@@ -20,8 +20,9 @@ python3 scripts/make_test_media.py
 Requires Pillow and NumPy. Output is deterministic — the noise is seeded, so a
 rerun reproduces the same bytes and will not churn the diff.
 
-The motion clip is only written when a full `ffmpeg` is available (H.264/mp4 if
-the build has `libx264`, VP8/webm otherwise):
+The committed clip is H.264/mp4. The encoder is chosen by probing what the
+installed ffmpeg actually ships (`libx264` first, `libvpx`/webm as a fallback),
+and the clip is skipped entirely when neither is available:
 
 ```bash
 brew install ffmpeg && python3 scripts/make_test_media.py
@@ -41,7 +42,7 @@ FFMPEG=/path/to/ffmpeg python3 scripts/make_test_media.py
 | `photos/tiny-swatch-64x64.png` | Small-input edge case for scaling and export sizing |
 | `animation/spinner-240x240.gif` | GIF import path. Note the app registers it as an *image*, not an animation — it is a frame source and a round-trip target for GIF mode, not a test of animated-GIF decoding |
 | `audio/tone-sweep-5s.wav` | Waveform rendering, audio gain/pan, audio in export. Clicks land on each second boundary, so trim and sync are checkable by ear |
-| `video/motion-1280x720-5s.*` | Video decode, seeking, frame-accurate export (generated only when ffmpeg is present) |
+| `video/motion-1280x720-5s.mp4` | Video decode, seeking, frame-accurate export. H.264, 1280x720, 24fps, exactly 120 frames. The marker crosses the frame once per clip and the bottom ticks light one per second, so the displayed frame can be read off the picture — a preview that lags the playhead is visible rather than merely suspected |
 
 ## Notes
 
