@@ -7,12 +7,15 @@ Subcommands:
     gif    RECIPE IN.gif OUT.gif   apply a recipe to every GIF frame
     video  RECIPE IN OUT           apply a recipe to every video frame
     build  OUT IMG [IMG ...]       build a GIF/video from still images
+    togif  IN.mp4 OUT.gif          convert a video (or segment) into a GIF
     list-ops                       list all available editing operations
 
 Examples:
     python app.py image look.json photo.jpg out.png
     python app.py build slideshow.gif a.jpg b.jpg c.jpg --duration 500
     python app.py build clip.mp4 frames/*.png --fps 24 --recipe look.json
+    python app.py togif clip.mp4 out.gif --start 3 --end 8 --fps 12
+    python app.py togif clip.mp4 loop.gif --size 480 270 --boomerang
     python app.py list-ops
 """
 import argparse
@@ -58,7 +61,8 @@ def _cmd_build(args):
         if ext == ".gif":
             from core.builder import build_gif
             count = build_gif(args.images, args.output, operations=operations,
-                              duration=args.duration, size=size)
+                              duration=args.duration, size=size,
+                              boomerang=args.boomerang)
         else:
             from video_tools import build_video
             count = build_video(args.images, args.output, operations=operations,
@@ -67,6 +71,22 @@ def _cmd_build(args):
         print(f"FAIL {args.output}: {e}", file=sys.stderr)
         return 1
     print(f"OK   built {args.output} from {count} image(s)")
+    return 0
+
+
+def _cmd_togif(args):
+    """Convert a video (or a segment of it) into an animated GIF."""
+    operations = operations_from_recipe(args.recipe) if args.recipe else None
+    size = tuple(args.size) if args.size else None
+    try:
+        from video_tools import video_to_gif
+        count = video_to_gif(args.input, args.output, operations=operations,
+                             start=args.start, end=args.end, fps=args.fps,
+                             size=size, boomerang=args.boomerang)
+    except Exception as e:
+        print(f"FAIL {args.input}: {e}", file=sys.stderr)
+        return 1
+    print(f"OK   {args.input} -> {args.output} ({count} frames @ {args.fps}fps)")
     return 0
 
 
@@ -133,7 +153,22 @@ def build_parser():
     p.add_argument("--fps", type=int, default=24, help="video: frames per second")
     p.add_argument("--size", type=int, nargs=2, metavar=("W", "H"),
                    help="resize all frames to WxH")
+    p.add_argument("--boomerang", action="store_true",
+                   help="GIF: play forward then backward (ping-pong)")
     p.set_defaults(func=_cmd_build)
+
+    p = sub.add_parser("togif", help="convert a video (or a segment) into an animated GIF")
+    p.add_argument("input", help="input video file")
+    p.add_argument("output", help="output .gif")
+    p.add_argument("--start", type=float, help="segment start in seconds")
+    p.add_argument("--end", type=float, help="segment end in seconds")
+    p.add_argument("--fps", type=int, default=10, help="GIF frame rate (default 10)")
+    p.add_argument("--size", type=int, nargs=2, metavar=("W", "H"),
+                   help="scale frames to WxH")
+    p.add_argument("--recipe", help="optional recipe applied to each frame")
+    p.add_argument("--boomerang", action="store_true",
+                   help="play forward then backward (ping-pong)")
+    p.set_defaults(func=_cmd_togif)
 
     p = sub.add_parser("list-ops", help="list all available editing operations")
     p.set_defaults(func=_cmd_list_ops)

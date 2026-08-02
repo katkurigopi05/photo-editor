@@ -33,6 +33,7 @@ summary below.
 - Local/selective edits via `MaskedOperation`
 - Batch processing across a folder (`batch_export.py`)
 - Animated GIF editing and building from stills (`core/frames.py`, `core/builder.py`)
+- GIF creation from video segments, with fps/size control and boomerang looping (`video_tools.video_to_gif`, `app.py togif`)
 - Video editing frame-by-frame with audio preserved (`video_tools/`, optional)
 - Drop-in plugins (`core/plugins.py`, `plugins/`)
 - OpenCV operations — CLAHE, denoise, bilateral, unsharp, inpaint object removal (`cv_tools/`, optional)

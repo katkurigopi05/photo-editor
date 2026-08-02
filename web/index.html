@@ -227,7 +227,7 @@
         <div class="stats">
           <div class="stat"><b>35</b><span>Operations</span></div>
           <div class="stat"><b>4</b><span>Media types</span></div>
-          <div class="stat"><b>95</b><span>Tests passing</span></div>
+          <div class="stat"><b>114</b><span>Tests passing</span></div>
           <div class="stat"><b>5</b><span>Optional modules</span></div>
         </div>
       </div>
@@ -247,6 +247,7 @@
           <div class="card"><p class="tag">Motion</p><h3>Animated GIF editing</h3><p>Run the recipe over every GIF frame — per-frame timing and loop count preserved.</p></div>
           <div class="card"><p class="tag">Motion</p><h3>Video editing</h3><p>Frame-by-frame processing through MoviePy/FFmpeg, with the audio track carried through.</p></div>
           <div class="card"><p class="tag">Motion</p><h3>Build from stills</h3><p>Assemble a set of photos into a graded slideshow GIF or a video clip.</p></div>
+          <div class="card"><p class="tag">Motion</p><h3>Video → GIF</h3><p>Clip any segment of a video into an animated GIF, with frame-rate, size and ping-pong looping control.</p></div>
           <div class="card"><p class="tag">Extend</p><h3>Drop-in plugins</h3><p>Add a Python file to <code>plugins/</code> and your operation appears in the app at startup.</p></div>
           <div class="card"><p class="tag">OpenCV</p><h3>Pro filters</h3><p>CLAHE local contrast, non-local-means denoise, bilateral smoothing, and inpaint object removal.</p></div>
           <div class="card"><p class="tag">AI</p><h3>Assisted tools</h3><p>Background removal and subject-aware auto-crop, kept optional so the core stays light.</p></div>
@@ -345,6 +346,9 @@ python app.py <span class="c">video</span> look.json in.mp4  out.mp4
 
 <span class="d"># build an animation from still images</span>
 python app.py <span class="c">build</span> slideshow.gif a.jpg b.jpg c.jpg --duration 500
+
+<span class="d"># clip a GIF out of a video (with ping-pong looping)</span>
+python app.py <span class="c">togif</span> clip.mp4 out.gif --start 3 --end 8 --fps 12 --boomerang
 
 <span class="d"># launch the desktop editor · list every operation</span>
 python app.py <span class="c">gui</span>
