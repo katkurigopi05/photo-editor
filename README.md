@@ -68,7 +68,22 @@ python app.py gif    look.json in.gif  out.gif      # apply a recipe to every GI
 python app.py video  look.json in.mp4  out.mp4      # apply a recipe to every video frame
 python app.py build  slideshow.gif a.jpg b.jpg c.jpg --duration 500   # stills -> GIF
 python app.py build  clip.mp4 frames/*.png --fps 24 --recipe look.json # stills -> video
+python app.py togif  clip.mp4 out.gif --start 3 --end 8 --fps 12       # video -> GIF
+python app.py togif  clip.mp4 loop.gif --size 480 270 --boomerang      # ping-pong GIF
 ```
+
+### Making GIFs
+
+Three ways, all sharing the same recipe model:
+
+- **From still images** — `app.py build out.gif a.jpg b.jpg …` (or the GUI's
+  **Build from Images** button). `--duration` sets ms per frame.
+- **From a video** — `app.py togif in.mp4 out.gif`, optionally clipping a
+  segment with `--start`/`--end`, resampling with `--fps` (8–15 keeps files
+  small), and scaling with `--size`.
+- **From an open video in the GUI** — just export it with a `.gif` filename.
+
+Add `--boomerang` to any of them to play forward then backward.
 
 A "recipe" is the JSON produced by **Save Recipe** in the GUI (or
 `Document.save_recipe`): a portable list of operations that can be replayed on
