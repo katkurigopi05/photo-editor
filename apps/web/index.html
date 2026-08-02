@@ -31,9 +31,49 @@
       <header id="topbar">
         <div class="top-left">
           <span class="logo">🎬 Project Director</span>
-          <div class="mode-switch" role="tablist">
-            <button id="mode-photo" class="mode-btn active">Photo</button>
-            <button id="mode-video" class="mode-btn">Video</button>
+          <!-- Mode wheel: a 3-position drum. The housing keeps the
+               .mode-switch class and the items keep .mode-btn so every skin's
+               recessed-track / raised-selection treatment still applies. -->
+          <div
+            id="mode-wheel"
+            class="mode-switch mode-wheel"
+            role="radiogroup"
+            aria-label="Editor mode"
+          >
+            <div id="mode-wheel-drum" class="mode-wheel-drum">
+              <button
+                id="mode-photo"
+                class="mode-btn mode-wheel-item active"
+                role="radio"
+                aria-checked="true"
+                data-mode="photo"
+                style="--slot: 0"
+              >
+                Photo
+              </button>
+              <button
+                id="mode-video"
+                class="mode-btn mode-wheel-item"
+                role="radio"
+                aria-checked="false"
+                tabindex="-1"
+                data-mode="video"
+                style="--slot: 1"
+              >
+                Video
+              </button>
+              <button
+                id="mode-gif"
+                class="mode-btn mode-wheel-item"
+                role="radio"
+                aria-checked="false"
+                tabindex="-1"
+                data-mode="gif"
+                style="--slot: 2"
+              >
+                GIF
+              </button>
+            </div>
           </div>
         </div>
         <div class="top-center">
@@ -189,6 +229,58 @@
 
         <!-- RIGHT: inspector -->
         <aside id="right-panel" class="panel">
+          <!-- GIF output settings. Present only in GIF mode; the encoder is
+               fetched the moment that mode is selected, and this section
+               reports where that load got to. -->
+          <section id="gif-section" class="gif-section hidden">
+            <div class="panel-title">GIF</div>
+            <div id="gif-status" class="gif-status" role="status">
+              Loading GIF encoder…
+            </div>
+            <div class="control">
+              <label for="gif-fps"
+                ><span>Frame rate</span><span id="gif-fps-value">12 fps</span>
+              </label>
+              <input id="gif-fps" type="range" min="2" max="30" value="12" />
+            </div>
+            <div class="control">
+              <label for="gif-width"
+                ><span>Width</span><span id="gif-width-value">480 px</span>
+              </label>
+              <input
+                id="gif-width"
+                type="range"
+                min="120"
+                max="960"
+                step="40"
+                value="480"
+              />
+            </div>
+            <label class="control gif-field" for="gif-colors"
+              ><span>Colors</span>
+              <select id="gif-colors">
+                <option value="256" selected>256 — best quality</option>
+                <option value="128">128 — smaller</option>
+                <option value="64">64 — smallest</option>
+              </select>
+            </label>
+            <div class="gif-toggles">
+              <label class="gif-toggle"
+                ><input id="gif-loop" type="checkbox" checked /><span
+                  >Loop forever</span
+                ></label
+              >
+              <label class="gif-toggle"
+                ><input id="gif-boomerang" type="checkbox" /><span
+                  >Boomerang</span
+                ></label
+              >
+            </div>
+            <div id="gif-summary" class="gif-summary"></div>
+            <button id="btn-gif-export" class="tool primary gif-export-btn">
+              ⤓ Export GIF
+            </button>
+          </section>
           <div class="panel-title">Inspector</div>
           <div id="inspector" class="inspector">
             <p class="hint">Select a clip to edit its effects and audio.</p>

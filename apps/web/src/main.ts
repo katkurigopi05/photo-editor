@@ -56,6 +56,13 @@ import {
   type ThemeTokens,
 } from "./theme.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
+import {
+  boomerangOrder,
+  clampGifFps,
+  createGifEncoder,
+  isGifEncoderLoaded,
+  loadGifEncoder,
+} from "./gif.js";
 import { RasterSession, canvasPointToImage } from "./raster.js";
 import {
   stampBrush,
@@ -313,7 +320,15 @@ const ACTOR = { type: "user", id: "user-1" } as const;
 const FRAME_RATE = { numerator: 30, denominator: 1 };
 
 const session = new EditorSession();
-let mode: "video" | "photo" = "photo";
+/** GIF is a third output mode, not a third editor: it shares the timeline and
+ * the effect stack with video, and differs only in how frames leave the app. */
+type EditorMode = "video" | "photo" | "gif";
+const MODE_ORDER: readonly EditorMode[] = ["photo", "video", "gif"];
+/** Wheel geometry and gesture thresholds — see the .mode-wheel CSS block. */
+const MODE_WHEEL_STEP_DEG = 60;
+const MODE_WHEEL_SCROLL_PX = 40;
+const MODE_WHEEL_DRAG_PX = 22;
+let mode: EditorMode = "photo";
 let selectedClipId: string | null = null;
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
@@ -1315,7 +1330,7 @@ function renderInspector(): void {
   const select = document.createElement("select");
   const placeholder = new Option("＋ Add effect…", "");
   select.appendChild(placeholder);
-  for (const spec of EFFECTS.filter((s) => s.modes.includes(mode))) {
+  for (const spec of EFFECTS.filter((s) => s.modes.includes(effectMode()))) {
     select.appendChild(new Option(spec.label, spec.type));
   }
   select.addEventListener("change", () => {
@@ -1499,7 +1514,7 @@ function addEffectByType(type: EffectType): void {
 
 function renderEffectsPalette(): void {
   paletteEl.innerHTML = "";
-  for (const spec of EFFECTS.filter((s) => s.modes.includes(mode))) {
+  for (const spec of EFFECTS.filter((s) => s.modes.includes(effectMode()))) {
     const chip = document.createElement("button");
     chip.className = "fx-chip";
     chip.textContent = spec.label;
@@ -1800,27 +1815,155 @@ function updateUI(): void {
   renderHistory();
   renderTimeline();
   renderInspector();
+  renderGifPanel();
   syncTransport();
   drawPreview();
 }
 
-function setMode(next: "video" | "photo"): void {
+/** Effects are declared for "video" or "photo"; GIF is fed by the same
+ * timeline as video, so it offers the same effect set. */
+function effectMode(): "video" | "photo" {
+  return mode === "photo" ? "photo" : "video";
+}
+
+const MODE_EMPTY_HINT: Record<EditorMode, string> = {
+  photo: "Import a photo to start editing.",
+  video: "Import media, then add it to the timeline to preview.",
+  gif: "Import a video or photos, add them to the timeline, then export a GIF.",
+};
+
+/** Rotates the drum so `mode` faces the viewer and fades the others by how far
+ * they have turned away. Angles are absolute (not wrapped), so the wheel never
+ * spins the long way round to reach a neighbour. */
+function renderModeWheel(): void {
+  const activeIndex = MODE_ORDER.indexOf(mode);
+  $("mode-wheel-drum").style.setProperty(
+    "--angle",
+    `${-activeIndex * MODE_WHEEL_STEP_DEG}deg`,
+  );
+  MODE_ORDER.forEach((id, index) => {
+    const item = $(`mode-${id}`);
+    const selected = index === activeIndex;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-checked", String(selected));
+    // Roving tabindex: the group is one tab stop, arrows move within it.
+    item.tabIndex = selected ? 0 : -1;
+    item.style.setProperty("--distance", String(Math.abs(index - activeIndex)));
+  });
+}
+
+function setMode(next: EditorMode): void {
   mode = next;
-  $("mode-video").classList.toggle("active", mode === "video");
-  $("mode-photo").classList.toggle("active", mode === "photo");
   document.body.dataset["mode"] = mode;
+  renderModeWheel();
   // Photo mode edits a single still image — the scrub timeline and transport
   // (play/seek/timecode) only make sense once there's a video to play through.
+  // GIF is built from the timeline, so it keeps both.
   $("app").classList.toggle("mode-photo", mode === "photo");
   // Mode-appropriate empty-state guidance (the timeline is hidden in photo
   // mode, so "add it to the timeline" would be confusing there).
-  stageEmpty.textContent =
-    mode === "photo"
-      ? "Import a photo to start editing."
-      : "Import media, then add it to the timeline to preview.";
+  stageEmpty.textContent = MODE_EMPTY_HINT[mode];
+  $("btn-export").textContent = mode === "gif" ? "⤓ Export GIF" : "⤓ Export";
+  $("gif-section").classList.toggle("hidden", mode !== "gif");
+  // Selecting GIF is the signal to fetch the encoder — by the time settings
+  // are dialled in, the export can start immediately.
+  if (mode === "gif") void warmGifEncoder();
+  renderGifPanel();
   renderInspector();
   renderEffectsPalette();
   renderLooks();
+}
+
+/** Steps the wheel by `delta` positions, clamped at both ends (the drum is a
+ * three-item list, not an endless loop — wrapping from GIF back to Photo would
+ * read as the wheel jumping backwards). */
+function stepMode(delta: number): void {
+  const next = MODE_ORDER[
+    Math.min(
+      MODE_ORDER.length - 1,
+      Math.max(0, MODE_ORDER.indexOf(mode) + delta),
+    )
+  ] as EditorMode;
+  if (next !== mode) setMode(next);
+}
+
+function bindModeWheel(): void {
+  const wheel = $("mode-wheel");
+  let dragFrom: number | null = null;
+  // Distance of the drag that is finishing, so the click it also produces is
+  // not read as a second, contradictory step.
+  let draggedDistance = 0;
+
+  for (const id of MODE_ORDER) {
+    $(`mode-${id}`).addEventListener("click", () => setMode(id));
+  }
+
+  // A neighbour's sliver is a rotated 3D face — clicking it usually lands on
+  // the drum behind it rather than the face. Treat a click anywhere in the
+  // housing as "turn towards the half that was clicked", which is how a
+  // physical wheel behaves anyway.
+  wheel.addEventListener("click", (e) => {
+    if (draggedDistance > MODE_WHEEL_DRAG_PX) return;
+    if ((e.target as HTMLElement).closest(".mode-wheel-item")) return;
+    const box = wheel.getBoundingClientRect();
+    stepMode(e.clientY < box.top + box.height / 2 ? -1 : 1);
+  });
+
+  // Trackpads emit a stream of small deltas; accumulate so one physical flick
+  // is one step rather than three.
+  let scrolled = 0;
+  wheel.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      scrolled += e.deltaY;
+      while (Math.abs(scrolled) >= MODE_WHEEL_SCROLL_PX) {
+        stepMode(Math.sign(scrolled));
+        scrolled -= Math.sign(scrolled) * MODE_WHEEL_SCROLL_PX;
+      }
+    },
+    { passive: false },
+  );
+
+  wheel.addEventListener("pointerdown", (e) => {
+    dragFrom = e.clientY;
+    draggedDistance = 0;
+    wheel.setPointerCapture(e.pointerId);
+  });
+  wheel.addEventListener("pointermove", (e) => {
+    if (dragFrom === null) return;
+    const travelled = e.clientY - dragFrom;
+    draggedDistance = Math.max(draggedDistance, Math.abs(travelled));
+    if (Math.abs(travelled) < MODE_WHEEL_DRAG_PX) return;
+    // Dragging down brings the previous mode into view, like a physical drum.
+    stepMode(-Math.sign(travelled));
+    dragFrom = e.clientY;
+  });
+  const endDrag = (e: PointerEvent): void => {
+    if (dragFrom === null) return;
+    dragFrom = null;
+    if (wheel.hasPointerCapture(e.pointerId)) {
+      wheel.releasePointerCapture(e.pointerId);
+    }
+  };
+  wheel.addEventListener("pointerup", endDrag);
+  wheel.addEventListener("pointercancel", endDrag);
+
+  wheel.addEventListener("keydown", (e) => {
+    const byKey: Record<string, () => void> = {
+      ArrowDown: () => stepMode(1),
+      ArrowRight: () => stepMode(1),
+      ArrowUp: () => stepMode(-1),
+      ArrowLeft: () => stepMode(-1),
+      Home: () => setMode(MODE_ORDER[0]!),
+      End: () => setMode(MODE_ORDER[MODE_ORDER.length - 1]!),
+    };
+    const action = byKey[e.key];
+    if (!action) return;
+    e.preventDefault();
+    action();
+    $(`mode-${mode}`).focus();
+  });
 }
 
 // ==========================================================================
@@ -3095,8 +3238,8 @@ async function applyRasterEdit(): Promise<void> {
 // Events
 // ==========================================================================
 function bindEvents(): void {
-  $("mode-video").addEventListener("click", () => setMode("video"));
-  $("mode-photo").addEventListener("click", () => setMode("photo"));
+  bindModeWheel();
+  bindGifPanel();
 
   // Photo mode hides the timeline (nothing to scrub for a still image), so
   // drag-and-drop needs a target there too — the stage itself.
@@ -3790,9 +3933,233 @@ async function startExportFromModal(): Promise<void> {
   closeExportModal();
 }
 
+// ==========================================================================
+// GIF output — the third mode's export path
+// ==========================================================================
+
+interface GifSettings {
+  fps: number;
+  width: number;
+  colors: number;
+  loop: boolean;
+  boomerang: boolean;
+}
+
+let gifSettings: GifSettings = {
+  fps: 12,
+  width: 480,
+  colors: 256,
+  loop: true,
+  boomerang: false,
+};
+
+/** A GIF holds every frame in memory as a palettized buffer, and viewers choke
+ * long before this — better a clear cap than a tab that runs out of memory. */
+const GIF_MAX_FRAMES = 300;
+/** Yield to the event loop this often so the UI stays responsive mid-render. */
+const GIF_YIELD_EVERY = 4;
+
+type GifEncoderStatus = "idle" | "loading" | "ready" | "failed";
+let gifEncoderStatus: GifEncoderStatus = "idle";
+let gifExportInFlight = false;
+
+/** Fetches the encoder on entering GIF mode so the first export does not wait
+ * on the network. Re-entrant: a second call while loading is a no-op, and a
+ * previous failure is retried. */
+async function warmGifEncoder(): Promise<void> {
+  if (gifEncoderStatus === "loading" || gifEncoderStatus === "ready") return;
+  gifEncoderStatus = "loading";
+  renderGifPanel();
+  try {
+    await loadGifEncoder();
+    gifEncoderStatus = "ready";
+  } catch {
+    gifEncoderStatus = "failed";
+  }
+  renderGifPanel();
+}
+
+function gifStatusText(): string {
+  switch (gifEncoderStatus) {
+    case "ready":
+      return "✓ GIF encoder ready (gifenc, loaded on demand)";
+    case "failed":
+      return "✕ GIF encoder failed to load — check your connection and reselect GIF.";
+    default:
+      return "Loading GIF encoder…";
+  }
+}
+
+/** Output size: the source frame's aspect at the chosen width. */
+function gifOutputSize(seq: Sequence): { width: number; height: number } | null {
+  const visual = resolveAtTime(seq, "0").filter((l) => {
+    const a = findAsset(l.assetId);
+    return a && a.kind !== "audio";
+  });
+  const top = visual[0];
+  if (!top) return null;
+  const loc = locateClip(top.clipId);
+  const asset = loc ? findAsset(loc.clip.assetId) : undefined;
+  if (!loc || !asset) return null;
+  const media = mediaCache.get(asset.originalUri);
+  let mw = asset.metadata.width ?? 1920;
+  let mh = asset.metadata.height ?? 1080;
+  if (media instanceof HTMLImageElement) {
+    mw = media.naturalWidth || mw;
+    mh = media.naturalHeight || mh;
+  } else if (media instanceof HTMLVideoElement) {
+    mw = media.videoWidth || mw;
+    mh = media.videoHeight || mh;
+  }
+  const { sw, sh } = resolveCropRect(loc.clip, mw, mh);
+  const width = Math.max(2, Math.round(gifSettings.width));
+  return { width, height: Math.max(2, Math.round((width * sh) / sw)) };
+}
+
+/** Frames the current timeline yields at the chosen rate, before boomerang. */
+function gifFrameCount(seq: Sequence): number {
+  const durationUs = Number(sequenceDurationUs(seq));
+  const fps = clampGifFps(gifSettings.fps);
+  const frames = Math.floor((durationUs / 1_000_000) * fps);
+  return Math.max(1, Math.min(GIF_MAX_FRAMES, frames));
+}
+
+function renderGifPanel(): void {
+  const status = $<HTMLDivElement>("gif-status");
+  status.textContent = gifStatusText();
+  status.className = `gif-status${gifEncoderStatus === "ready" ? " ready" : ""}${
+    gifEncoderStatus === "failed" ? " failed" : ""
+  }`;
+
+  $("gif-fps-value").textContent = `${clampGifFps(gifSettings.fps)} fps`;
+  $("gif-width-value").textContent = `${gifSettings.width} px`;
+
+  const seq = activeSequence();
+  const summary = $<HTMLDivElement>("gif-summary");
+  const size = seq ? gifOutputSize(seq) : null;
+  if (!seq || !size) {
+    summary.textContent = "Add a clip to the timeline to build a GIF.";
+  } else {
+    const frames = gifFrameCount(seq);
+    const played = boomerangOrder(frames, gifSettings.boomerang).length;
+    const seconds = (played / clampGifFps(gifSettings.fps)).toFixed(1);
+    summary.textContent = `${played} frames · ${size.width}×${size.height} · ${seconds}s · ${
+      gifSettings.loop ? "loops" : "plays once"
+    }`;
+  }
+
+  $<HTMLButtonElement>("btn-gif-export").disabled =
+    gifExportInFlight || gifEncoderStatus === "failed";
+}
+
+/** Renders the timeline at the GIF's own frame rate and encodes it. Reuses the
+ * same layer/draw path as video export, so effects, crops and z-order are
+ * identical to what the preview shows. */
+async function runGifExport(): Promise<void> {
+  if (gifExportInFlight) return;
+  const seq = activeSequence();
+  if (!seq || sequenceDurationUs(seq) === "0") {
+    toast("Add a clip to the timeline first.", true);
+    return;
+  }
+  const size = gifOutputSize(seq);
+  if (!size) {
+    toast("Nothing visual on the timeline to turn into a GIF.", true);
+    return;
+  }
+
+  gifExportInFlight = true;
+  renderGifPanel();
+  const status = $<HTMLDivElement>("gif-status");
+  const fps = clampGifFps(gifSettings.fps);
+  const frameCount = gifFrameCount(seq);
+
+  try {
+    const sink = await createGifEncoder({
+      fps,
+      loop: gifSettings.loop,
+      boomerang: gifSettings.boomerang,
+      maxColors: gifSettings.colors,
+    });
+    gifEncoderStatus = "ready";
+
+    const off = document.createElement("canvas");
+    off.width = size.width;
+    off.height = size.height;
+    const offCtx = off.getContext("2d", { willReadFrequently: true })!;
+
+    for (let i = 0; i < frameCount; i++) {
+      const timeUs = frameToStartTimeUs(i, { numerator: fps, denominator: 1 });
+      const visual = resolveAtTime(seq, timeUs).filter((l) => {
+        const a = findAsset(l.assetId);
+        return a && a.kind !== "audio";
+      });
+      offCtx.clearRect(0, 0, off.width, off.height);
+      for (const layer of [...visual].reverse()) {
+        const loc = locateClip(layer.clipId);
+        if (!loc) continue;
+        const asset = findAsset(loc.clip.assetId);
+        const media = asset ? mediaCache.get(asset.originalUri) : undefined;
+        if (media instanceof HTMLVideoElement) {
+          await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
+        }
+        drawLayer(offCtx, loc.clip, layer.sourceTimeUs, off.width, off.height);
+      }
+      sink.addFrame(offCtx.getImageData(0, 0, off.width, off.height));
+
+      if (i % GIF_YIELD_EVERY === 0) {
+        status.textContent = `Rendering frame ${i + 1} of ${frameCount}…`;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    status.textContent = "Encoding GIF…";
+    await new Promise((r) => setTimeout(r, 0));
+    const blob = sink.finish();
+    downloadBlob(blob, "export.gif");
+    const kb = Math.round(blob.size / 1024);
+    toast(`Exported ${size.width}×${size.height} GIF · ${kb} KB.`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isGifEncoderLoaded()) gifEncoderStatus = "failed";
+    toast(`GIF export failed: ${message}`, true);
+  } finally {
+    gifExportInFlight = false;
+    renderGifPanel();
+  }
+}
+
+function bindGifPanel(): void {
+  const fps = $<HTMLInputElement>("gif-fps");
+  const width = $<HTMLInputElement>("gif-width");
+  const colors = $<HTMLSelectElement>("gif-colors");
+  const loop = $<HTMLInputElement>("gif-loop");
+  const boomerang = $<HTMLInputElement>("gif-boomerang");
+
+  const update = (patch: Partial<GifSettings>): void => {
+    gifSettings = { ...gifSettings, ...patch };
+    renderGifPanel();
+  };
+
+  fps.addEventListener("input", () => update({ fps: Number(fps.value) }));
+  width.addEventListener("input", () => update({ width: Number(width.value) }));
+  colors.addEventListener("change", () =>
+    update({ colors: Number(colors.value) }),
+  );
+  loop.addEventListener("change", () => update({ loop: loop.checked }));
+  boomerang.addEventListener("change", () =>
+    update({ boomerang: boomerang.checked }),
+  );
+  $("btn-gif-export").addEventListener("click", () => void runGifExport());
+}
+
 function doExport(): void {
   if (mode === "photo") {
     exportPhotoImage();
+    return;
+  }
+  if (mode === "gif") {
+    void runGifExport();
     return;
   }
   openExportModal();
