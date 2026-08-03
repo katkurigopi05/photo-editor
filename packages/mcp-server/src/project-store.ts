@@ -1,9 +1,12 @@
-import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { readFile, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { canonicalStringify } from "@director/canonical-json";
 import { replay, type EditorState } from "@director/editor-state";
 import type { ProjectOperation } from "@director/command-schema";
+
+import { MAX_PROJECT_BYTES } from "./paths.js";
 
 /**
  * File-backed project storage for the MCP server.
@@ -77,6 +80,26 @@ export async function loadProjectFile(path: string): Promise<{
   operationCount: number;
   existed: boolean;
 }> {
+  // Size is checked before reading, not after: reading first would already
+  // have spent the memory the limit exists to protect.
+  try {
+    const stats = await stat(path);
+    if (stats.size > MAX_PROJECT_BYTES) {
+      throw new ProjectFileError(
+        `${path} is ${stats.size} bytes, over the ${MAX_PROJECT_BYTES}-byte limit.`,
+        "FILE_UNREADABLE",
+      );
+    }
+  } catch (error) {
+    if (error instanceof ProjectFileError) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new ProjectFileError(
+        `Could not read ${path}: ${(error as Error).message}`,
+        "FILE_UNREADABLE",
+      );
+    }
+  }
+
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
@@ -123,7 +146,13 @@ export async function saveProjectFile(
     operations: [...operations],
   };
   await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.tmp-${process.pid}`;
-  await writeFile(temporary, canonicalStringify(file), "utf8");
+  // Random name and an exclusive create: a predictable temp path in a shared
+  // directory can be pre-created as a symlink, which would redirect this write
+  // somewhere else entirely. "wx" fails rather than following one.
+  const temporary = `${path}.tmp-${randomBytes(8).toString("hex")}`;
+  await writeFile(temporary, canonicalStringify(file), {
+    encoding: "utf8",
+    flag: "wx",
+  });
   await rename(temporary, path);
 }

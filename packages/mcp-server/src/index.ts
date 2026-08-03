@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { ProjectSession } from "./session.js";
@@ -47,12 +48,15 @@ export function createServer(session: ProjectSession): McpServer {
 }
 
 /** `--project <path>` opens a file at startup; otherwise the client calls
- * open_project. `--actor <id>` labels this client in the operation log. */
+ * open_project. `--actor <id>` labels this client in the operation log.
+ * `--root <dir>` is the directory every project path must stay inside; it
+ * defaults to the directory of `--project`, else the working directory. */
 export function parseArgs(argv: readonly string[]): {
   project?: string;
   actorId?: string;
+  root?: string;
 } {
-  const parsed: { project?: string; actorId?: string } = {};
+  const parsed: { project?: string; actorId?: string; root?: string } = {};
   for (let index = 0; index < argv.length; index++) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -61,6 +65,9 @@ export function parseArgs(argv: readonly string[]): {
       index++;
     } else if (flag === "--actor" && value !== undefined) {
       parsed.actorId = value;
+      index++;
+    } else if (flag === "--root" && value !== undefined) {
+      parsed.root = value;
       index++;
     }
   }
@@ -71,6 +78,12 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const session = new ProjectSession({
     actorId: args.actorId ?? "mcp",
+    // Defaulting the root to the given project's own directory keeps the
+    // common single-project setup working without the operator having to
+    // reason about confinement at all.
+    root:
+      args.root ??
+      (args.project === undefined ? process.cwd() : dirname(args.project)),
   });
   if (args.project !== undefined) {
     await session.open(args.project);

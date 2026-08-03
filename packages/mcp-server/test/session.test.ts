@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,8 +34,10 @@ const PROJECT_PAYLOAD = {
 };
 
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), "director-mcp-session-"));
-  session = new ProjectSession({ actorId: "mcp:test" });
+  directory = await realpath(
+    await mkdtemp(join(tmpdir(), "director-mcp-session-")),
+  );
+  session = new ProjectSession({ actorId: "mcp:test", root: directory });
   await session.open(join(directory, "project.director.json"));
 });
 
@@ -103,7 +105,10 @@ describe("ProjectSession", () => {
     await session.dispatch(command(session, "project.create", PROJECT_PAYLOAD));
     await session.undo();
 
-    const reopened = new ProjectSession({ actorId: "mcp:test" });
+    const reopened = new ProjectSession({
+      actorId: "mcp:test",
+      root: directory,
+    });
     await reopened.open(path);
     expect(reopened.getProject()).toBeNull();
     expect(reopened.getOperations()).toHaveLength(0);

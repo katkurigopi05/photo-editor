@@ -33,13 +33,20 @@ export function registerInspectTools(
         path: z
           .string()
           .min(1)
-          .describe("Absolute path to a .director.json project file"),
+          .describe(
+            "Path to a .director.json file, absolute or relative to the " +
+              "server's --root. Paths outside the root are refused.",
+          ),
       },
     },
     async ({ path }) => {
       const opened = await session.open(path);
       return asJson({
-        path,
+        // The resolved path, not the requested one: relative input and the
+        // root confinement both mean they can differ, and the agent should
+        // see where its edits are actually going.
+        path: opened.path,
+        root: session.getRoot(),
         existed: opened.existed,
         operations: opened.operations,
         hasProject: session.getProject() !== null,

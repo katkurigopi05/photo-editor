@@ -1,6 +1,7 @@
 import { EditorSession, type CommandContext } from "@director/ui-kit";
 import type { Project, ProjectOperation } from "@director/editor-state";
 
+import { resolveProjectPath } from "./paths.js";
 import { loadProjectFile, saveProjectFile } from "./project-store.js";
 
 /**
@@ -19,6 +20,10 @@ import { loadProjectFile, saveProjectFile } from "./project-store.js";
 export interface SessionOptions {
   /** Identifies the agent in the operation log, e.g. "mcp:claude-desktop". */
   actorId?: string;
+  /** Directory every project path must resolve inside. Defaults to the
+   * working directory, which is the narrowest default that still lets a
+   * client open the project it was started for. */
+  root?: string;
   /** Overridable for tests; defaults to crypto.randomUUID. */
   newId?: () => string;
   /** Overridable for tests; defaults to the wall clock. */
@@ -36,11 +41,13 @@ export class ProjectSession {
   private session = new EditorSession();
   private path: string | null = null;
   private readonly actorId: string;
+  private readonly root: string;
   private readonly newId: () => string;
   private readonly now: () => string;
 
   constructor(options: SessionOptions = {}) {
     this.actorId = options.actorId ?? "mcp";
+    this.root = options.root ?? process.cwd();
     this.newId = options.newId ?? (() => crypto.randomUUID());
     this.now = options.now ?? (() => new Date().toISOString());
   }
@@ -91,12 +98,25 @@ export class ProjectSession {
     return this.session.canRedo();
   }
 
-  /** Loads `path`, replacing whatever was open. */
-  async open(path: string): Promise<{ existed: boolean; operations: number }> {
-    const loaded = await loadProjectFile(path);
+  /** The directory this session is confined to. */
+  getRoot(): string {
+    return this.root;
+  }
+
+  /** Loads `path`, replacing whatever was open. The path is admitted by
+   * resolveProjectPath first, so a rejected one never reaches the filesystem. */
+  async open(
+    path: string,
+  ): Promise<{ existed: boolean; operations: number; path: string }> {
+    const safe = resolveProjectPath(path, this.root);
+    const loaded = await loadProjectFile(safe);
     this.session = new EditorSession(loaded.state);
-    this.path = path;
-    return { existed: loaded.existed, operations: loaded.operationCount };
+    this.path = safe;
+    return {
+      existed: loaded.existed,
+      operations: loaded.operationCount,
+      path: safe,
+    };
   }
 
   /** The envelope fields a command needs. `baseVersion` is read at call time so

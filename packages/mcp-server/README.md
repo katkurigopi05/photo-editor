@@ -64,10 +64,48 @@ Flags:
 | Flag | Meaning |
 |---|---|
 | `--project <path>` (`-p`) | Open a file at startup instead of waiting for `open_project` |
+| `--root <dir>` | Directory every project path must stay inside. Defaults to the directory of `--project`, else the working directory |
 | `--actor <id>` | How this client is labelled in the operation log (default `mcp`) |
 
 Give each client its own `--actor` — that is what makes the history worth
 reading later.
+
+## Security
+
+The paths this server acts on come from an MCP client, which means from a
+model, which means ultimately from whatever text that model has read. They are
+treated as untrusted input.
+
+**What is enforced**
+
+- **Root confinement.** Every path resolves inside `--root` or is refused.
+  Containment is judged after symlinks are resolved, so a symlinked directory
+  inside the root cannot be used to reach outside it.
+- **Suffix requirement.** Only `.director.json` files are accepted, so the
+  server cannot be talked into writing over a `package.json`, a lockfile or a
+  config that happens to sit inside the root.
+- **Symlink refusal.** An existing target that is a symlink, a directory, or
+  anything other than a regular file is rejected rather than written through.
+- **Size cap.** Files over 32MB are refused before being read.
+- **Unpredictable temp files.** Saves go through a random name created with
+  `wx` (exclusive), so a pre-created symlink cannot redirect the write.
+
+Verified against a running server: an absolute path outside the root, a `../`
+traversal, a symlinked parent directory, and a wrong suffix are all refused,
+while ordinary use inside the root is unaffected.
+
+**What is not, and cannot be**
+
+Project data — names, asset URIs, history — is returned to the calling model.
+A `.director.json` file from someone else is therefore untrusted text entering
+an agent's context, and can attempt prompt injection. Nothing here can prevent
+that without refusing to return project data at all, which would defeat the
+point. Treat project files from other people the way you would treat any
+untrusted document you hand to an agent.
+
+The transport is stdio and the client launches the process locally: there is
+no listener and nothing is reachable over a network. The server runs with the
+privileges of whoever started it.
 
 ## Tools
 
@@ -113,3 +151,6 @@ engine would reject.
 - **One project at a time**, and no locking. Two clients pointed at one file
   will overwrite each other — the engine's `baseVersion` check catches
   conflicts within a session, not across processes.
+- **The root is a boundary, not a sandbox.** It stops path escapes; it does not
+  stop an agent from making a mess of the projects inside it. Undo and the
+  operation log are the recovery path there.
