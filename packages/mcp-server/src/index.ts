@@ -23,6 +23,12 @@ import { registerInspectTools } from "./tools/inspect.js";
 
 export { ProjectSession } from "./session.js";
 export {
+  resolveProjectPath,
+  PathNotAllowedError,
+  PROJECT_SUFFIX,
+  MAX_PROJECT_BYTES,
+} from "./paths.js";
+export {
   loadProjectFile,
   saveProjectFile,
   ProjectFileError,
@@ -49,8 +55,8 @@ export function createServer(session: ProjectSession): McpServer {
 
 /** `--project <path>` opens a file at startup; otherwise the client calls
  * open_project. `--actor <id>` labels this client in the operation log.
- * `--root <dir>` is the directory every project path must stay inside; it
- * defaults to the directory of `--project`, else the working directory. */
+ * `--root <dir>` is the directory every project path must stay inside. One of
+ * `--root` or `--project` is required; see main(). */
 export function parseArgs(argv: readonly string[]): {
   project?: string;
   actorId?: string;
@@ -76,14 +82,25 @@ export function parseArgs(argv: readonly string[]): {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+
+  // Refuse to start without an explicit root or project rather than falling
+  // back to the working directory. A desktop client launches this process with
+  // a working directory the operator never chose — often "/" — and silently
+  // taking it as the root would leave the confinement nominally on and
+  // practically meaningless.
+  if (args.root === undefined && args.project === undefined) {
+    throw new Error(
+      "Refusing to start without --root <dir> or --project <file>: the " +
+        "working directory of a client-launched process is not a safe " +
+        "default for the directory this server is allowed to write in.",
+    );
+  }
+
   const session = new ProjectSession({
     actorId: args.actorId ?? "mcp",
-    // Defaulting the root to the given project's own directory keeps the
-    // common single-project setup working without the operator having to
-    // reason about confinement at all.
-    root:
-      args.root ??
-      (args.project === undefined ? process.cwd() : dirname(args.project)),
+    // A project implies its own directory, which keeps the common
+    // single-project setup to one flag.
+    root: args.root ?? dirname(args.project as string),
   });
   if (args.project !== undefined) {
     await session.open(args.project);

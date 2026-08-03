@@ -48,6 +48,8 @@ Then point a client at `packages/mcp-server/dist/index.js`.
       "command": "node",
       "args": [
         "/absolute/path/to/photo editor/packages/mcp-server/dist/index.js",
+        "--root",
+        "/absolute/path/to/your/projects",
         "--actor",
         "mcp:claude-code"
       ]
@@ -64,7 +66,7 @@ Flags:
 | Flag | Meaning |
 |---|---|
 | `--project <path>` (`-p`) | Open a file at startup instead of waiting for `open_project` |
-| `--root <dir>` | Directory every project path must stay inside. Defaults to the directory of `--project`, else the working directory |
+| `--root <dir>` | Directory every project path must stay inside. **Required** unless `--project` is given, in which case that file's directory is the root |
 | `--actor <id>` | How this client is labelled in the operation log (default `mcp`) |
 
 Give each client its own `--actor` — that is what makes the history worth
@@ -78,6 +80,11 @@ treated as untrusted input.
 
 **What is enforced**
 
+- **An explicit root is mandatory.** The server refuses to start without
+  `--root` or `--project`. It will not fall back to the working directory: a
+  desktop client launches this process with a directory the operator never
+  chose, often `/`, which would leave confinement nominally on and practically
+  meaningless.
 - **Root confinement.** Every path resolves inside `--root` or is refused.
   Containment is judged after symlinks are resolved, so a symlinked directory
   inside the root cannot be used to reach outside it.
@@ -153,4 +160,5 @@ engine would reject.
   conflicts within a session, not across processes.
 - **The root is a boundary, not a sandbox.** It stops path escapes; it does not
   stop an agent from making a mess of the projects inside it. Undo and the
-  operation log are the recovery path there.
+  operation log are the recovery path there. Point `--root` at a projects
+  directory, not at your home directory.
