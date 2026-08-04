@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { ProjectSession } from "./session.js";
@@ -80,6 +80,30 @@ export function parseArgs(argv: readonly string[]): {
   return parsed;
 }
 
+/**
+ * Resolve a relative path against the project root the client told us about.
+ *
+ * A project-scoped `.mcp.json` cannot write an absolute path without hardcoding
+ * one machine's layout, and `${CLAUDE_PROJECT_DIR}` does not help there: Claude
+ * Code sets that variable in *this process's* environment, not in its own, so
+ * `${CLAUDE_PROJECT_DIR:-.}` inside `args` always expands to the `.` default.
+ * The documented way round is to read the variable here instead.
+ *
+ * Falling back to the working directory keeps a bare shell invocation working.
+ * That is not a weakening of the rule this server already enforces — a root
+ * must still be given explicitly; this only decides what a *relative* one is
+ * relative to.
+ */
+export function anchorToProjectDir(
+  path: string,
+  projectDir = process.env.CLAUDE_PROJECT_DIR,
+): string {
+  if (isAbsolute(path) || projectDir === undefined || projectDir === "") {
+    return path;
+  }
+  return resolve(projectDir, path);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -100,10 +124,10 @@ async function main(): Promise<void> {
     actorId: args.actorId ?? "mcp",
     // A project implies its own directory, which keeps the common
     // single-project setup to one flag.
-    root: args.root ?? dirname(args.project as string),
+    root: anchorToProjectDir(args.root ?? dirname(args.project as string)),
   });
   if (args.project !== undefined) {
-    await session.open(args.project);
+    await session.open(anchorToProjectDir(args.project));
   }
   const server = createServer(session);
   await server.connect(new StdioServerTransport());

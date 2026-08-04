@@ -62,12 +62,24 @@ automatically:
 }
 ```
 
-`${CLAUDE_PROJECT_DIR}` keeps it machine-independent — no absolute path, and
-nothing identifying the person who committed it. The `:-.` default is required:
-Claude Code sets that variable in the *server's* environment rather than its
-own, so an entry without a default would not expand. Projects land in
-`director-projects/`, which is gitignored. To point it somewhere else, add a
-local-scope entry (`claude mcp add`), which takes precedence over project scope.
+No absolute path, so the file is machine-independent and carries nothing
+identifying whoever committed it. Projects land in `director-projects/`, which
+is gitignored. To point it somewhere else, add a local-scope entry
+(`claude mcp add`), which takes precedence over project scope.
+
+Be aware of what `${CLAUDE_PROJECT_DIR:-.}` actually does here. Claude Code sets
+that variable in *this server's* environment, not in its own, so inside `args`
+it never resolves and **always falls back to the `.` default** — the entry above
+is really `./packages/... --root ./director-projects`. Verified: `claude mcp list`
+reports the parsed entry with exactly those relative paths.
+
+That matters because relative paths depend on the working directory the server
+is launched with. The server compensates for the part it can: `--root` and
+`--project` are resolved against `CLAUDE_PROJECT_DIR` when it is set, read from
+the environment inside the process, which is the mechanism the Claude Code docs
+prescribe. The path to `dist/index.js` cannot be fixed that way — `node` resolves
+its own script argument before any of this code runs — so that one still assumes
+the server is launched from the project root.
 
 **Claude Desktop** (`claude_desktop_config.json`) uses the same JSON shape with
 absolute paths, since it has no project directory to resolve against.
