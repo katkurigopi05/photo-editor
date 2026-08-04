@@ -2,6 +2,9 @@ import { z } from "zod";
 import {
   audioGainDbSchema,
   audioPanSchema,
+  animationTracksSchema,
+  transitionSchema,
+  transitionSideSchema,
   effectInstanceSchema,
   isoInstantSchema,
   jsonObjectSchema,
@@ -206,6 +209,35 @@ export const setClipAudioPanInverseSchema = internal(
     .strict(),
 );
 
+/** `null` restores a schema-v1 clip where the optional animations member was
+ * absent. An array restores a materialized member, including an empty array. */
+export const setClipAnimationsInverseSchema = internal(
+  "internal.set_clip_animations",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      animations: animationTracksSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
+/** `null` restores a clip end that carried no transition, mirroring how
+ * `internal.set_clip_animations` restores an absent optional member. */
+export const setClipTransitionInverseSchema = internal(
+  "internal.set_clip_transition",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      side: transitionSideSchema,
+      transition: transitionSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 export const internalCommandSchema = z.discriminatedUnion("commandType", [
   removeProjectInverseSchema,
   removeAssetInverseSchema,
@@ -222,6 +254,8 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   setClipEffectsInverseSchema,
   setClipAudioGainInverseSchema,
   setClipAudioPanInverseSchema,
+  setClipAnimationsInverseSchema,
+  setClipTransitionInverseSchema,
 ]);
 
 export type InternalProjectCommand = z.infer<typeof internalCommandSchema>;

@@ -22,6 +22,11 @@ export {
   buildUpdateClipEffects,
   buildSetClipAudioGain,
   buildSetClipAudioPan,
+  buildAddKeyframe,
+  buildUpdateKeyframe,
+  buildRemoveKeyframe,
+  buildUpdateClipAnimations,
+  buildSetClipTransition,
 } from "./commands.js";
 
 export {

@@ -1,12 +1,18 @@
 import {
+  animationTrackSchema,
   effectParamsSchemas,
   isAssetCompatibleWithTrack,
+  transitionsFitClip,
+  type AnimationKeyframe,
+  type AnimationTrack,
   type EffectInstance,
   type MediaAsset,
   type Project,
   type Sequence,
   type TimelineClip,
   type Track,
+  type Transition,
+  type TransitionSide,
 } from "@director/project-schema";
 import type {
   InternalProjectCommand,
@@ -50,9 +56,72 @@ function sortTracks(tracks: readonly Track[]): Track[] {
 
 /** Half-open overlap test on `[start, start+duration)`. Adjacency is allowed. */
 function overlaps(aStart: bigint, aEnd: bigint, other: TimelineClip): boolean {
+  const aStartClamped = aStart;
   const oStart = toBig(other.timelineStartUs);
   const oEnd = oStart + toBig(other.timelineDurationUs);
-  return aStart < oEnd && oStart < aEnd;
+  return aStartClamped < oEnd && oStart < aEnd;
+}
+
+/** Microseconds two half-open ranges share; `0n` when they merely touch. */
+function overlapAmount(
+  aStart: bigint,
+  aEnd: bigint,
+  other: TimelineClip,
+): bigint {
+  const oStart = toBig(other.timelineStartUs);
+  const oEnd = oStart + toBig(other.timelineDurationUs);
+  const start = aStart > oStart ? aStart : oStart;
+  const end = aEnd < oEnd ? aEnd : oEnd;
+  return end > start ? end - start : 0n;
+}
+
+/**
+ * A same-track transition is the single case where two clips may occupy the
+ * same span: during the overlap both are drawn and the later one moves or
+ * fades in over the earlier one.
+ *
+ * The later-starting clip owns the transition, because it is the one arriving.
+ * The ramp must be at least as long as the overlap — a shorter one would
+ * finish while the earlier clip is still on screen, leaving frames where two
+ * clips are both fully opaque and the top one simply hides the other.
+ *
+ * `cross` and `slide` both qualify: a crossfade reveals the clip underneath by
+ * ramping alpha, a slide reveals it by genuinely travelling off the region it
+ * occupies. A `dip` does not — it ramps against its own colour and never shows
+ * what is behind it, so an overlap under a dip would just be a hidden clip.
+ */
+function transitionCoversOverlap(
+  start: bigint,
+  end: bigint,
+  movingTransitionIn: Transition | undefined,
+  other: TimelineClip,
+): boolean {
+  const overlap = overlapAmount(start, end, other);
+  if (overlap === 0n) return true;
+  const otherStart = toBig(other.timelineStartUs);
+  const later = start >= otherStart ? movingTransitionIn : other.transitionIn;
+  return (
+    later !== undefined &&
+    (later.kind === "cross" || later.kind === "slide") &&
+    toBig(later.durationUs) >= overlap
+  );
+}
+
+/** The first clip a span genuinely conflicts with, skipping any overlap that a
+ * transition legitimately covers. */
+function findOverlapConflict(
+  clips: readonly TimelineClip[],
+  start: bigint,
+  end: bigint,
+  movingTransitionIn: Transition | undefined,
+  excludeClipId?: string,
+): TimelineClip | undefined {
+  return clips.find(
+    (c) =>
+      c.id !== excludeClipId &&
+      overlaps(start, end, c) &&
+      !transitionCoversOverlap(start, end, movingTransitionIn, c),
+  );
 }
 
 function findSequence(project: Project, id: string): Sequence | undefined {
@@ -160,6 +229,16 @@ export function applyForward(
       return setClipAudioGain(project, command);
     case "timeline.set_clip_audio_pan":
       return setClipAudioPan(project, command);
+    case "timeline.add_keyframe":
+      return addKeyframe(project, command);
+    case "timeline.update_keyframe":
+      return updateKeyframe(project, command);
+    case "timeline.remove_keyframe":
+      return removeKeyframe(project, command);
+    case "timeline.update_clip_animations":
+      return updateClipAnimations(project, command);
+    case "timeline.set_clip_transition":
+      return setClipTransition(project, command);
     default:
       return {
         ok: false,
@@ -456,7 +535,7 @@ function addClip(
 
   const start = toBig(clip.timelineStartUs);
   const end = start + toBig(durationUs);
-  const conflict = track.clips.find((c) => overlaps(start, end, c));
+  const conflict = findOverlapConflict(track.clips, start, end, undefined);
   if (conflict) {
     return {
       ok: false,
@@ -581,8 +660,12 @@ function moveClip(
 
   const start = toBig(timelineStartUs);
   const end = start + toBig(location.clip.timelineDurationUs);
-  const conflict = targetTrack.clips.find(
-    (c) => c.id !== clipId && overlaps(start, end, c),
+  const conflict = findOverlapConflict(
+    targetTrack.clips,
+    start,
+    end,
+    location.clip.transitionIn,
+    clipId,
   );
   if (conflict) {
     return {
@@ -695,11 +778,34 @@ function trimClip(
   const newDuration = toBig(sourceOutUs) - toBig(sourceInUs);
   const oldDuration = toBig(location.clip.timelineDurationUs);
 
+  const strandedKeyframe = location.clip.animations
+    ?.flatMap((track) => track.keyframes)
+    .find((keyframe) => toBig(keyframe.timeUs) > newDuration);
+  if (strandedKeyframe !== undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "OUT_OF_BOUNDS",
+        `trimmed duration ${newDuration} would strand keyframe ${strandedKeyframe.id} at ${strandedKeyframe.timeUs}`,
+        ["payload", "sourceOutUs"],
+        {
+          keyframeId: strandedKeyframe.id,
+          keyframeTimeUs: strandedKeyframe.timeUs,
+          durationUs: newDuration.toString(),
+        },
+      ),
+    };
+  }
+
   if (newDuration > oldDuration) {
     const start = toBig(location.clip.timelineStartUs);
     const end = start + newDuration;
-    const conflict = location.track.clips.find(
-      (c) => c.id !== clipId && overlaps(start, end, c),
+    const conflict = findOverlapConflict(
+      location.track.clips,
+      start,
+      end,
+      location.clip.transitionIn,
+      clipId,
     );
     if (conflict) {
       return {
@@ -1188,6 +1294,507 @@ function updateClipEffects(
   };
 }
 
+// --- animation keyframe reducers -------------------------------------------
+
+function sortAnimationKeyframes(
+  keyframes: readonly AnimationKeyframe[],
+): AnimationKeyframe[] {
+  return [...keyframes].sort((a, b) => {
+    const aTime = toBig(a.timeUs);
+    const bTime = toBig(b.timeUs);
+    if (aTime < bTime) return -1;
+    if (aTime > bTime) return 1;
+    return compareIds(a.id, b.id);
+  });
+}
+
+function setAnimationTracks(
+  clip: TimelineClip,
+  animations: readonly AnimationTrack[],
+): TimelineClip {
+  if (animations.length === 0) {
+    const withoutAnimations: TimelineClip = { ...clip };
+    delete withoutAnimations.animations;
+    return withoutAnimations;
+  }
+  return { ...clip, animations: structuredClone([...animations]) };
+}
+
+function previousAnimationTracks(clip: TimelineClip): AnimationTrack[] | null {
+  return clip.animations === undefined
+    ? null
+    : structuredClone(clip.animations);
+}
+
+function validateKeyframeTime(
+  clip: TimelineClip,
+  timeUs: string,
+  path: Array<string | number>,
+): CommandError | null {
+  if (toBig(timeUs) > toBig(clip.timelineDurationUs)) {
+    return makeError(
+      "OUT_OF_BOUNDS",
+      `keyframe time ${timeUs} exceeds clip duration ${clip.timelineDurationUs}`,
+      path,
+      { durationUs: clip.timelineDurationUs },
+    );
+  }
+  return null;
+}
+
+function validateAnimationTrack(
+  track: AnimationTrack,
+): { ok: true; track: AnimationTrack } | { ok: false; error: CommandError } {
+  const parsed = animationTrackSchema.safeParse(track);
+  if (parsed.success) return { ok: true, track: parsed.data };
+  const issue = parsed.error.issues[0];
+  return {
+    ok: false,
+    error: makeError(
+      "VALIDATION_ERROR",
+      issue?.message ?? "invalid animation track",
+      ["payload", ...(issue?.path ?? [])],
+    ),
+  };
+}
+
+function addKeyframe(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.add_keyframe" }>,
+): ForwardResult {
+  const { sequenceId, clipId, animationId, property, keyframe } =
+    command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const animations = location.clip.animations ?? [];
+
+  const timeError = validateKeyframeTime(location.clip, keyframe.timeUs, [
+    "payload",
+    "keyframe",
+    "timeUs",
+  ]);
+  if (timeError) return { ok: false, error: timeError };
+
+  if (
+    animations.some((track) =>
+      track.keyframes.some((existing) => existing.id === keyframe.id),
+    )
+  ) {
+    return {
+      ok: false,
+      error: makeError(
+        "DUPLICATE_ID",
+        `keyframe id ${keyframe.id} already exists`,
+        ["payload", "keyframe", "id"],
+      ),
+    };
+  }
+
+  const trackById = animations.find((track) => track.id === animationId);
+  const trackByProperty = animations.find(
+    (track) => track.property === property,
+  );
+  if (trackById !== undefined && trackById.property !== property) {
+    return {
+      ok: false,
+      error: makeError(
+        "DUPLICATE_ID",
+        `animation id ${animationId} already belongs to ${trackById.property}`,
+        ["payload", "animationId"],
+      ),
+    };
+  }
+  if (trackByProperty !== undefined && trackByProperty.id !== animationId) {
+    return {
+      ok: false,
+      error: makeError(
+        "DUPLICATE_ID",
+        `property ${property} is already animated by ${trackByProperty.id}`,
+        ["payload", "property"],
+      ),
+    };
+  }
+
+  const candidate: AnimationTrack = trackById
+    ? {
+        ...trackById,
+        keyframes: sortAnimationKeyframes([
+          ...trackById.keyframes,
+          structuredClone(keyframe),
+        ]),
+      }
+    : {
+        id: animationId,
+        property,
+        keyframes: [structuredClone(keyframe)],
+      };
+  const validated = validateAnimationTrack(candidate);
+  if (!validated.ok) return validated;
+
+  const nextAnimations = trackById
+    ? animations.map((track) =>
+        track.id === animationId ? validated.track : track,
+      )
+    : [...animations, validated.track];
+  const prevUpdatedAt = project.updatedAt;
+  const newClip = setAnimationTracks(location.clip, nextAnimations);
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_animations",
+      payload: {
+        sequenceId,
+        clipId,
+        animations: previousAnimationTracks(location.clip),
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+function updateKeyframe(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.update_keyframe" }>,
+): ForwardResult {
+  const { sequenceId, clipId, animationId, keyframeId, timeUs, value, easing } =
+    command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const animations = location.clip.animations ?? [];
+  const track = animations.find((item) => item.id === animationId);
+  if (track === undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "ANIMATION_TRACK_NOT_FOUND",
+        `animation track ${animationId} not found`,
+        ["payload", "animationId"],
+      ),
+    };
+  }
+  if (!track.keyframes.some((keyframe) => keyframe.id === keyframeId)) {
+    return {
+      ok: false,
+      error: makeError(
+        "KEYFRAME_NOT_FOUND",
+        `keyframe ${keyframeId} not found`,
+        ["payload", "keyframeId"],
+      ),
+    };
+  }
+
+  const timeError = validateKeyframeTime(location.clip, timeUs, [
+    "payload",
+    "timeUs",
+  ]);
+  if (timeError) return { ok: false, error: timeError };
+
+  const candidate: AnimationTrack = {
+    ...track,
+    keyframes: sortAnimationKeyframes(
+      track.keyframes.map((keyframe) =>
+        keyframe.id === keyframeId
+          ? { ...keyframe, timeUs, value, easing }
+          : keyframe,
+      ),
+    ),
+  };
+  const validated = validateAnimationTrack(candidate);
+  if (!validated.ok) return validated;
+
+  const prevUpdatedAt = project.updatedAt;
+  const nextAnimations = animations.map((item) =>
+    item.id === animationId ? validated.track : item,
+  );
+  const newClip = setAnimationTracks(location.clip, nextAnimations);
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_animations",
+      payload: {
+        sequenceId,
+        clipId,
+        animations: previousAnimationTracks(location.clip),
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+function removeKeyframe(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.remove_keyframe" }>,
+): ForwardResult {
+  const { sequenceId, clipId, animationId, keyframeId } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const animations = location.clip.animations ?? [];
+  const track = animations.find((item) => item.id === animationId);
+  if (track === undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "ANIMATION_TRACK_NOT_FOUND",
+        `animation track ${animationId} not found`,
+        ["payload", "animationId"],
+      ),
+    };
+  }
+  if (!track.keyframes.some((keyframe) => keyframe.id === keyframeId)) {
+    return {
+      ok: false,
+      error: makeError(
+        "KEYFRAME_NOT_FOUND",
+        `keyframe ${keyframeId} not found`,
+        ["payload", "keyframeId"],
+      ),
+    };
+  }
+
+  const remainingKeyframes = track.keyframes.filter(
+    (keyframe) => keyframe.id !== keyframeId,
+  );
+  const nextAnimations =
+    remainingKeyframes.length === 0
+      ? animations.filter((item) => item.id !== animationId)
+      : animations.map((item) =>
+          item.id === animationId
+            ? { ...item, keyframes: remainingKeyframes }
+            : item,
+        );
+  const prevUpdatedAt = project.updatedAt;
+  const newClip = setAnimationTracks(location.clip, nextAnimations);
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_animations",
+      payload: {
+        sequenceId,
+        clipId,
+        animations: previousAnimationTracks(location.clip),
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+function updateClipAnimations(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.update_clip_animations" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, animations } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+
+  for (let trackIndex = 0; trackIndex < animations.length; trackIndex++) {
+    const track = animations[trackIndex]!;
+    for (
+      let keyframeIndex = 0;
+      keyframeIndex < track.keyframes.length;
+      keyframeIndex++
+    ) {
+      const keyframe = track.keyframes[keyframeIndex]!;
+      const timeError = validateKeyframeTime(location.clip, keyframe.timeUs, [
+        "payload",
+        "animations",
+        trackIndex,
+        "keyframes",
+        keyframeIndex,
+        "timeUs",
+      ]);
+      if (timeError) return { ok: false, error: timeError };
+    }
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const newClip = setAnimationTracks(location.clip, animations);
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_animations",
+      payload: {
+        sequenceId,
+        clipId,
+        animations: previousAnimationTracks(location.clip),
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+/** `null` clears the given end. The cross-field rule that both ramps must fit
+ * inside the clip lives here rather than in the clip schema, because
+ * command-schema derives payloads from that schema with `.omit()` and a
+ * `superRefine` would turn it into a ZodEffects. */
+function setClipTransition(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.set_clip_transition" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, side, transition } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  const nextIn = side === "in" ? transition : (clip.transitionIn ?? null);
+  const nextOut = side === "out" ? transition : (clip.transitionOut ?? null);
+  if (
+    !transitionsFitClip(
+      clip.timelineDurationUs,
+      nextIn?.durationUs,
+      nextOut?.durationUs,
+    )
+  ) {
+    return {
+      ok: false,
+      error: makeError(
+        "TRANSITION_TOO_LONG",
+        "transitionIn + transitionOut cannot exceed the clip duration",
+        ["payload", "transition", "durationUs"],
+        {
+          clipDurationUs: clip.timelineDurationUs,
+          transitionInUs: nextIn?.durationUs ?? null,
+          transitionOutUs: nextOut?.durationUs ?? null,
+        },
+      ),
+    };
+  }
+
+  // Shrinking or clearing an incoming crossfade can strand an overlap that
+  // only existed because that crossfade covered it.
+  const start = toBig(clip.timelineStartUs);
+  const conflict = findOverlapConflict(
+    location.track.clips,
+    start,
+    start + toBig(clip.timelineDurationUs),
+    nextIn ?? undefined,
+    clip.id,
+  );
+  if (conflict) {
+    return {
+      ok: false,
+      error: makeError(
+        "OVERLAP",
+        `clip overlaps ${conflict.id}; that overlap is only legal while an incoming crossfade covers it`,
+        ["payload", "transition"],
+        { conflictClipId: conflict.id },
+      ),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      withTransition(clip, side, transition),
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_transition",
+      payload: {
+        sequenceId,
+        clipId,
+        side,
+        transition: previousTransition(clip, side),
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+function withTransition(
+  clip: TimelineClip,
+  side: TransitionSide,
+  transition: Transition | null,
+): TimelineClip {
+  const key = side === "in" ? "transitionIn" : "transitionOut";
+  if (transition === null) {
+    const without: TimelineClip = { ...clip };
+    delete without[key];
+    return without;
+  }
+  return { ...clip, [key]: structuredClone(transition) };
+}
+
+function previousTransition(
+  clip: TimelineClip,
+  side: TransitionSide,
+): Transition | null {
+  const current = side === "in" ? clip.transitionIn : clip.transitionOut;
+  return current === undefined ? null : structuredClone(current);
+}
+
 // --- audio reducers ---------------------------------------------------------
 
 function setClipAudioGain(
@@ -1528,6 +2135,22 @@ export function applyInverse(
         ...clip,
         audioPan: pan,
       }));
+    }
+    case "internal.set_clip_animations": {
+      const { sequenceId, clipId, animations, restoreUpdatedAt } =
+        inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) =>
+        animations === null
+          ? setAnimationTracks(clip, [])
+          : { ...clip, animations: structuredClone(animations) },
+      );
+    }
+    case "internal.set_clip_transition": {
+      const { sequenceId, clipId, side, transition, restoreUpdatedAt } =
+        inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) =>
+        withTransition(clip, side, transition),
+      );
     }
     default:
       throw new Error("unknown internal command");

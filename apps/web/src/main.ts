@@ -13,6 +13,11 @@ import {
   buildRemoveEffect,
   buildSetClipAudioGain,
   buildSetClipAudioPan,
+  buildAddKeyframe,
+  buildUpdateKeyframe,
+  buildRemoveKeyframe,
+  buildUpdateClipAnimations,
+  buildSetClipTransition,
   resolveClipDrag,
   usToPixels,
   type CommandContext,
@@ -27,6 +32,7 @@ import {
   sequenceDurationUs,
   timeToFrameIndex,
   frameToStartTimeUs,
+  sampleClipTransition,
   type PlaybackState,
 } from "@director/playback-controller";
 import {
@@ -56,15 +62,25 @@ import {
   type ThemeTokens,
 } from "./theme.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
+import {
+  TRANSITION_DIRECTIONS,
+  TRANSITION_KINDS,
+} from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
 import {
   boomerangOrder,
   clampGifFps,
+  flattenPartialAlpha,
   createGifEncoder,
   isGifEncoderLoaded,
   loadGifEncoder,
 } from "./gif.js";
 import { RasterSession, canvasPointToImage } from "./raster.js";
+import {
+  clipLocalTimeUs,
+  composeCanvasLayerTransform,
+  resolveLayerAnimationTransform,
+} from "./layer-animation.js";
 import {
   stampBrush,
   cloneStamp,
@@ -99,13 +115,32 @@ import {
 import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
 import ortMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 import type {
+  AnimationEasing,
+  AnimationProperty,
   EffectInstance,
   EffectType,
   MediaAsset,
   Sequence,
   TimelineClip,
   Track,
+  Transition,
+  TransitionDirection,
+  TransitionKind,
+  TransitionSide,
 } from "@director/project-schema";
+import {
+  adjacentKeyframeTime,
+  animationValueAtTime,
+  clipLocalTimeForPlayhead,
+  exactKeyframeAtTime,
+  keyframePositionPercent,
+  uniqueKeyframeTimes,
+} from "./keyframe-ui.js";
+import {
+  ANIMATION_PRESETS,
+  materializeAnimationPreset,
+  type AnimationPresetId,
+} from "./animation-presets.js";
 
 // ==========================================================================
 // Effect catalogue — drives the inspector sliders and the preview filters.
@@ -333,6 +368,66 @@ let mode: EditorMode = "photo";
 let selectedClipId: string | null = null;
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
+
+interface AnimationControlSpec {
+  property: AnimationProperty;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  format: (value: number) => string;
+}
+
+const ANIMATION_CONTROLS: readonly AnimationControlSpec[] = [
+  {
+    property: "transform.position_x",
+    label: "Position X",
+    min: -2,
+    max: 2,
+    step: 0.01,
+    format: (value) => `${Math.round(value * 100)}%`,
+  },
+  {
+    property: "transform.position_y",
+    label: "Position Y",
+    min: -2,
+    max: 2,
+    step: 0.01,
+    format: (value) => `${Math.round(value * 100)}%`,
+  },
+  {
+    property: "transform.scale",
+    label: "Scale",
+    min: 0.1,
+    max: 4,
+    step: 0.01,
+    format: (value) => `${value.toFixed(2)}×`,
+  },
+  {
+    property: "transform.rotation",
+    label: "Rotation",
+    min: -360,
+    max: 360,
+    step: 1,
+    format: (value) => `${Math.round(value)}°`,
+  },
+  {
+    property: "transform.opacity",
+    label: "Opacity",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (value) => `${Math.round(value * 100)}%`,
+  },
+];
+
+const ANIMATION_EASINGS: readonly AnimationEasing[] = [
+  "linear",
+  "hold",
+  "ease-in",
+  "ease-out",
+  "ease-in-out",
+];
 const mediaCache = new Map<string, HTMLImageElement | HTMLVideoElement>();
 // Display-only friendly names per asset id (original filename at import, or a
 // generated label for edited exports). Not part of the deterministic project.
@@ -775,7 +870,16 @@ function drawPreview(): void {
   // Paint highest track index last (on top): resolve order is track order.
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
-    if (loc) drawLayer(cctx, loc.clip, layer.sourceTimeUs, cw, ch);
+    if (loc) {
+      drawLayer(
+        cctx,
+        loc.clip,
+        layer.sourceTimeUs,
+        clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
+        cw,
+        ch,
+      );
+    }
   }
 }
 
@@ -845,6 +949,7 @@ function drawLayer(
   ctx: CanvasRenderingContext2D,
   clip: TimelineClip,
   sourceTimeUs: string,
+  localTimeUs: string,
   cw: number,
   ch: number,
 ): void {
@@ -901,7 +1006,14 @@ function drawLayer(
   const dx = (cw - dw) / 2;
   const dy = (ch - dh) / 2;
 
-  const { filter, alpha, rotateDeg, flipX, flipY } = previewTransform(clip);
+  const staticTransform = previewTransform(clip);
+  const animation = resolveLayerAnimationTransform(clip, localTimeUs);
+  const transform = composeCanvasLayerTransform(
+    staticTransform,
+    animation,
+    cw,
+    ch,
+  );
 
   // Background removal (color key) needs per-pixel work, so it runs on an
   // offscreen canvas whose result is drawn in place of the raw media.
@@ -912,18 +1024,45 @@ function drawLayer(
     ? removeBackground(media, mw, mh, bgFx)
     : media;
 
+  // Transitions are a timed opacity ramp on one end of the clip. What the ramp
+  // reads as is decided by whatever is underneath: nothing -> a fade against
+  // the background, a lower track -> a cross-track crossfade, the neighbouring
+  // clip kept alive by a bounded overlap -> a same-track crossfade.
+  const transition = sampleClipTransition(clip, localTimeUs);
+
   ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.filter = filter || "none";
+  // A dip ramps against an explicit colour rather than against whatever
+  // happens to be behind it, so the colour is laid down under the clip first
+  // and the ramp then reveals or hides the media over it. Painted in the
+  // clip's own destination rect, untransformed: a dip should not scale or spin
+  // with an animated clip, and should not cover other tracks.
+  if (transition.dipColorHex !== undefined) {
+    ctx.globalAlpha = 1;
+    ctx.filter = "none";
+    ctx.fillStyle = transition.dipColorHex;
+    ctx.fillRect(dx, dy, dw, dh);
+  }
+  ctx.globalAlpha = transform.alpha * transition.opacity;
+  ctx.filter = staticTransform.filter || "none";
   const ccx = dx + dw / 2;
   const ccy = dy + dh / 2;
-  ctx.translate(ccx, ccy);
-  if (rotateDeg) ctx.rotate((rotateDeg * Math.PI) / 180);
-  if (flipX || flipY) ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+  // A slide contributes a normalized offset on the same convention as
+  // transform.position_x/y, so it scales with the output exactly as animation
+  // does and preview/GIF/MP4 stay in agreement.
+  ctx.translate(
+    ccx + transform.offsetXPx + transition.offsetX * cw,
+    ccy + transform.offsetYPx + transition.offsetY * ch,
+  );
+  if (transform.rotationDegrees) {
+    ctx.rotate((transform.rotationDegrees * Math.PI) / 180);
+  }
+  ctx.scale(transform.scaleX, transform.scaleY);
   ctx.drawImage(drawable, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
+  // Overlays belong to the clip and therefore receive the same animation, but
+  // retain their previous behavior of not passing through the media filter.
+  ctx.filter = "none";
+  drawOverlays(ctx, clip, -dw / 2, -dh / 2, dw, dh);
   ctx.restore();
-
-  drawOverlays(ctx, clip, dx, dy, dw, dh);
 }
 
 function previewTransform(clip: TimelineClip): {
@@ -1003,6 +1142,7 @@ function drawOverlays(
   dw: number,
   dh: number,
 ): void {
+  const inheritedAlpha = ctx.globalAlpha;
   for (const fx of clip.effects) {
     if (!fx.enabled) continue;
     if (fx.type === "color.vignette") {
@@ -1027,7 +1167,7 @@ function drawOverlays(
       const amount =
         fx.type === "color.tint" ? getParamNumber(fx, "amount", 0.2) : 0.3;
       ctx.save();
-      ctx.globalAlpha = amount;
+      ctx.globalAlpha = inheritedAlpha * amount;
       ctx.globalCompositeOperation = "overlay";
       ctx.fillStyle = color;
       ctx.fillRect(dx, dy, dw, dh);
@@ -1035,7 +1175,8 @@ function drawOverlays(
     } else if (fx.type === "fx.retro_noise") {
       const spacing = getParamNumber(fx, "scanlineSpacing", 6);
       ctx.save();
-      ctx.globalAlpha = getParamNumber(fx, "noiseAmount", 0.25);
+      ctx.globalAlpha =
+        inheritedAlpha * getParamNumber(fx, "noiseAmount", 0.25);
       ctx.fillStyle = "#000";
       for (let y = dy; y < dy + dh; y += spacing) ctx.fillRect(dx, y, dw, 1);
       ctx.restore();
@@ -1249,6 +1390,37 @@ function renderTimeline(): void {
       label.textContent = asset ? assetName(asset) : clip.id;
       el.appendChild(label);
 
+      for (const localTimeUs of uniqueKeyframeTimes(clip)) {
+        const count = (clip.animations ?? []).reduce(
+          (total, animation) =>
+            total +
+            animation.keyframes.filter(
+              (keyframe) => keyframe.timeUs === localTimeUs,
+            ).length,
+          0,
+        );
+        const marker = document.createElement("button");
+        marker.className = "clip-keyframe-marker";
+        marker.style.left = `clamp(5px, ${keyframePositionPercent(
+          localTimeUs,
+          clip.timelineDurationUs,
+        )}%, calc(100% - 5px))`;
+        marker.title = `${count} keyframe${count === 1 ? "" : "s"} at ${formatTime(localTimeUs)}`;
+        marker.setAttribute(
+          "aria-label",
+          `Go to ${count} keyframe${count === 1 ? "" : "s"} at ${formatTime(localTimeUs)}`,
+        );
+        marker.addEventListener("pointerdown", (event) =>
+          event.stopPropagation(),
+        );
+        marker.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectedClipId = clip.id;
+          seekToClipAnimationTime(clip, localTimeUs);
+        });
+        el.appendChild(marker);
+      }
+
       const remove = document.createElement("button");
       remove.className = "clip-remove";
       remove.textContent = "✕";
@@ -1319,6 +1491,492 @@ function startClipDrag(
 // ==========================================================================
 // Inspector rendering
 // ==========================================================================
+
+function seekToClipAnimationTime(
+  clip: TimelineClip,
+  localTimeUs: string,
+): void {
+  const timelineTimeUs = (
+    BigInt(clip.timelineStartUs) + BigInt(localTimeUs)
+  ).toString();
+  playback = pause(seek(playback, timelineTimeUs));
+  syncTransport();
+  syncAudioMonitors();
+  drawPreview();
+  renderTimeline();
+  renderInspector();
+}
+
+function upsertAnimationKeyframe(
+  clip: TimelineClip,
+  property: AnimationProperty,
+  localTimeUs: string,
+  value: number,
+  easing: AnimationEasing,
+): void {
+  const track = clip.animations?.find((item) => item.property === property);
+  const exact = exactKeyframeAtTime(clip, property, localTimeUs);
+  if (track && exact) {
+    commit(
+      buildUpdateKeyframe(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        animationId: track.id,
+        keyframeId: exact.id,
+        timeUs: localTimeUs,
+        value,
+        easing,
+      }),
+    );
+    return;
+  }
+
+  commit(
+    buildAddKeyframe(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: clip.id,
+      animationId: track?.id ?? crypto.randomUUID(),
+      property,
+      keyframe: {
+        id: crypto.randomUUID(),
+        timeUs: localTimeUs,
+        value,
+        easing,
+      },
+    }),
+  );
+}
+
+function toggleAnimationKeyframe(
+  clip: TimelineClip,
+  spec: AnimationControlSpec,
+  localTimeUs: string,
+): void {
+  const track = clip.animations?.find(
+    (item) => item.property === spec.property,
+  );
+  const exact = exactKeyframeAtTime(clip, spec.property, localTimeUs);
+  if (track && exact) {
+    commit(
+      buildRemoveKeyframe(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        animationId: track.id,
+        keyframeId: exact.id,
+      }),
+    );
+    return;
+  }
+
+  upsertAnimationKeyframe(
+    clip,
+    spec.property,
+    localTimeUs,
+    animationValueAtTime(clip, spec.property, localTimeUs),
+    "ease-in-out",
+  );
+}
+
+function animationPropertyControl(
+  clip: TimelineClip,
+  spec: AnimationControlSpec,
+  localTimeUs: string,
+): HTMLElement {
+  const track = clip.animations?.find(
+    (item) => item.property === spec.property,
+  );
+  const exact = exactKeyframeAtTime(clip, spec.property, localTimeUs);
+  const value = animationValueAtTime(clip, spec.property, localTimeUs);
+  const wrap = document.createElement("div");
+  wrap.className = "animation-control";
+
+  const header = document.createElement("div");
+  header.className = "animation-control-header";
+  const inputId = `animation-${clip.id}-${spec.property.replaceAll(".", "-")}`;
+  const label = document.createElement("label");
+  label.htmlFor = inputId;
+  label.textContent = spec.label;
+  const valueLabel = document.createElement("span");
+  valueLabel.className = "animation-value";
+  valueLabel.textContent = spec.format(value);
+  const diamond = document.createElement("button");
+  diamond.type = "button";
+  diamond.className = `keyframe-diamond${exact ? " active" : ""}`;
+  diamond.textContent = exact ? "◆" : "◇";
+  diamond.title = exact ? "Remove keyframe here" : "Add keyframe here";
+  diamond.setAttribute("aria-label", diamond.title);
+  diamond.setAttribute("aria-pressed", String(exact !== undefined));
+  diamond.addEventListener("click", () =>
+    toggleAnimationKeyframe(clip, spec, localTimeUs),
+  );
+  header.append(label, valueLabel, diamond);
+
+  const input = document.createElement("input");
+  input.id = inputId;
+  input.type = "range";
+  input.min = String(spec.min);
+  input.max = String(spec.max);
+  input.step = String(spec.step);
+  input.value = String(value);
+  input.setAttribute("aria-label", `${spec.label} animation value`);
+  input.addEventListener("input", () => {
+    valueLabel.textContent = spec.format(Number(input.value));
+  });
+  input.addEventListener("change", () =>
+    upsertAnimationKeyframe(
+      clip,
+      spec.property,
+      localTimeUs,
+      Number(input.value),
+      exact?.easing ?? "ease-in-out",
+    ),
+  );
+
+  const footer = document.createElement("div");
+  footer.className = "animation-control-footer";
+  const count = document.createElement("span");
+  count.textContent = `${track?.keyframes.length ?? 0} keyframe${track?.keyframes.length === 1 ? "" : "s"}`;
+  const easing = document.createElement("select");
+  easing.className = "animation-easing";
+  easing.setAttribute("aria-label", `${spec.label} keyframe easing`);
+  easing.disabled = exact === undefined;
+  for (const optionValue of ANIMATION_EASINGS) {
+    const option = new Option(optionValue.replaceAll("-", " "), optionValue);
+    option.selected = optionValue === (exact?.easing ?? "ease-in-out");
+    easing.appendChild(option);
+  }
+  easing.title = exact
+    ? "Easing from this keyframe to the next"
+    : "Move onto or add a keyframe to edit easing";
+  easing.addEventListener("change", () => {
+    if (!exact) return;
+    upsertAnimationKeyframe(
+      clip,
+      spec.property,
+      localTimeUs,
+      exact.value,
+      easing.value as AnimationEasing,
+    );
+  });
+  footer.append(count, easing);
+  wrap.append(header, input, footer);
+  return wrap;
+}
+
+function animationSection(clip: TimelineClip): HTMLElement {
+  const animation = section("Animation");
+  animation.classList.add("animation-section");
+  const localTimeUs = clipLocalTimeForPlayhead(clip, playback.currentTimeUs);
+  const times = uniqueKeyframeTimes(clip);
+  const previous = adjacentKeyframeTime(times, localTimeUs, -1);
+  const next = adjacentKeyframeTime(times, localTimeUs, 1);
+
+  const auto = document.createElement("div");
+  auto.className = "animation-auto";
+  const autoLabel = document.createElement("label");
+  const autoSelectId = `animation-auto-${clip.id}`;
+  autoLabel.htmlFor = autoSelectId;
+  autoLabel.textContent = "Auto motion";
+  const autoRow = document.createElement("div");
+  autoRow.className = "animation-auto-row";
+  const autoSelect = document.createElement("select");
+  autoSelect.id = autoSelectId;
+  autoSelect.setAttribute("aria-label", "Auto animation preset");
+  for (const preset of ANIMATION_PRESETS) {
+    autoSelect.appendChild(new Option(preset.label, preset.id));
+  }
+  const applyButton = document.createElement("button");
+  applyButton.type = "button";
+  applyButton.className = "mini primary";
+  applyButton.textContent = "Apply";
+  applyButton.title = "Replace clip animation with this preset";
+  const clearButton = document.createElement("button");
+  clearButton.type = "button";
+  clearButton.className = "mini";
+  clearButton.textContent = "Clear";
+  clearButton.title = "Remove all animation from this clip";
+  clearButton.disabled = (clip.animations?.length ?? 0) === 0;
+  const description = document.createElement("p");
+  description.className = "animation-auto-description";
+  const updateDescription = (): void => {
+    const selected = ANIMATION_PRESETS.find(
+      (preset) => preset.id === autoSelect.value,
+    );
+    description.textContent = `${selected?.description ?? ""} Applying replaces current animation.`;
+  };
+  autoSelect.addEventListener("change", updateDescription);
+  applyButton.addEventListener("click", () => {
+    const animations = materializeAnimationPreset(
+      autoSelect.value as AnimationPresetId,
+      clip.timelineDurationUs,
+      () => crypto.randomUUID(),
+    );
+    if (
+      commit(
+        buildUpdateClipAnimations(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          animations,
+        }),
+      )
+    ) {
+      seekToClipAnimationTime(clip, "0");
+      toast("Auto animation applied — Undo removes the whole preset");
+    }
+  });
+  clearButton.addEventListener("click", () => {
+    if (
+      commit(
+        buildUpdateClipAnimations(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          animations: [],
+        }),
+      )
+    ) {
+      toast("Clip animation cleared");
+    }
+  });
+  updateDescription();
+  autoRow.append(autoSelect, applyButton, clearButton);
+  auto.append(autoLabel, autoRow, description);
+  animation.appendChild(auto);
+
+  const navigation = document.createElement("div");
+  navigation.className = "animation-nav";
+  const previousButton = document.createElement("button");
+  previousButton.type = "button";
+  previousButton.className = "mini";
+  previousButton.textContent = "◀";
+  previousButton.title = "Previous keyframe";
+  previousButton.setAttribute("aria-label", previousButton.title);
+  previousButton.disabled = previous === undefined;
+  previousButton.addEventListener("click", () => {
+    if (previous !== undefined) seekToClipAnimationTime(clip, previous);
+  });
+  const time = document.createElement("span");
+  time.className = "animation-time";
+  time.textContent = `${formatTime(localTimeUs)} local`;
+  const nextButton = document.createElement("button");
+  nextButton.type = "button";
+  nextButton.className = "mini";
+  nextButton.textContent = "▶";
+  nextButton.title = "Next keyframe";
+  nextButton.setAttribute("aria-label", nextButton.title);
+  nextButton.disabled = next === undefined;
+  nextButton.addEventListener("click", () => {
+    if (next !== undefined) seekToClipAnimationTime(clip, next);
+  });
+  navigation.append(previousButton, time, nextButton);
+  animation.appendChild(navigation);
+
+  const help = document.createElement("p");
+  help.className = "animation-help";
+  help.textContent =
+    "◇ adds a keyframe at the playhead. Moving a slider also creates or updates one.";
+  animation.appendChild(help);
+  for (const spec of ANIMATION_CONTROLS) {
+    animation.appendChild(animationPropertyControl(clip, spec, localTimeUs));
+  }
+  return animation;
+}
+
+/** Default ramp for a newly added transition: long enough to read, short
+ * enough to fit inside any clip the UI lets you add. */
+const DEFAULT_TRANSITION_US = "500000";
+
+function commitTransition(
+  clip: TimelineClip,
+  side: TransitionSide,
+  transition: Transition | null,
+): void {
+  commit(
+    buildSetClipTransition(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: clip.id,
+      side,
+      transition,
+    }),
+  );
+}
+
+/** One end's controls: kind, duration, easing, and a colour when dipping. */
+function transitionEndControl(
+  clip: TimelineClip,
+  side: TransitionSide,
+): HTMLElement {
+  const current = side === "in" ? clip.transitionIn : clip.transitionOut;
+  const wrap = document.createElement("div");
+  wrap.className = "transition-end";
+
+  const header = document.createElement("div");
+  header.className = "transition-end-header";
+  const label = document.createElement("span");
+  label.textContent = side === "in" ? "In" : "Out";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = current ? "mini" : "mini primary";
+  toggle.textContent = current ? "Remove" : "Add";
+  toggle.title =
+    current === undefined
+      ? `Add a ${side === "in" ? "an incoming" : "an outgoing"} transition`
+      : "Remove this transition";
+  toggle.addEventListener("click", () => {
+    if (current !== undefined) {
+      commitTransition(clip, side, null);
+      return;
+    }
+    // Never propose a ramp that cannot fit: the reducer would reject it.
+    const other =
+      side === "in" ? clip.transitionOut?.durationUs : clip.transitionIn?.durationUs;
+    const room = BigInt(clip.timelineDurationUs) - BigInt(other ?? "0");
+    const durationUs =
+      room < BigInt(DEFAULT_TRANSITION_US) ? room.toString() : DEFAULT_TRANSITION_US;
+    if (room <= 0n) {
+      toast("No room left on this clip for another transition.", true);
+      return;
+    }
+    commitTransition(clip, side, {
+      id: crypto.randomUUID(),
+      kind: "cross",
+      durationUs,
+      easing: "ease-in-out",
+    });
+  });
+  header.append(label, toggle);
+  wrap.appendChild(header);
+
+  if (current === undefined) return wrap;
+
+  const row = document.createElement("div");
+  row.className = "transition-row";
+
+  const KIND_LABELS: Record<TransitionKind, string> = {
+    cross: "Crossfade",
+    dip: "Dip to colour",
+    slide: "Slide",
+  };
+  const kind = document.createElement("select");
+  kind.setAttribute("aria-label", `${side} transition kind`);
+  for (const value of TRANSITION_KINDS) {
+    kind.appendChild(new Option(KIND_LABELS[value], value));
+  }
+  kind.value = current.kind;
+  kind.addEventListener("change", () => {
+    const nextKind = kind.value as TransitionKind;
+    commitTransition(clip, side, {
+      id: current.id,
+      kind: nextKind,
+      durationUs: current.durationUs,
+      easing: current.easing,
+      // The schema pairs each extra field with exactly one kind, so carry over
+      // only the one that belongs to the kind being switched to.
+      ...(nextKind === "dip"
+        ? { colorHex: current.colorHex ?? "#000000" }
+        : {}),
+      ...(nextKind === "slide"
+        ? { direction: current.direction ?? "left" }
+        : {}),
+    });
+  });
+
+  const duration = document.createElement("input");
+  duration.type = "range";
+  duration.min = "50";
+  duration.max = String(
+    Math.max(
+      50,
+      Math.floor(
+        Number(
+          BigInt(clip.timelineDurationUs) -
+            BigInt(
+              (side === "in" ? clip.transitionOut : clip.transitionIn)
+                ?.durationUs ?? "0",
+            ),
+        ) / 1000,
+      ),
+    ),
+  );
+  duration.step = "10";
+  duration.value = String(Math.round(Number(current.durationUs) / 1000));
+  duration.setAttribute("aria-label", `${side} transition duration`);
+  const durationLabel = document.createElement("span");
+  durationLabel.className = "transition-duration";
+  durationLabel.textContent = `${duration.value} ms`;
+  duration.addEventListener("input", () => {
+    durationLabel.textContent = `${duration.value} ms`;
+  });
+  duration.addEventListener("change", () => {
+    commitTransition(clip, side, {
+      ...current,
+      durationUs: String(Number(duration.value) * 1000),
+    });
+  });
+
+  const easing = document.createElement("select");
+  easing.setAttribute("aria-label", `${side} transition easing`);
+  for (const value of ANIMATION_EASINGS) {
+    easing.appendChild(new Option(value, value));
+  }
+  easing.value = current.easing;
+  easing.addEventListener("change", () => {
+    commitTransition(clip, side, {
+      ...current,
+      easing: easing.value as AnimationEasing,
+    });
+  });
+
+  row.append(kind, duration, durationLabel, easing);
+
+  if (current.kind === "dip") {
+    const colour = document.createElement("input");
+    colour.type = "color";
+    colour.value = current.colorHex ?? "#000000";
+    colour.setAttribute("aria-label", `${side} dip colour`);
+    colour.addEventListener("change", () => {
+      commitTransition(clip, side, { ...current, colorHex: colour.value });
+    });
+    row.appendChild(colour);
+  }
+
+  if (current.kind === "slide") {
+    const direction = document.createElement("select");
+    direction.setAttribute("aria-label", `${side} slide direction`);
+    for (const value of TRANSITION_DIRECTIONS) {
+      direction.appendChild(new Option(value, value));
+    }
+    direction.value = current.direction ?? "left";
+    direction.title =
+      side === "in"
+        ? "Edge the clip enters from"
+        : "Edge the clip exits toward";
+    direction.addEventListener("change", () => {
+      commitTransition(clip, side, {
+        ...current,
+        direction: direction.value as TransitionDirection,
+      });
+    });
+    row.appendChild(direction);
+  }
+
+  wrap.appendChild(row);
+  return wrap;
+}
+
+function transitionSection(clip: TimelineClip): HTMLElement {
+  const el = section("Transitions");
+  el.classList.add("transition-section");
+  el.appendChild(transitionEndControl(clip, "in"));
+  el.appendChild(transitionEndControl(clip, "out"));
+
+  const help = document.createElement("p");
+  help.className = "animation-help";
+  help.textContent =
+    "A crossfade blends with whatever is underneath — a lower track, or the previous clip once you slide this one back over it. A dip ramps against its own colour.";
+  el.appendChild(help);
+  return el;
+}
+
 function renderInspector(): void {
   if (rasterSession) {
     renderRasterPanel();
@@ -1363,6 +2021,11 @@ function renderInspector(): void {
     editFrameBtn.textContent = "🎞 Edit Current Frame (Brush, Clone, Wand…)";
     editFrameBtn.addEventListener("click", () => void enterRasterModeFromVideoFrame(clip.id));
     inspectorEl.appendChild(editFrameBtn);
+  }
+
+  if (asset && asset.kind !== "audio") {
+    inspectorEl.appendChild(animationSection(clip));
+    inspectorEl.appendChild(transitionSection(clip));
   }
 
   // --- Effects ---
@@ -1872,6 +2535,7 @@ function stepFrame(delta: number): void {
   syncTransport();
   drawPreview();
   renderTimeline();
+  renderInspector();
 }
 
 // ==========================================================================
@@ -3382,6 +4046,7 @@ function bindEvents(): void {
     playback = playback.playing ? pause(playback) : play(playback);
     syncTransport();
     syncAudioMonitors();
+    if (!playback.playing) renderInspector();
   });
   $("btn-start").addEventListener("click", () => {
     playback = seek(playback, "0");
@@ -3389,6 +4054,7 @@ function bindEvents(): void {
     syncAudioMonitors();
     drawPreview();
     renderTimeline();
+    renderInspector();
   });
   $("btn-prev").addEventListener("click", () => stepFrame(-1));
   $("btn-next").addEventListener("click", () => stepFrame(1));
@@ -3403,6 +4069,7 @@ function bindEvents(): void {
     syncAudioMonitors();
     drawPreview();
     renderTimeline();
+    renderInspector();
   });
 
   $("zoom").addEventListener("input", (e) => {
@@ -3602,7 +4269,16 @@ function renderExportFrame(): HTMLCanvasElement | null {
   const octx = out.getContext("2d")!;
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
-    if (loc) drawLayer(octx, loc.clip, layer.sourceTimeUs, out.width, out.height);
+    if (loc) {
+      drawLayer(
+        octx,
+        loc.clip,
+        layer.sourceTimeUs,
+        clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
+        out.width,
+        out.height,
+      );
+    }
   }
   return out;
 }
@@ -3828,7 +4504,14 @@ async function runVideoExport(
           if (media instanceof HTMLVideoElement) {
             await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
           }
-          drawLayer(offCtx, loc.clip, layer.sourceTimeUs, offCanvas.width, offCanvas.height);
+          drawLayer(
+            offCtx,
+            loc.clip,
+            layer.sourceTimeUs,
+            clipLocalTimeUs(req.timelineTimeUs, layer.timelineStartUs),
+            offCanvas.width,
+            offCanvas.height,
+          );
         }
 
         const ptsUs = Number(req.timelineTimeUs);
@@ -4174,9 +4857,20 @@ async function runGifExport(): Promise<void> {
         if (media instanceof HTMLVideoElement) {
           await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
         }
-        drawLayer(offCtx, loc.clip, layer.sourceTimeUs, off.width, off.height);
+        drawLayer(
+          offCtx,
+          loc.clip,
+          layer.sourceTimeUs,
+          clipLocalTimeUs(timeUs, layer.timelineStartUs),
+          off.width,
+          off.height,
+        );
       }
-      sink.addFrame(offCtx.getImageData(0, 0, off.width, off.height));
+      // GIF has 1-bit alpha: without this a clip animated with
+      // transform.opacity exports at full strength and the fade is lost.
+      const frame = offCtx.getImageData(0, 0, off.width, off.height);
+      flattenPartialAlpha(frame.data);
+      sink.addFrame(frame);
 
       if (i % GIF_YIELD_EVERY === 0) {
         status.textContent = `Rendering frame ${i + 1} of ${frameCount}…`;

@@ -80,6 +80,57 @@ export function gifFrameDelayMs(fps: number): number {
 }
 
 /**
+ * Blend partially transparent pixels onto black and make them opaque.
+ *
+ * GIF stores one bit of alpha, so a pixel drawn at 40% opacity is written at
+ * full strength and any fade authored with `transform.opacity` disappears —
+ * the exported GIF cuts straight to the fully visible frame. Premultiplying
+ * against black puts the fade back into the RGB channels, which GIF can
+ * represent, and matches what the MP4 encoder already does with this same
+ * canvas.
+ *
+ * Fully transparent pixels are left alone: `fx.remove_background` keys pixels
+ * out to alpha 0, GIF can store that, and flattening them would paint the
+ * removed background back in as black.
+ *
+ * Mutates in place, like `removeBackground` in main.ts — the buffer is read
+ * straight off the export canvas and handed to the encoder, and copying it per
+ * frame would allocate a megabyte per frame for nothing.
+ */
+export function flattenPartialAlpha(data: Uint8ClampedArray): void {
+  for (let i = 0; i < data.length; i += 4) {
+    const alpha = data[i + 3]!;
+    if (alpha === 0 || alpha === 255) continue;
+    const factor = alpha / 255;
+    data[i] = Math.round(data[i]! * factor);
+    data[i + 1] = Math.round(data[i + 1]! * factor);
+    data[i + 2] = Math.round(data[i + 2]! * factor);
+    data[i + 3] = 255;
+  }
+}
+
+/**
+ * Whether a frame needs GIF's 1-bit transparency at all.
+ *
+ * Only fully transparent pixels qualify: `flattenPartialAlpha` has already
+ * folded every partial alpha into RGB, so anything still at 0 was genuinely
+ * keyed out (a removed background, or the letterbox around a clip).
+ */
+export function frameHasTransparency(data: Uint8ClampedArray): boolean {
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] === 0) return true;
+  }
+  return false;
+}
+
+/** Index of a palette's fully transparent entry, or -1 when it has none —
+ * including the RGB palettes used for opaque frames, whose entries are
+ * `[r, g, b]` triples with no alpha to inspect. */
+export function transparentPaletteIndex(palette: GifPalette): number {
+  return palette.findIndex((color) => color.length > 3 && color[3] === 0);
+}
+
+/**
  * Playback order for `frameCount` frames, ping-ponged when `boomerang` is on.
  * The two endpoints are not repeated — holding on the first and last frame for
  * twice as long is exactly the stutter that makes a boomerang look broken.
@@ -99,6 +150,8 @@ interface QuantizedFrame {
   palette: GifPalette;
   width: number;
   height: number;
+  /** Palette slot to key out, or -1 for a frame written fully opaque. */
+  transparentIndex: number;
 }
 
 /**
@@ -119,14 +172,24 @@ export async function createGifEncoder(
 
   return {
     addFrame(frame: ImageData): void {
+      // Only frames that actually contain keyed-out pixels pay for an alpha
+      // channel: rgba4444 is 4 bits per channel, visibly coarser than rgb565's
+      // 5-6-5, and most frames (a full-bleed photo or video) have nothing to
+      // key out. Each frame carries its own local palette already, so the
+      // format can differ frame to frame.
+      const transparent = frameHasTransparency(frame.data);
+      const format = transparent ? "rgba4444" : "rgb565";
       // A per-frame palette tracks color better than one global table, which
       // matters for the gradients and tints this editor produces.
-      const palette = quantize(frame.data, maxColors);
+      const palette = transparent
+        ? quantize(frame.data, maxColors, { format, oneBitAlpha: true })
+        : quantize(frame.data, maxColors, { format });
       frames.push({
-        index: applyPalette(frame.data, palette),
+        index: applyPalette(frame.data, palette, format),
         palette,
         width: frame.width,
         height: frame.height,
+        transparentIndex: transparent ? transparentPaletteIndex(palette) : -1,
       });
     },
     count(): number {
@@ -143,6 +206,12 @@ export async function createGifEncoder(
         encoder.writeFrame(frame.index, frame.width, frame.height, {
           palette: frame.palette,
           delay,
+          // Without this the keyed-out pixels are written as whatever colour
+          // sits in that palette slot — in practice black — and a removed
+          // background comes back as a black rectangle.
+          ...(frame.transparentIndex >= 0
+            ? { transparent: true, transparentIndex: frame.transparentIndex }
+            : {}),
           // Only the first frame carries the loop flag: 0 repeats forever,
           // -1 plays through once.
           ...(position === 0 ? { repeat: options.loop ? 0 : -1 } : {}),

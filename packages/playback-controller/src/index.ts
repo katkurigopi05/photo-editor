@@ -23,3 +23,12 @@ export {
 } from "./transport.js";
 
 export { planPrefetch, type FrameRequest } from "./prefetch.js";
+
+export {
+  applyAnimationEasing,
+  sampleAnimationTrack,
+  sampleClipAnimations,
+  type SampledClipAnimations,
+} from "./animation.js";
+
+export { sampleClipTransition, type TransitionSample } from "./transition.js";
