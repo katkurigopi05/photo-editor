@@ -62,6 +62,10 @@ import {
   type ThemeTokens,
 } from "./theme.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
+import {
+  TRANSITION_DIRECTIONS,
+  TRANSITION_KINDS,
+} from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
 import {
   boomerangOrder,
@@ -120,6 +124,8 @@ import type {
   TimelineClip,
   Track,
   Transition,
+  TransitionDirection,
+  TransitionKind,
   TransitionSide,
 } from "@director/project-schema";
 import {
@@ -1040,7 +1046,13 @@ function drawLayer(
   ctx.filter = staticTransform.filter || "none";
   const ccx = dx + dw / 2;
   const ccy = dy + dh / 2;
-  ctx.translate(ccx + transform.offsetXPx, ccy + transform.offsetYPx);
+  // A slide contributes a normalized offset on the same convention as
+  // transform.position_x/y, so it scales with the output exactly as animation
+  // does and preview/GIF/MP4 stay in agreement.
+  ctx.translate(
+    ccx + transform.offsetXPx + transition.offsetX * cw,
+    ccy + transform.offsetYPx + transition.offsetY * ch,
+  );
   if (transform.rotationDegrees) {
     ctx.rotate((transform.rotationDegrees * Math.PI) / 180);
   }
@@ -1839,24 +1851,31 @@ function transitionEndControl(
   const row = document.createElement("div");
   row.className = "transition-row";
 
+  const KIND_LABELS: Record<TransitionKind, string> = {
+    cross: "Crossfade",
+    dip: "Dip to colour",
+    slide: "Slide",
+  };
   const kind = document.createElement("select");
   kind.setAttribute("aria-label", `${side} transition kind`);
-  for (const value of ["cross", "dip"] as const) {
-    kind.appendChild(
-      new Option(value === "cross" ? "Crossfade" : "Dip to colour", value),
-    );
+  for (const value of TRANSITION_KINDS) {
+    kind.appendChild(new Option(KIND_LABELS[value], value));
   }
   kind.value = current.kind;
   kind.addEventListener("change", () => {
-    const nextKind = kind.value as "cross" | "dip";
+    const nextKind = kind.value as TransitionKind;
     commitTransition(clip, side, {
       id: current.id,
       kind: nextKind,
       durationUs: current.durationUs,
       easing: current.easing,
-      // colorHex is only valid on a dip; the schema rejects it on a cross.
+      // The schema pairs each extra field with exactly one kind, so carry over
+      // only the one that belongs to the kind being switched to.
       ...(nextKind === "dip"
         ? { colorHex: current.colorHex ?? "#000000" }
+        : {}),
+      ...(nextKind === "slide"
+        ? { direction: current.direction ?? "left" }
         : {}),
     });
   });
@@ -1918,6 +1937,26 @@ function transitionEndControl(
       commitTransition(clip, side, { ...current, colorHex: colour.value });
     });
     row.appendChild(colour);
+  }
+
+  if (current.kind === "slide") {
+    const direction = document.createElement("select");
+    direction.setAttribute("aria-label", `${side} slide direction`);
+    for (const value of TRANSITION_DIRECTIONS) {
+      direction.appendChild(new Option(value, value));
+    }
+    direction.value = current.direction ?? "left";
+    direction.title =
+      side === "in"
+        ? "Edge the clip enters from"
+        : "Edge the clip exits toward";
+    direction.addEventListener("change", () => {
+      commitTransition(clip, side, {
+        ...current,
+        direction: direction.value as TransitionDirection,
+      });
+    });
+    row.appendChild(direction);
   }
 
   wrap.appendChild(row);

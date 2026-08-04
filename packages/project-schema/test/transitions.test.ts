@@ -78,6 +78,60 @@ describe("transitionSchema", () => {
     ).toThrow();
   });
 
+  it("accepts a slide with a direction", () => {
+    const slide = {
+      id: "t4",
+      kind: "slide" as const,
+      durationUs: "300000",
+      easing: "ease-out" as const,
+      direction: "left" as const,
+    };
+    expect(transitionSchema.parse(slide)).toEqual(slide);
+  });
+
+  it("rejects a slide without a direction", () => {
+    // There is no sensible default: every direction is equally valid.
+    expect(() =>
+      transitionSchema.parse({
+        id: "t5",
+        kind: "slide",
+        durationUs: "300000",
+        easing: "linear",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a direction on a non-slide", () => {
+    expect(() =>
+      transitionSchema.parse({ ...cross, direction: "left" }),
+    ).toThrow();
+  });
+
+  it("rejects an unknown direction", () => {
+    expect(() =>
+      transitionSchema.parse({
+        id: "t6",
+        kind: "slide",
+        durationUs: "300000",
+        easing: "linear",
+        direction: "diagonal",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a colour on a slide", () => {
+    expect(() =>
+      transitionSchema.parse({
+        id: "t7",
+        kind: "slide",
+        durationUs: "300000",
+        easing: "linear",
+        direction: "up",
+        colorHex: "#ffffff",
+      }),
+    ).toThrow();
+  });
+
   it("rejects unknown keys", () => {
     expect(() =>
       transitionSchema.parse({ ...cross, direction: "left" }),

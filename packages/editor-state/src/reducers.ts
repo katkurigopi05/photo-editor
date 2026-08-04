@@ -76,16 +76,21 @@ function overlapAmount(
 }
 
 /**
- * A same-track crossfade is the single case where two clips may occupy the
- * same span: during the overlap both are drawn and the later one ramps in over
- * the earlier one.
+ * A same-track transition is the single case where two clips may occupy the
+ * same span: during the overlap both are drawn and the later one moves or
+ * fades in over the earlier one.
  *
- * The later-starting clip owns the transition, because it is the one fading
- * in. The ramp must be at least as long as the overlap — a shorter one would
+ * The later-starting clip owns the transition, because it is the one arriving.
+ * The ramp must be at least as long as the overlap — a shorter one would
  * finish while the earlier clip is still on screen, leaving frames where two
  * clips are both fully opaque and the top one simply hides the other.
+ *
+ * `cross` and `slide` both qualify: a crossfade reveals the clip underneath by
+ * ramping alpha, a slide reveals it by genuinely travelling off the region it
+ * occupies. A `dip` does not — it ramps against its own colour and never shows
+ * what is behind it, so an overlap under a dip would just be a hidden clip.
  */
-function crossfadeCoversOverlap(
+function transitionCoversOverlap(
   start: bigint,
   end: bigint,
   movingTransitionIn: Transition | undefined,
@@ -97,13 +102,13 @@ function crossfadeCoversOverlap(
   const later = start >= otherStart ? movingTransitionIn : other.transitionIn;
   return (
     later !== undefined &&
-    later.kind === "cross" &&
+    (later.kind === "cross" || later.kind === "slide") &&
     toBig(later.durationUs) >= overlap
   );
 }
 
 /** The first clip a span genuinely conflicts with, skipping any overlap that a
- * crossfade legitimately covers. */
+ * transition legitimately covers. */
 function findOverlapConflict(
   clips: readonly TimelineClip[],
   start: bigint,
@@ -115,7 +120,7 @@ function findOverlapConflict(
     (c) =>
       c.id !== excludeClipId &&
       overlaps(start, end, c) &&
-      !crossfadeCoversOverlap(start, end, movingTransitionIn, c),
+      !transitionCoversOverlap(start, end, movingTransitionIn, c),
   );
 }
 

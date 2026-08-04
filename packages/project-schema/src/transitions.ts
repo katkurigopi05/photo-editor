@@ -17,11 +17,24 @@ import { microsecondStringSchema } from "./primitives.js";
  *
  * `dip` differs from `cross` only in that it paints an explicit colour behind
  * the ramp, so "dip to white" does not depend on what the stage happens to be.
+ *
+ * `slide` moves the clip instead of fading it: the same eased curve drives a
+ * normalized position offset while opacity stays at 1. It still blends with
+ * whatever is underneath, because the clip genuinely uncovers it as it travels.
  */
-export const TRANSITION_KINDS = ["cross", "dip"] as const;
+export const TRANSITION_KINDS = ["cross", "dip", "slide"] as const;
 
 export const transitionKindSchema = z.enum(TRANSITION_KINDS);
 export type TransitionKind = z.infer<typeof transitionKindSchema>;
+
+/**
+ * Which screen edge a slide uses. On a `transitionIn` it is the edge the clip
+ * enters *from*; on a `transitionOut` it is the edge it exits *toward*, so
+ * "left" reads the same way round in both cases: the clip is off to the left.
+ */
+export const TRANSITION_DIRECTIONS = ["left", "right", "up", "down"] as const;
+export const transitionDirectionSchema = z.enum(TRANSITION_DIRECTIONS);
+export type TransitionDirection = z.infer<typeof transitionDirectionSchema>;
 
 /** Which end of the clip a transition is attached to. */
 export const TRANSITION_SIDES = ["in", "out"] as const;
@@ -45,14 +58,29 @@ export const transitionSchema = z
       .string()
       .regex(/^#[0-9a-fA-F]{6}$/, "must be a valid 6-char hex color (#RRGGBB)")
       .optional(),
+    direction: transitionDirectionSchema.optional(),
   })
   .strict()
   .superRefine((transition, ctx) => {
-    if (transition.kind === "cross" && transition.colorHex !== undefined) {
+    if (transition.kind !== "dip" && transition.colorHex !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["colorHex"],
         message: "colorHex applies only to a dip transition",
+      });
+    }
+    if (transition.kind === "slide" && transition.direction === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["direction"],
+        message: "a slide transition needs a direction",
+      });
+    }
+    if (transition.kind !== "slide" && transition.direction !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["direction"],
+        message: "direction applies only to a slide transition",
       });
     }
   });

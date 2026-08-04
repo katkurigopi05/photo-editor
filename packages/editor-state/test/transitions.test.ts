@@ -325,6 +325,30 @@ describe("bounded overlap for a same-track crossfade", () => {
     expectError(command, "OVERLAP", state);
   });
 
+  it("allows an overlap covered by a slide", () => {
+    // A slide reveals the clip underneath by travelling off it, so it covers
+    // an overlap just as a crossfade does.
+    const { state, command } = slideBack("200000", {
+      id: "s1",
+      kind: "slide",
+      durationUs: "200000",
+      easing: "linear",
+      direction: "left",
+    });
+    expect(executeCommand(state, command).ok).toBe(true);
+  });
+
+  it("rejects an overlap larger than a slide", () => {
+    const { state, command } = slideBack("300000", {
+      id: "s2",
+      kind: "slide",
+      durationUs: "200000",
+      easing: "linear",
+      direction: "right",
+    });
+    expectError(command, "OVERLAP", state);
+  });
+
   it("rejects an overlap covered only by a dip", () => {
     // A dip ramps against a colour, not against the clip underneath.
     const { state, command } = slideBack("200000", {
