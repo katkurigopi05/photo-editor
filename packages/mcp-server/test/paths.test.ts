@@ -10,6 +10,7 @@ import {
   PathNotAllowedError,
   resolveProjectPath,
 } from "../src/paths.js";
+import { anchorToProjectDir } from "../src/index.js";
 
 let root: string;
 let outside: string;
@@ -85,5 +86,36 @@ describe("resolveProjectPath", () => {
     expect(() =>
       resolveProjectPath(`x${PROJECT_SUFFIX}`, join(outside, "absent")),
     ).toThrow(/does not exist/);
+  });
+});
+
+describe("anchorToProjectDir", () => {
+  // Claude Code sets CLAUDE_PROJECT_DIR in the server's environment rather
+  // than its own, so `${CLAUDE_PROJECT_DIR:-.}` in a client config's args
+  // always expands to ".". A project-scoped .mcp.json therefore passes a
+  // relative path and relies on this to place it.
+  test("resolves a relative path against the project dir", () => {
+    expect(anchorToProjectDir("director-projects", "/repo")).toBe(
+      "/repo/director-projects",
+    );
+  });
+
+  test("normalizes the './' form a config default produces", () => {
+    expect(anchorToProjectDir("./director-projects", "/repo")).toBe(
+      "/repo/director-projects",
+    );
+  });
+
+  test("leaves an absolute path alone", () => {
+    expect(anchorToProjectDir("/elsewhere/projects", "/repo")).toBe(
+      "/elsewhere/projects",
+    );
+  });
+
+  test("falls back to the caller's own resolution when unset or empty", () => {
+    // A bare shell invocation has no CLAUDE_PROJECT_DIR; the path is then
+    // relative to the working directory, as it was before.
+    expect(anchorToProjectDir("projects", undefined)).toBe("projects");
+    expect(anchorToProjectDir("projects", "")).toBe("projects");
   });
 });
