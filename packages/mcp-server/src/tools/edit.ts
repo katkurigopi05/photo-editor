@@ -219,6 +219,24 @@ const COMMAND_TOOLS: CommandTool[] = [
   },
 ];
 
+/**
+ * The command types this module turns into tools.
+ *
+ * Exported so a test can assert it against `PUBLIC_COMMAND_TYPES`. Each tool's
+ * *input schema* is the command's payload schema, so a command that gains a
+ * field gains it here automatically — but a wholly new command still needs an
+ * entry above, and nothing else notices when one is forgotten. Animation and
+ * transition editing shipped for a week with no tools for exactly that reason.
+ */
+export const EDIT_TOOL_COMMAND_TYPES: readonly string[] = COMMAND_TOOLS.map(
+  (tool) => tool.commandType,
+);
+
+/** Tool names, for the same coverage check. */
+export const EDIT_TOOL_NAMES: readonly string[] = COMMAND_TOOLS.map(
+  (tool) => tool.name,
+);
+
 export function registerEditTools(
   server: McpServer,
   session: ProjectSession,

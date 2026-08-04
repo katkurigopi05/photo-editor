@@ -36,6 +36,7 @@ import {
   type PlaybackState,
 } from "@director/playback-controller";
 import {
+  browserPresetUnsupportedReason,
   planExport,
   planVideoFrames,
   startExport,
@@ -4653,6 +4654,15 @@ async function runVideoExport(
 ): Promise<VideoExportResult> {
   const project = session.getProject();
   if (!project) return { status: "empty" };
+
+  // The preset schema mirrors the Rust engine and accepts the full codec
+  // matrix; this path is WebCodecs into an MP4 muxer with H.264 hardcoded.
+  // Without this check an unsupported preset was accepted and then encoded as
+  // H.264/MP4 anyway — a wrong file rather than an error.
+  const unsupported = browserPresetUnsupportedReason(preset);
+  if (unsupported !== null) {
+    return { status: "failed", message: unsupported };
+  }
 
   const result = planExport(project, SEQUENCE_ID, preset);
   if (!result.ok) {
