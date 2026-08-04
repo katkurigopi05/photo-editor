@@ -4,13 +4,79 @@ import {
   boomerangOrder,
   clampGifFps,
   flattenPartialAlpha,
+  frameHasTransparency,
   gifFrameDelayMs,
+  transparentPaletteIndex,
 } from "../src/gif.js";
 
 /** RGBA quad helper: one pixel per entry. */
 function pixels(...quads: number[][]): Uint8ClampedArray {
   return new Uint8ClampedArray(quads.flat());
 }
+
+describe("frameHasTransparency", () => {
+  test("is false for a fully opaque frame", () => {
+    expect(
+      frameHasTransparency(pixels([1, 2, 3, 255], [4, 5, 6, 255])),
+    ).toBe(false);
+  });
+
+  test("is true when any pixel is fully transparent", () => {
+    expect(
+      frameHasTransparency(pixels([1, 2, 3, 255], [4, 5, 6, 0])),
+    ).toBe(true);
+  });
+
+  test("ignores partial alpha, which flattenPartialAlpha has already removed", () => {
+    // Only alpha 0 can be represented; a 50% pixel is not transparency.
+    expect(frameHasTransparency(pixels([1, 2, 3, 128]))).toBe(false);
+  });
+
+  test("is false for an empty buffer", () => {
+    expect(frameHasTransparency(new Uint8ClampedArray(0))).toBe(false);
+  });
+});
+
+describe("transparentPaletteIndex", () => {
+  test("finds the fully transparent entry", () => {
+    expect(
+      transparentPaletteIndex([
+        [255, 0, 0, 255],
+        [0, 0, 0, 0],
+        [0, 255, 0, 255],
+      ]),
+    ).toBe(1);
+  });
+
+  test("returns -1 when the palette carries no alpha channel", () => {
+    // An rgb565 palette is [r,g,b] triples; there is nothing to key out.
+    expect(
+      transparentPaletteIndex([
+        [255, 0, 0],
+        [0, 0, 0],
+      ]),
+    ).toBe(-1);
+  });
+
+  test("returns -1 when every entry is opaque", () => {
+    expect(
+      transparentPaletteIndex([
+        [255, 0, 0, 255],
+        [0, 0, 0, 255],
+      ]),
+    ).toBe(-1);
+  });
+
+  test("returns the first transparent entry when several qualify", () => {
+    expect(
+      transparentPaletteIndex([
+        [9, 9, 9, 255],
+        [0, 0, 0, 0],
+        [1, 1, 1, 0],
+      ]),
+    ).toBe(1);
+  });
+});
 
 describe("flattenPartialAlpha", () => {
   test("blends a half-transparent pixel onto black and makes it opaque", () => {
