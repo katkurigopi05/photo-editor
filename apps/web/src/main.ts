@@ -382,8 +382,13 @@ const FRAME_RATE = { numerator: 30, denominator: 1 };
 const session = new EditorSession();
 /** GIF is a third output mode, not a third editor: it shares the timeline and
  * the effect stack with video, and differs only in how frames leave the app. */
-type EditorMode = "video" | "photo" | "gif";
-const MODE_ORDER: readonly EditorMode[] = ["photo", "video", "gif"];
+type EditorMode = "video" | "photo" | "animation" | "gif";
+const MODE_ORDER: readonly EditorMode[] = [
+  "photo",
+  "video",
+  "animation",
+  "gif",
+];
 /** Wheel geometry and gesture thresholds — see the .mode-wheel CSS block. */
 const MODE_WHEEL_STEP_DEG = 60;
 const MODE_WHEEL_SCROLL_PX = 40;
@@ -2842,13 +2847,18 @@ function updateUI(): void {
 
 /** Effects are declared for "video" or "photo"; GIF is fed by the same
  * timeline as video, so it offers the same effect set. */
+/** Which of the two effect sets a mode uses. Animation clips are generated
+ * stills rather than footage, so they take the photo set — the same one that
+ * carries Text, Border and Tint, which is what a caption or a cartoon wants. */
 function effectMode(): "video" | "photo" {
-  return mode === "photo" ? "photo" : "video";
+  return mode === "photo" || mode === "animation" ? "photo" : "video";
 }
 
 const MODE_EMPTY_HINT: Record<EditorMode, string> = {
   photo: "Import a photo to start editing.",
   video: "Import media, then add it to the timeline to preview.",
+  animation:
+    "Add a cartoon clip below, then animate it with keyframes or Auto Motion.",
   gif: "Import a video or photos, add them to the timeline, then export a GIF.",
 };
 
@@ -2880,6 +2890,10 @@ function setMode(next: EditorMode): void {
   // (play/seek/timecode) only make sense once there's a video to play through.
   // GIF is built from the timeline, so it keeps both.
   $("app").classList.toggle("mode-photo", mode === "photo");
+  // Animation builds motion out of generated clips, so the raster (pixel)
+  // tools are noise there — but the timeline and transport are essential,
+  // which is why it does not share photo mode's chrome.
+  $("app").classList.toggle("mode-animation", mode === "animation");
   // Mode-appropriate empty-state guidance (the timeline is hidden in photo
   // mode, so "add it to the timeline" would be confusing there).
   stageEmpty.textContent = MODE_EMPTY_HINT[mode];
@@ -2895,7 +2909,7 @@ function setMode(next: EditorMode): void {
 }
 
 /** Steps the wheel by `delta` positions, clamped at both ends (the drum is a
- * three-item list, not an endless loop — wrapping from GIF back to Photo would
+ * finite list, not an endless loop — wrapping from GIF back to Photo would
  * read as the wheel jumping backwards). */
 function stepMode(delta: number): void {
   const next = MODE_ORDER[
