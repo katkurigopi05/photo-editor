@@ -1803,3 +1803,27 @@ select {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* --- Text overlay caption field ------------------------------------------ */
+.control-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.control-text textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  resize: vertical;
+}
+.control-text textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

@@ -62,6 +62,7 @@ import {
   MAX_CUSTOM_THEMES,
   type ThemeTokens,
 } from "./theme.js";
+import { layoutTextLines } from "./text-overlay.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
 import {
   TRANSITION_DIRECTIONS,
@@ -156,7 +157,7 @@ import {
 // Effect catalogue — drives the inspector sliders and the preview filters.
 // Ranges/defaults mirror @director/project-schema effect params.
 // ==========================================================================
-type ParamKind = "range" | "toggle" | "color";
+type ParamKind = "range" | "toggle" | "color" | "text";
 interface ParamSpec {
   name: string;
   label: string;
@@ -324,6 +325,19 @@ const EFFECTS: EffectSpec[] = [
     params: [
       { name: "borderColorHex", label: "Color", kind: "color", def: "#ffffff" },
       range("borderWidthPx", "Width (px)", 0, 50, 1, 12),
+    ],
+  },
+  {
+    type: "fx.text",
+    label: "Text",
+    modes: ["photo", "video"],
+    params: [
+      { name: "text", label: "Caption", kind: "text", def: "" },
+      range("fontSizeRatio", "Size", 0.02, 0.3, 0.005, 0.08),
+      { name: "colorHex", label: "Fill", kind: "color", def: "#ffffff" },
+      { name: "outlineHex", label: "Outline", kind: "color", def: "#000000" },
+      range("x", "Across", 0, 1, 0.01, 0.5),
+      range("y", "Down", 0, 1, 0.01, 0.85),
     ],
   },
   {
@@ -1264,8 +1278,68 @@ function drawOverlays(
       ctx.strokeStyle = getParamString(fx, "borderColorHex", "#ffffff");
       ctx.lineWidth = w;
       ctx.strokeRect(dx + w / 2, dy + w / 2, dw - w, dh - w);
+    } else if (fx.type === "fx.text") {
+      drawTextOverlay(ctx, fx, dx, dy, dw, dh, inheritedAlpha);
     }
   }
+}
+
+/**
+ * Burn a caption into the frame.
+ *
+ * Every dimension is derived from the drawn rect rather than fixed in pixels:
+ * the font size is a ratio of height and the position is normalized, so the
+ * caption lands in the same place at preview resolution and at export
+ * resolution. That is the same convention transform.position_x/y uses, and it
+ * is what keeps preview, GIF and MP4 agreeing.
+ */
+function drawTextOverlay(
+  ctx: CanvasRenderingContext2D,
+  fx: EffectInstance,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+  inheritedAlpha: number,
+): void {
+  const text = getParamString(fx, "text", "");
+  if (text.trim() === "") return;
+
+  const fontSize = Math.max(1, getParamNumber(fx, "fontSizeRatio", 0.08) * dh);
+  const outlineWidth = Math.max(1, fontSize * 0.12);
+
+  ctx.save();
+  ctx.globalAlpha = inheritedAlpha;
+  ctx.font = `700 ${fontSize}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+
+  // Wrap inside 90% of the frame so descenders and the outline never touch the
+  // edge. Measurement comes from this very context, so the layout matches the
+  // font that will actually be drawn.
+  const lines = layoutTextLines(text, dw * 0.9, (line) =>
+    ctx.measureText(line).width,
+  );
+  const lineHeight = fontSize * 1.2;
+  const blockHeight = lineHeight * lines.length;
+  const centreX = dx + getParamNumber(fx, "x", 0.5) * dw;
+  // y positions the block's centre, so 0.5 is genuinely centred whatever the
+  // line count.
+  const startY =
+    dy + getParamNumber(fx, "y", 0.85) * dh - blockHeight / 2 + lineHeight / 2;
+
+  ctx.strokeStyle = getParamString(fx, "outlineHex", "#000000");
+  ctx.lineWidth = outlineWidth;
+  ctx.fillStyle = getParamString(fx, "colorHex", "#ffffff");
+  lines.forEach((line, index) => {
+    const y = startY + index * lineHeight;
+    // Outline first, fill over it: the reverse leaves the stroke eating into
+    // the glyph and thinning the text.
+    if (outlineWidth > 0) ctx.strokeText(line, centreX, y);
+    ctx.fillText(line, centreX, y);
+  });
+  ctx.restore();
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -2331,6 +2405,24 @@ function paramControl(
     input.type = "color";
     input.value = getParamString(fx, p.name, String(p.def));
     input.addEventListener("input", () => update(input.value));
+    wrap.append(label, input);
+    return wrap;
+  }
+  if (p.kind === "text") {
+    const wrap = document.createElement("div");
+    wrap.className = "control control-text";
+    const label = document.createElement("label");
+    const inputId = `fx-text-${fx.id}`;
+    label.htmlFor = inputId;
+    label.textContent = p.label;
+    const input = document.createElement("textarea");
+    input.id = inputId;
+    input.rows = 2;
+    input.value = getParamString(fx, p.name, String(p.def));
+    input.placeholder = "Type a caption…";
+    // Commit on change, not on input: every keystroke would be its own
+    // command, burying the operation log and making one undo per character.
+    input.addEventListener("change", () => update(input.value));
     wrap.append(label, input);
     return wrap;
   }
