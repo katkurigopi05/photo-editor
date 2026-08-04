@@ -104,6 +104,10 @@ import {
   type RasterImage,
 } from "@director/raster-tools";
 import {
+  biasSubjectMask,
+  bloomHighlights,
+} from "./portrait-blur.js";
+import {
   segmentForeground,
   configureOnnxRuntime,
   U2NETP_MODEL,
@@ -1021,9 +1025,23 @@ function drawLayer(
   const bgFx = clip.effects.find(
     (e) => e.enabled && e.type === "fx.remove_background",
   );
-  const drawable: CanvasImageSource = bgFx
+  let drawable: CanvasImageSource = bgFx
     ? removeBackground(media, mw, mh, bgFx)
     : media;
+
+  // Portrait blur needs the subject mask, which costs a U²-Net inference —
+  // far too slow per frame. The mask is cached per asset and requested once;
+  // until it lands the clip draws unblurred rather than blurring the subject
+  // along with everything else, which is what the old implementation did.
+  const portraitFx = clip.effects.find(
+    (e) => e.enabled && e.type === "photo.portrait_blur",
+  );
+  if (portraitFx) {
+    const mask = portraitMaskFor(asset.originalUri, drawable, mw, mh);
+    if (mask) {
+      drawable = compositePortraitBlur(drawable, mw, mh, mask, portraitFx);
+    }
+  }
 
   // Transitions are a timed opacity ramp on one end of the clip. What the ramp
   // reads as is decided by whatever is underneath: nothing -> a fade against
@@ -1215,6 +1233,95 @@ function cornerKey(
 
 /** Color-key background removal: pixels close to the key color become
  * transparent, with a soft edge. Deterministic; no ML model. */
+/**
+ * Subject masks for portrait blur, one per asset.
+ *
+ * Segmentation is a U²-Net inference — hundreds of milliseconds — so it cannot
+ * run inside drawLayer, which repaints on every seek and once per exported
+ * frame. The mask depends only on the source media, not on the playhead or the
+ * effect's parameters, so one result serves every frame of a still clip.
+ *
+ * A null entry means "asked for, still running": it stops a repainting preview
+ * from queueing an inference per frame.
+ */
+const portraitMaskCache = new Map<string, Mask | null>();
+
+function portraitMaskFor(
+  assetUri: string,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+): Mask | undefined {
+  const cached = portraitMaskCache.get(assetUri);
+  if (cached !== undefined) return cached ?? undefined;
+
+  portraitMaskCache.set(assetUri, null);
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const octx = off.getContext("2d", { willReadFrequently: true })!;
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
+
+  void segmentForeground({ width, height, data: image.data }, U2NETP_MODEL)
+    .then((mask) => {
+      portraitMaskCache.set(assetUri, mask);
+      drawPreview();
+      toast("Portrait subject detected — background blurred.");
+    })
+    .catch(() => {
+      // Leave the entry null so it is not retried on every repaint; the clip
+      // keeps drawing sharp rather than blurring the subject too.
+      toast("Could not detect a subject for portrait blur.", true);
+    });
+  return undefined;
+}
+
+/** Blurred background composited under the sharp, masked subject. */
+function compositePortraitBlur(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  mask: Mask,
+  fx: EffectInstance,
+): HTMLCanvasElement {
+  const radius = getParamNumber(fx, "blurRadiusPx", 15);
+  const bokeh = getParamNumber(fx, "bokehStrength", 0.4);
+  const subjectScale = getParamNumber(fx, "subjectScale", 1);
+
+  // Background: the whole frame blurred, with highlights bloomed so the result
+  // reads as defocus rather than a smudge.
+  const bg = document.createElement("canvas");
+  bg.width = width;
+  bg.height = height;
+  const bgCtx = bg.getContext("2d", { willReadFrequently: true })!;
+  bgCtx.filter = radius > 0 ? `blur(${radius}px)` : "none";
+  bgCtx.drawImage(source, 0, 0, width, height);
+  bgCtx.filter = "none";
+  if (bokeh > 0) {
+    const pixels = bgCtx.getImageData(0, 0, width, height);
+    bloomHighlights(pixels.data, bokeh);
+    bgCtx.putImageData(pixels, 0, 0);
+  }
+
+  // Subject: the sharp frame, keyed to the (optionally biased) mask. Feathering
+  // the alpha keeps the cut-out from looking like a sticker.
+  const biased = featherMask(biasSubjectMask(mask, subjectScale), 2);
+  const fg = document.createElement("canvas");
+  fg.width = width;
+  fg.height = height;
+  const fgCtx = fg.getContext("2d", { willReadFrequently: true })!;
+  fgCtx.drawImage(source, 0, 0, width, height);
+  const subject = fgCtx.getImageData(0, 0, width, height);
+  for (let i = 0, p = 0; i < subject.data.length; i += 4, p++) {
+    subject.data[i + 3] = Math.min(subject.data[i + 3]!, biased.data[p]!);
+  }
+  fgCtx.putImageData(subject, 0, 0);
+
+  bgCtx.drawImage(fg, 0, 0);
+  return bg;
+}
+
 function removeBackground(
   media: CanvasImageSource,
   mw: number,
