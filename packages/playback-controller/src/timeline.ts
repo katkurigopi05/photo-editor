@@ -17,12 +17,27 @@ export interface ActiveClip {
 }
 
 /** Half-open containment: `[timelineStartUs, timelineStartUs + duration)`. */
-function activeClipOnTrack(track: Track, t: bigint): TimelineClip | undefined {
-  return track.clips.find((clip) => {
-    const start = BigInt(clip.timelineStartUs);
-    const end = start + BigInt(clip.timelineDurationUs);
-    return start <= t && t < end;
-  });
+/**
+ * Every clip live at `t` on one track, topmost first.
+ *
+ * Normally that is one clip. During a same-track crossfade two clips overlap
+ * by exactly as much as the later one's incoming transition covers, and both
+ * must be drawn. They are returned latest-start first so the clip that is
+ * fading in ends up painted over the one it is replacing.
+ */
+function activeClipsOnTrack(track: Track, t: bigint): TimelineClip[] {
+  return track.clips
+    .filter((clip) => {
+      const start = BigInt(clip.timelineStartUs);
+      const end = start + BigInt(clip.timelineDurationUs);
+      return start <= t && t < end;
+    })
+    .sort((a, b) => {
+      const sa = BigInt(a.timelineStartUs);
+      const sb = BigInt(b.timelineStartUs);
+      if (sa !== sb) return sa > sb ? -1 : 1;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
 }
 
 /** The active clip on every track at `timelineUs` (tracks with a gap omitted),
@@ -36,21 +51,21 @@ export function resolveAtTime(
 
   const result: ActiveClip[] = [];
   for (const track of sequence.tracks) {
-    const clip = activeClipOnTrack(track, t);
-    if (clip === undefined) continue;
-    const offset = t - BigInt(clip.timelineStartUs);
-    // sourceIn + offset * playbackRate (v1 rate is 1/1; applied exactly).
-    const scaled =
-      (offset * BigInt(clip.playbackRate.numerator)) /
-      BigInt(clip.playbackRate.denominator);
-    const sourceTime = BigInt(clip.sourceInUs) + scaled;
-    result.push({
-      trackId: track.id,
-      clipId: clip.id,
-      assetId: clip.assetId,
-      timelineStartUs: clip.timelineStartUs,
-      sourceTimeUs: sourceTime.toString(),
-    });
+    for (const clip of activeClipsOnTrack(track, t)) {
+      const offset = t - BigInt(clip.timelineStartUs);
+      // sourceIn + offset * playbackRate (v1 rate is 1/1; applied exactly).
+      const scaled =
+        (offset * BigInt(clip.playbackRate.numerator)) /
+        BigInt(clip.playbackRate.denominator);
+      const sourceTime = BigInt(clip.sourceInUs) + scaled;
+      result.push({
+        trackId: track.id,
+        clipId: clip.id,
+        assetId: clip.assetId,
+        timelineStartUs: clip.timelineStartUs,
+        sourceTimeUs: sourceTime.toString(),
+      });
+    }
   }
   return result;
 }

@@ -80,6 +80,36 @@ export function gifFrameDelayMs(fps: number): number {
 }
 
 /**
+ * Blend partially transparent pixels onto black and make them opaque.
+ *
+ * GIF stores one bit of alpha, so a pixel drawn at 40% opacity is written at
+ * full strength and any fade authored with `transform.opacity` disappears —
+ * the exported GIF cuts straight to the fully visible frame. Premultiplying
+ * against black puts the fade back into the RGB channels, which GIF can
+ * represent, and matches what the MP4 encoder already does with this same
+ * canvas.
+ *
+ * Fully transparent pixels are left alone: `fx.remove_background` keys pixels
+ * out to alpha 0, GIF can store that, and flattening them would paint the
+ * removed background back in as black.
+ *
+ * Mutates in place, like `removeBackground` in main.ts — the buffer is read
+ * straight off the export canvas and handed to the encoder, and copying it per
+ * frame would allocate a megabyte per frame for nothing.
+ */
+export function flattenPartialAlpha(data: Uint8ClampedArray): void {
+  for (let i = 0; i < data.length; i += 4) {
+    const alpha = data[i + 3]!;
+    if (alpha === 0 || alpha === 255) continue;
+    const factor = alpha / 255;
+    data[i] = Math.round(data[i]! * factor);
+    data[i + 1] = Math.round(data[i + 1]! * factor);
+    data[i + 2] = Math.round(data[i + 2]! * factor);
+    data[i + 3] = 255;
+  }
+}
+
+/**
  * Playback order for `frameCount` frames, ping-ponged when `boomerang` is on.
  * The two endpoints are not repeated — holding on the first and last frame for
  * twice as long is exactly the stutter that makes a boomerang look broken.

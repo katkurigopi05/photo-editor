@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAddClip,
+  buildAddKeyframe,
+  buildRemoveKeyframe,
   buildTrimClip,
+  buildUpdateKeyframe,
+  buildUpdateClipAnimations,
   type CommandContext,
 } from "../src/index.js";
 
@@ -50,5 +54,75 @@ describe("command builders (UI action -> command shape)", () => {
     expect(cmd.createdAt).toBe(ctx.createdAt);
     expect(cmd.commandType).toBe("timeline.trim_clip");
     expect(cmd.baseVersion).toBe(5);
+  });
+
+  it("builds exact add, update, and remove keyframe commands", () => {
+    const addPayload = {
+      sequenceId: "sequence-1",
+      clipId: "clip-1",
+      animationId: "animation-scale",
+      property: "transform.scale" as const,
+      keyframe: {
+        id: "keyframe-1",
+        timeUs: "500000",
+        value: 1.25,
+        easing: "ease-in-out" as const,
+      },
+    };
+    expect(buildAddKeyframe(ctx, addPayload)).toMatchObject({
+      commandType: "timeline.add_keyframe",
+      payload: addPayload,
+    });
+
+    const updatePayload = {
+      sequenceId: "sequence-1",
+      clipId: "clip-1",
+      animationId: "animation-scale",
+      keyframeId: "keyframe-1",
+      timeUs: "750000",
+      value: 1.5,
+      easing: "linear" as const,
+    };
+    expect(buildUpdateKeyframe(ctx, updatePayload)).toMatchObject({
+      commandType: "timeline.update_keyframe",
+      payload: updatePayload,
+    });
+
+    const removePayload = {
+      sequenceId: "sequence-1",
+      clipId: "clip-1",
+      animationId: "animation-scale",
+      keyframeId: "keyframe-1",
+    };
+    expect(buildRemoveKeyframe(ctx, removePayload)).toMatchObject({
+      commandType: "timeline.remove_keyframe",
+      payload: removePayload,
+    });
+  });
+
+  it("builds one atomic clip-animation replacement command", () => {
+    const payload = {
+      sequenceId: "sequence-1",
+      clipId: "clip-1",
+      animations: [
+        {
+          id: "track-1",
+          property: "transform.opacity" as const,
+          keyframes: [
+            {
+              id: "keyframe-1",
+              timeUs: "0",
+              value: 0,
+              easing: "linear" as const,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(buildUpdateClipAnimations(ctx, payload)).toMatchObject({
+      commandType: "timeline.update_clip_animations",
+      payload,
+    });
   });
 });

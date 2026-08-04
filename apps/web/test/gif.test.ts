@@ -1,6 +1,63 @@
 import { describe, expect, test } from "vitest";
 
-import { boomerangOrder, clampGifFps, gifFrameDelayMs } from "../src/gif.js";
+import {
+  boomerangOrder,
+  clampGifFps,
+  flattenPartialAlpha,
+  gifFrameDelayMs,
+} from "../src/gif.js";
+
+/** RGBA quad helper: one pixel per entry. */
+function pixels(...quads: number[][]): Uint8ClampedArray {
+  return new Uint8ClampedArray(quads.flat());
+}
+
+describe("flattenPartialAlpha", () => {
+  test("blends a half-transparent pixel onto black and makes it opaque", () => {
+    // GIF has only 1-bit alpha, so a 50%-opacity pixel would otherwise be
+    // written at full strength and the fade would vanish.
+    const data = pixels([200, 100, 50, 128]);
+    flattenPartialAlpha(data);
+    expect(Array.from(data)).toEqual([100, 50, 25, 255]);
+  });
+
+  test("leaves fully transparent pixels transparent", () => {
+    // fx.remove_background keys pixels out to alpha 0; GIF can represent that,
+    // and flattening them to black would fill in the removed background.
+    const data = pixels([12, 34, 56, 0]);
+    flattenPartialAlpha(data);
+    expect(Array.from(data)).toEqual([12, 34, 56, 0]);
+  });
+
+  test("leaves fully opaque pixels untouched", () => {
+    const data = pixels([10, 20, 30, 255]);
+    flattenPartialAlpha(data);
+    expect(Array.from(data)).toEqual([10, 20, 30, 255]);
+  });
+
+  test("scales a fade linearly so the ramp survives quantization", () => {
+    // The signal the live check measures: mean luminance must track opacity.
+    const white = [255, 255, 255];
+    for (const alpha of [0, 64, 128, 192, 255]) {
+      const data = pixels([...white, alpha]);
+      flattenPartialAlpha(data);
+      const expected = alpha === 0 ? 255 : Math.round(255 * (alpha / 255));
+      expect(data[0], `alpha ${alpha}`).toBe(expected);
+    }
+  });
+
+  test("handles a multi-pixel buffer independently per pixel", () => {
+    const data = pixels(
+      [255, 255, 255, 0],
+      [255, 255, 255, 128],
+      [255, 255, 255, 255],
+    );
+    flattenPartialAlpha(data);
+    expect(Array.from(data)).toEqual([
+      255, 255, 255, 0, 128, 128, 128, 255, 255, 255, 255, 255,
+    ]);
+  });
+});
 
 describe("boomerangOrder", () => {
   test("plays straight through when boomerang is off", () => {

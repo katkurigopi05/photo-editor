@@ -2,6 +2,11 @@ import { z } from "zod";
 import {
   audioGainDbSchema,
   audioPanSchema,
+  animationKeyframeSchema,
+  animationPropertySchema,
+  animationTracksSchema,
+  transitionSchema,
+  transitionSideSchema,
   effectInstanceSchema,
   jsonObjectSchema,
   mediaAssetSchema,
@@ -91,13 +96,17 @@ export const addTrackCommandSchema = command(
 // --- timeline.add_clip ------------------------------------------------------
 
 /** Clip input: no `trackId` (taken from payload), no caller-supplied
- * `timelineDurationUs` (derived from the source range), and no `effects`
- * (a clip is created with an empty effect stack; effects are added by command). */
+ * `timelineDurationUs` (derived from the source range), and no `effects`,
+ * `animations` or transitions — all of those are created only through their
+ * own dedicated commands. */
 export const clipInputSchema = timelineClipSchema
   .omit({
     trackId: true,
     timelineDurationUs: true,
     effects: true,
+    animations: true,
+    transitionIn: true,
+    transitionOut: true,
     audioGainDb: true,
     audioPan: true,
   })
@@ -275,6 +284,83 @@ export const setClipAudioPanCommandSchema = command(
   setClipAudioPanPayloadSchema,
 );
 
+// --- timeline animation keyframes ------------------------------------------
+
+export const addKeyframePayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    animationId: z.string().min(1),
+    property: animationPropertySchema,
+    keyframe: animationKeyframeSchema,
+  })
+  .strict();
+
+export const addKeyframeCommandSchema = command(
+  "timeline.add_keyframe",
+  addKeyframePayloadSchema,
+);
+
+const keyframeUpdateShape = animationKeyframeSchema.omit({ id: true }).shape;
+
+export const updateKeyframePayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    animationId: z.string().min(1),
+    keyframeId: z.string().min(1),
+    ...keyframeUpdateShape,
+  })
+  .strict();
+
+export const updateKeyframeCommandSchema = command(
+  "timeline.update_keyframe",
+  updateKeyframePayloadSchema,
+);
+
+export const removeKeyframePayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    animationId: z.string().min(1),
+    keyframeId: z.string().min(1),
+  })
+  .strict();
+
+export const removeKeyframeCommandSchema = command(
+  "timeline.remove_keyframe",
+  removeKeyframePayloadSchema,
+);
+
+export const updateClipAnimationsPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    animations: animationTracksSchema,
+  })
+  .strict();
+
+export const updateClipAnimationsCommandSchema = command(
+  "timeline.update_clip_animations",
+  updateClipAnimationsPayloadSchema,
+);
+
+/** One command sets or clears either end's transition: `null` removes it, so
+ * add/replace/remove share a single validated shape and a single inverse. */
+export const setClipTransitionPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    side: transitionSideSchema,
+    transition: transitionSchema.nullable(),
+  })
+  .strict();
+
+export const setClipTransitionCommandSchema = command(
+  "timeline.set_clip_transition",
+  setClipTransitionPayloadSchema,
+);
+
 // --- discriminated union ----------------------------------------------------
 
 export const projectCommandSchema = z.discriminatedUnion("commandType", [
@@ -293,6 +379,11 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   updateClipEffectsCommandSchema,
   setClipAudioGainCommandSchema,
   setClipAudioPanCommandSchema,
+  addKeyframeCommandSchema,
+  updateKeyframeCommandSchema,
+  removeKeyframeCommandSchema,
+  updateClipAnimationsCommandSchema,
+  setClipTransitionCommandSchema,
 ]);
 
 export type ProjectCommand = z.infer<typeof projectCommandSchema>;
@@ -319,6 +410,15 @@ export type SetClipAudioGainCommand = z.infer<
 export type SetClipAudioPanCommand = z.infer<
   typeof setClipAudioPanCommandSchema
 >;
+export type AddKeyframeCommand = z.infer<typeof addKeyframeCommandSchema>;
+export type UpdateKeyframeCommand = z.infer<typeof updateKeyframeCommandSchema>;
+export type RemoveKeyframeCommand = z.infer<typeof removeKeyframeCommandSchema>;
+export type UpdateClipAnimationsCommand = z.infer<
+  typeof updateClipAnimationsCommandSchema
+>;
+export type SetClipTransitionCommand = z.infer<
+  typeof setClipTransitionCommandSchema
+>;
 
 export type PublicCommandType = ProjectCommand["commandType"];
 
@@ -338,4 +438,9 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.update_clip_effects",
   "timeline.set_clip_audio_gain",
   "timeline.set_clip_audio_pan",
+  "timeline.add_keyframe",
+  "timeline.update_keyframe",
+  "timeline.remove_keyframe",
+  "timeline.update_clip_animations",
+  "timeline.set_clip_transition",
 ];
