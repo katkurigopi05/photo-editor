@@ -146,6 +146,11 @@ import {
   materializeAnimationPreset,
   type AnimationPresetId,
 } from "./animation-presets.js";
+import {
+  VECTOR_SHAPE_PRESETS,
+  createVectorShapeSource,
+  type VectorShapePreset,
+} from "./vector-shape.js";
 
 // ==========================================================================
 // Effect catalogue — drives the inspector sliders and the preview filters.
@@ -539,6 +544,7 @@ const playBtn = $<HTMLButtonElement>("btn-play");
 const fileInput = $<HTMLInputElement>("file-input");
 const paletteEl = $<HTMLDivElement>("effects-palette");
 const looksRow = $<HTMLDivElement>("looks-row");
+const vectorShapesEl = $<HTMLDivElement>("vector-shapes");
 
 // ==========================================================================
 // Helpers
@@ -792,6 +798,59 @@ async function importFiles(files: FileList | File[]): Promise<void> {
       true,
     );
   }
+}
+
+/** Add a persistent generated SVG as a normal timeline clip. It deliberately
+ * enters through asset.register + timeline.add_clip, so the cartoon uses the
+ * same selection, keyframe, transition, preview and export paths as media. */
+async function addVectorShape(preset: VectorShapePreset): Promise<void> {
+  const source = createVectorShapeSource({
+    kind: preset.id,
+    fillHex: preset.fillHex,
+    strokeHex: preset.strokeHex,
+    width: 1024,
+    height: 1024,
+  });
+  const image = new Image();
+  image.src = source.dataUri;
+  const decoded = await image
+    .decode()
+    .then(() => true)
+    .catch(() => false);
+  if (!decoded) {
+    toast(`Could not create the ${preset.label} cartoon clip.`, true);
+    return;
+  }
+
+  const bytes = new TextEncoder().encode(source.svg);
+  const checksum = await sha256Hex(bytes.slice().buffer);
+  const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  const durationUs = "5000000";
+  assetNames.set(assetId, `${preset.label} cartoon`);
+  mediaCache.set(source.dataUri, image);
+
+  const registered = commit(
+    buildRegisterAsset(nextCtx(), {
+      asset: {
+        id: assetId,
+        projectId: PROJECT_ID,
+        kind: "generated",
+        originalUri: source.dataUri,
+        checksum,
+        metadata: {
+          fileSizeBytes: String(source.byteLength),
+          durationUs,
+          width: 1024,
+          height: 1024,
+          frameRate: FRAME_RATE,
+        },
+        createdAt: new Date().toISOString(),
+      },
+    }),
+  );
+  if (!registered) return;
+  addAssetToTimeline(assetId, "generated", durationUs);
+  toast(`${preset.label} cartoon added — animate it in the Inspector`);
 }
 
 function addAssetToTimeline(
@@ -2463,6 +2522,26 @@ function renderLooks(): void {
   }
 }
 
+function renderVectorShapes(): void {
+  vectorShapesEl.innerHTML = "";
+  for (const preset of VECTOR_SHAPE_PRESETS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "vector-shape-chip";
+    button.title = `Add an animatable ${preset.label} cartoon clip`;
+    button.setAttribute("aria-label", button.title);
+    const symbol = document.createElement("span");
+    symbol.className = "vector-shape-symbol";
+    symbol.textContent = preset.symbol;
+    symbol.style.setProperty("--shape-fill", preset.fillHex);
+    const label = document.createElement("span");
+    label.textContent = preset.label;
+    button.append(symbol, label);
+    button.addEventListener("click", () => void addVectorShape(preset));
+    vectorShapesEl.appendChild(button);
+  }
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
   mediaListEl.classList.toggle("grid", galleryGrid);
@@ -2477,7 +2556,11 @@ function renderMedia(): void {
     });
     const thumb = document.createElement("div");
     thumb.className = "media-thumb";
-    if (asset.kind === "image" || asset.kind === "video") {
+    if (
+      asset.kind === "image" ||
+      asset.kind === "video" ||
+      asset.kind === "generated"
+    ) {
       thumb.style.backgroundImage = `url("${asset.originalUri}")`;
     } else {
       thumb.classList.add("audio");
@@ -2654,6 +2737,7 @@ function updateUI(): void {
   versionBadge.textContent = `v${session.getVersion()}`;
   syncPlaybackDuration();
   renderMedia();
+  renderVectorShapes();
   renderEffectsPalette();
   renderLooks();
   renderHistory();

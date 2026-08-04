@@ -845,6 +845,47 @@ body {
   gap: 6px;
   margin-bottom: 4px;
 }
+.vector-shapes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.vector-shape-chip {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 4px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    transform 0.05s;
+}
+.vector-shape-chip:hover {
+  border-color: var(--accent);
+  background: var(--panel-3);
+  transform: translateY(-1px);
+}
+.vector-shape-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.vector-shape-symbol {
+  color: var(--shape-fill, var(--accent));
+  font-size: 24px;
+  line-height: 1;
+  filter: drop-shadow(0 0 1px var(--text));
+}
 .look-chip {
   padding: 6px 11px;
   background: var(--accent-grad);
