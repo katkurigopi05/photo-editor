@@ -30,6 +30,37 @@ jobs:
       - name: Build
         run: pnpm build
 
+  e2e:
+    name: End-to-end (browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable Corepack
+        run: corepack enable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # Only Chromium: these assert on decoded export bytes and WebCodecs
+      # behaviour, not on cross-browser rendering.
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      # playwright.config.ts builds the workspace before serving, because Vite
+      # resolves @director/* to dist/ while vitest aliases them to src/.
+      - name: Run E2E
+        run: pnpm e2e
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
+
   rust:
     name: Rust workspace
     runs-on: ubuntu-latest
