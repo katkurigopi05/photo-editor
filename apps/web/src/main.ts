@@ -741,6 +741,7 @@ async function importFile(file: File): Promise<void> {
     if (el instanceof HTMLVideoElement) {
       width = el.videoWidth || width;
       height = el.videoHeight || height;
+      attachOffscreen(el);
     }
     mediaCache.set(url, el as HTMLVideoElement);
   }
@@ -3046,12 +3047,105 @@ async function quickAiRemoveBackground(clipId: string): Promise<void> {
 /** Wait until the video element has actually seeked to `targetSeconds` before
  * reading pixels — `currentTime` assignment is async, so capturing
  * immediately could grab the previous frame. */
-function seekVideoFrame(video: HTMLVideoElement, targetSeconds: number): Promise<void> {
-  if (Math.abs(video.currentTime - targetSeconds) < 0.02) return Promise.resolve();
+/**
+ * Put a decode-only video element in the document, invisibly.
+ *
+ * A detached `<video>` is never composited, and a browser does not present
+ * frames for something it is not compositing. Everything that reports a seek
+ * as finished — `seeked`, `currentTime`, `requestVideoFrameCallback` — then
+ * describes the seek rather than the picture, and `drawImage` keeps copying
+ * whichever frame was last presented. Exports read the element exactly once,
+ * so they get that stale frame with no repaint to correct it.
+ *
+ * `display: none` and `visibility: hidden` suppress compositing just as being
+ * detached does, so the element has to stay technically rendered: one pixel,
+ * fully transparent, out of the layout and ignoring input.
+ */
+function attachOffscreen(video: HTMLVideoElement): void {
+  video.playsInline = true;
+  Object.assign(video.style, {
+    position: "fixed",
+    left: "0",
+    top: "0",
+    width: "1px",
+    height: "1px",
+    opacity: "0",
+    pointerEvents: "none",
+    zIndex: "-1",
+  });
+  video.setAttribute("aria-hidden", "true");
+  document.body.appendChild(video);
+}
+
+/** Safety net for the frame wait. With the element composited this normally
+ * resolves within a frame or two; the cap only stops a browser that declines
+ * to present from hanging an export. */
+const FRAME_PRESENT_TIMEOUT_MS = 300;
+
+/**
+ * Seek `video` and resolve once the target frame can actually be drawn.
+ *
+ * The tempting checks are all wrong on their own. `currentTime` reports the
+ * *requested* position, so it reads as the target the instant a seek is issued
+ * — and drawLayer issues one on every preview repaint, so an export arriving
+ * moments later sees the right number over the wrong picture. `seeked` says
+ * the seek finished, not that the frame was presented. Measured mid-export:
+ * `currentTime` 4, `seeking` true, `readyState` 1 — no frame data at all,
+ * while the old early-return returned in 0ms and drawImage copied the frame
+ * from before the seek.
+ *
+ * `requestVideoFrameCallback` reports the frame that was actually presented,
+ * and its `mediaTime` says which one, so that is what this waits for.
+ */
+function seekVideoFrame(
+  video: HTMLVideoElement,
+  targetSeconds: number,
+): Promise<void> {
+  const atTarget = Math.abs(video.currentTime - targetSeconds) < 0.02;
+  // Nothing pending and a decoded frame already up: it is on screen now.
+  if (
+    atTarget &&
+    !video.seeking &&
+    video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  ) {
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const awaitPresentedFrame = (): void => {
+      if (typeof video.requestVideoFrameCallback !== "function") {
+        finish();
+        return;
+      }
+      const onFrame = (_now: number, metadata: { mediaTime: number }): void => {
+        if (settled) return;
+        // Frames already in flight can arrive first; keep waiting for the one
+        // whose own timestamp is the frame that was asked for.
+        if (Math.abs(metadata.mediaTime - targetSeconds) < 0.05) {
+          finish();
+          return;
+        }
+        video.requestVideoFrameCallback(onFrame);
+      };
+      video.requestVideoFrameCallback(onFrame);
+      setTimeout(finish, FRAME_PRESENT_TIMEOUT_MS);
+    };
+
+    if (atTarget) {
+      // A seek to this same time is already in flight — started by drawLayer's
+      // fire-and-forget preview seek. Re-assigning currentTime here would be a
+      // no-op that never fires `seeked`, so just wait for the picture.
+      awaitPresentedFrame();
+      return;
+    }
     const onSeeked = (): void => {
       video.removeEventListener("seeked", onSeeked);
-      resolve();
+      awaitPresentedFrame();
     };
     video.addEventListener("seeked", onSeeked);
     video.currentTime = targetSeconds;
@@ -4234,8 +4328,14 @@ function downloadBlob(blob: Blob, filename: string): void {
 
 /** Renders the current visual layer(s) at full native resolution — same
  * effects as the live preview, baked in — onto a fresh offscreen canvas.
- * Returns null if there's nothing visible to export. */
-function renderExportFrame(): HTMLCanvasElement | null {
+ * Returns null if there's nothing visible to export.
+ *
+ * Async because a video layer has to be seeked and decoded before it can be
+ * drawn. drawLayer's own seek is fire-and-forget — it schedules a redraw for
+ * the preview, which repaints continuously — and it is skipped entirely while
+ * the transport is playing. Neither is any use to a one-shot export, so this
+ * awaits the frame the way the GIF and MP4 loops already do. */
+async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   const seq = activeSequence();
   const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
   const visual = layers.filter((l) => {
@@ -4269,16 +4369,22 @@ function renderExportFrame(): HTMLCanvasElement | null {
   const octx = out.getContext("2d")!;
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
-    if (loc) {
-      drawLayer(
-        octx,
-        loc.clip,
-        layer.sourceTimeUs,
-        clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
-        out.width,
-        out.height,
-      );
+    if (!loc) continue;
+    const layerAsset = findAsset(loc.clip.assetId);
+    const layerMedia = layerAsset
+      ? mediaCache.get(layerAsset.originalUri)
+      : undefined;
+    if (layerMedia instanceof HTMLVideoElement) {
+      await seekVideoFrame(layerMedia, Number(layer.sourceTimeUs) / 1_000_000);
     }
+    drawLayer(
+      octx,
+      loc.clip,
+      layer.sourceTimeUs,
+      clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
+      out.width,
+      out.height,
+    );
   }
   return out;
 }
@@ -4286,8 +4392,15 @@ function renderExportFrame(): HTMLCanvasElement | null {
 /** Real, working image export: renders the current frame (effects baked in)
  * at full native resolution and downloads it as a PNG. No plan, no fake job —
  * a real file. */
-function exportPhotoImage(): void {
-  const canvasEl = renderExportFrame();
+async function exportPhotoImage(): Promise<void> {
+  // Pause first: a still is "the frame at the playhead", and letting the
+  // transport keep advancing during the seek means exporting a frame the
+  // playhead has already left.
+  if (playback.playing) {
+    playback = pause(playback);
+    syncTransport();
+  }
+  const canvasEl = await renderExportFrame();
   if (!canvasEl) {
     toast("Nothing to export.", true);
     return;
@@ -4920,7 +5033,7 @@ function bindGifPanel(): void {
 
 function doExport(): void {
   if (mode === "photo") {
-    exportPhotoImage();
+    void exportPhotoImage();
     return;
   }
   if (mode === "gif") {
