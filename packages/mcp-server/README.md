@@ -37,19 +37,23 @@ pnpm install
 pnpm --filter @director/mcp-server build
 ```
 
-Then point a client at `packages/mcp-server/dist/index.js`.
+The build step is not optional: `dist/` is gitignored, so a fresh clone has no
+server to launch until it runs.
 
-**Claude Code** (`.mcp.json` in the repo, or `claude mcp add`):
+**Claude Code** needs no setup beyond the build. The repo ships a
+project-scoped [`.mcp.json`](../../.mcp.json) that Claude Code picks up
+automatically:
 
 ```json
 {
   "mcpServers": {
     "director": {
+      "type": "stdio",
       "command": "node",
       "args": [
-        "/absolute/path/to/photo editor/packages/mcp-server/dist/index.js",
+        "${CLAUDE_PROJECT_DIR:-.}/packages/mcp-server/dist/index.js",
         "--root",
-        "/absolute/path/to/your/projects",
+        "${CLAUDE_PROJECT_DIR:-.}/director-projects",
         "--actor",
         "mcp:claude-code"
       ]
@@ -58,8 +62,43 @@ Then point a client at `packages/mcp-server/dist/index.js`.
 }
 ```
 
-**Claude Desktop** (`claude_desktop_config.json`) uses the same shape. So do
-Codex and Cursor; only the config file location differs.
+`${CLAUDE_PROJECT_DIR}` keeps it machine-independent — no absolute path, and
+nothing identifying the person who committed it. The `:-.` default is required:
+Claude Code sets that variable in the *server's* environment rather than its
+own, so an entry without a default would not expand. Projects land in
+`director-projects/`, which is gitignored. To point it somewhere else, add a
+local-scope entry (`claude mcp add`), which takes precedence over project scope.
+
+**Claude Desktop** (`claude_desktop_config.json`) uses the same JSON shape with
+absolute paths, since it has no project directory to resolve against.
+
+**Codex** uses TOML at `~/.codex/config.toml`, not this JSON shape — the table
+is `mcp_servers`, not `mcpServers`:
+
+```toml
+[mcp_servers.director]
+command = "node"
+args = [
+  "/absolute/path/to/photo editor/packages/mcp-server/dist/index.js",
+  "--root", "/absolute/path/to/your/projects",
+  "--actor", "mcp:codex",
+]
+```
+
+or `codex mcp add director -- node /abs/path/.../dist/index.js --root <dir>
+--actor mcp:codex`. Note the `--` before the command.
+
+### Credentials
+
+This server takes none. It has no API key, no token and no network listener —
+only a `--root` path and an `--actor` label, which is why its configuration is
+safe to commit.
+
+That is not true of MCP servers in general. If you add one to `.mcp.json` that
+does need a secret, reference an environment variable rather than pasting the
+value: `.mcp.json` expands `${VAR}` and `${VAR:-default}` in `command`, `args`,
+`env`, `url` and `headers`. This repo is public, and a committed token is a
+leaked token.
 
 Flags:
 

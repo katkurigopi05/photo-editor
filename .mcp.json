@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "director": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PROJECT_DIR:-.}/packages/mcp-server/dist/index.js",
+        "--root",
+        "${CLAUDE_PROJECT_DIR:-.}/director-projects",
+        "--actor",
+        "mcp:claude-code"
+      ]
+    }
+  }
+}
