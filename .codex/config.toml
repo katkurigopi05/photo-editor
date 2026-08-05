@@ -28,6 +28,15 @@ args = ["-y", "@playwright/mcp@latest", "--extension"]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
 
+# Serves the knowledge graph built by /graphify. The graph path is omitted so it
+# defaults to graphify-out/graph.json relative to the project, rather than being
+# pinned to one checkout. graphify-out/ is gitignored — run /graphify once before
+# this server has anything to read. `command` is the interpreter that has graphify
+# installed; change it if yours lives elsewhere.
+[mcp_servers.graphify]
+command = "/opt/miniconda3/bin/python3.13"
+args = ["-m", "graphify.serve"]
+
 [features]
 multi_agent = true
 
