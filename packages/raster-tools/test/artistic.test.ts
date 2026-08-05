@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   cartoonPosterize,
+  crosshatch,
   grainAt,
+  halftone,
   oilPainting,
   pencilSketch,
+  watercolor,
 } from "../src/artistic.js";
 import { createImage, type RasterImage } from "../src/types.js";
 
@@ -170,6 +173,134 @@ describe("cartoonPosterize", () => {
   it("is deterministic", () => {
     const a = cartoonPosterize(splitEdge(), 5, 0.8);
     const b = cartoonPosterize(splitEdge(), 5, 0.8);
+    expect(Array.from(a.data)).toEqual(Array.from(b.data));
+  });
+});
+
+/** Smooth left-to-right dark-to-light ramp. */
+function gradient(w = 32, h = 8): RasterImage {
+  const image = createImage(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const v = Math.round((x / (w - 1)) * 255);
+      image.data[i] = v;
+      image.data[i + 1] = v;
+      image.data[i + 2] = v;
+      image.data[i + 3] = 255;
+    }
+  }
+  return image;
+}
+
+const inkedCount = (img: RasterImage): number => {
+  let n = 0;
+  for (let i = 0; i < img.data.length; i += 4) if (img.data[i]! < 128) n++;
+  return n;
+};
+
+describe("watercolor", () => {
+  it("keeps a hard edge rather than washing across it", () => {
+    const out = watercolor(splitEdge(), 2, 1, 0);
+    expect(at(out, 2, 4)).toBeLessThan(90);
+    expect(at(out, 13, 4)).toBeGreaterThan(170);
+  });
+
+  it("darkens the edge into a dried rim", () => {
+    const plain = watercolor(splitEdge(), 2, 0, 0);
+    const rimmed = watercolor(splitEdge(), 2, 1, 0);
+    // Sample the light side of the boundary, where a rim shows most clearly.
+    expect(at(rimmed, 8, 4)).toBeLessThan(at(plain, 8, 4));
+  });
+
+  it("is deterministic with grain on", () => {
+    const a = watercolor(splitEdge(), 2, 1, 1);
+    const b = watercolor(splitEdge(), 2, 1, 1);
+    expect(Array.from(a.data)).toEqual(Array.from(b.data));
+  });
+
+  it("preserves alpha", () => {
+    const image = splitEdge();
+    image.data[3] = 0;
+    expect(watercolor(image, 2, 1, 0).data[3]).toBe(0);
+  });
+});
+
+describe("crosshatch", () => {
+  it("leaves the lightest tones as bare paper", () => {
+    const out = crosshatch(solid(16, 16, [250, 250, 250]), 4, 1);
+    expect(inkedCount(out)).toBe(0);
+  });
+
+  it("hatches dark tones", () => {
+    const out = crosshatch(solid(16, 16, [20, 20, 20]), 4, 1);
+    expect(inkedCount(out)).toBeGreaterThan(0);
+  });
+
+  it("adds more ink as the tone darkens", () => {
+    // A gradient must ink more on its dark end than its light end.
+    const out = crosshatch(gradient(64, 16), 4, 1);
+    let darkHalf = 0;
+    let lightHalf = 0;
+    for (let y = 0; y < out.height; y++) {
+      for (let x = 0; x < out.width; x++) {
+        if (out.data[(y * out.width + x) * 4]! >= 128) continue;
+        if (x < out.width / 2) darkHalf++;
+        else lightHalf++;
+      }
+    }
+    expect(darkHalf).toBeGreaterThan(lightHalf);
+  });
+
+  it("produces only paper and ink, never midtones", () => {
+    const out = crosshatch(gradient(), 3, 1);
+    const values = new Set<number>();
+    for (let i = 0; i < out.data.length; i += 4) values.add(out.data[i]!);
+    expect(values.size).toBeLessThanOrEqual(2);
+  });
+
+  it("is deterministic", () => {
+    const a = crosshatch(gradient(), 4, 1);
+    const b = crosshatch(gradient(), 4, 1);
+    expect(Array.from(a.data)).toEqual(Array.from(b.data));
+  });
+});
+
+describe("halftone", () => {
+  it("grows dots as the tone darkens", () => {
+    const dark = halftone(solid(32, 32, [20, 20, 20]), 6, 45);
+    const light = halftone(solid(32, 32, [235, 235, 235]), 6, 45);
+    expect(inkedCount(dark)).toBeGreaterThan(inkedCount(light));
+  });
+
+  it("leaves white as bare paper", () => {
+    expect(inkedCount(halftone(solid(24, 24, [255, 255, 255]), 6, 45))).toBe(0);
+  });
+
+  it("is a two-tone screen, not a grayscale copy", () => {
+    const out = halftone(gradient(48, 16), 5, 45);
+    const values = new Set<number>();
+    for (let i = 0; i < out.data.length; i += 4) values.add(out.data[i]!);
+    expect(values.size).toBeLessThanOrEqual(2);
+  });
+
+  it("puts more ink on the dark end of a gradient", () => {
+    const out = halftone(gradient(64, 16), 5, 45);
+    let dark = 0;
+    let light = 0;
+    for (let y = 0; y < out.height; y++) {
+      for (let x = 0; x < out.width; x++) {
+        if (out.data[(y * out.width + x) * 4]! >= 128) continue;
+        if (x < out.width / 2) dark++;
+        else light++;
+      }
+    }
+    expect(dark).toBeGreaterThan(light);
+  });
+
+  it("is deterministic", () => {
+    const a = halftone(gradient(), 5, 30);
+    const b = halftone(gradient(), 5, 30);
     expect(Array.from(a.data)).toEqual(Array.from(b.data));
   });
 });

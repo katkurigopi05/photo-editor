@@ -218,3 +218,176 @@ export function cartoonPosterize(
   }
   return out;
 }
+
+/**
+ * Watercolour: pooled pigment with a dried rim on the edges.
+ *
+ * Built from the pieces already here rather than a new algorithm — Kuwahara
+ * pools the colour, a Sobel pass darkens where the pigment dried against an
+ * edge, and the coordinate hash supplies paper tooth. Saturation is lifted a
+ * little because pooling averages toward grey and washes look weaker than the
+ * paint that made them.
+ */
+export function watercolor(
+  image: RasterImage,
+  poolRadiusPx: number,
+  edgeStrength: number,
+  grain: number,
+): RasterImage {
+  const out = oilPainting(image, poolRadiusPx);
+  const { width, height, data } = image;
+  const ink = Math.max(0, Math.min(1, edgeStrength));
+  const grainAmount = Math.max(0, Math.min(1, grain));
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      // Lift saturation around the pixel's own mean, which brightens colour
+      // without shifting hue.
+      const mean = (out.data[i]! + out.data[i + 1]! + out.data[i + 2]!) / 3;
+      for (let c = 0; c < 3; c++) {
+        out.data[i + c] = mean + (out.data[i + c]! - mean) * 1.25;
+      }
+
+      if (ink > 0 && x > 0 && y > 0 && x < width - 1 && y < height - 1) {
+        const at = (dx: number, dy: number): number =>
+          luma(data, ((y + dy) * width + (x + dx)) * 4);
+        const gx = at(1, 0) - at(-1, 0);
+        const gy = at(0, 1) - at(0, -1);
+        const edge = Math.min(1, Math.hypot(gx, gy) / 160);
+        if (edge > 0.15) {
+          const darken = 1 - edge * ink * 0.55;
+          for (let c = 0; c < 3; c++)
+            out.data[i + c] = out.data[i + c]! * darken;
+        }
+      }
+
+      if (grainAmount > 0) {
+        const tooth = 1 - (grainAt(x, y) - 0.5) * 0.22 * grainAmount;
+        for (let c = 0; c < 3; c++) out.data[i + c] = out.data[i + c]! * tooth;
+      }
+    }
+  }
+  return out;
+}
+
+/** Whether (x, y) sits on a hatch line of `spacing` at `angleDegrees`. */
+function onHatchLine(
+  x: number,
+  y: number,
+  angleDegrees: number,
+  spacing: number,
+): boolean {
+  const radians = (angleDegrees * Math.PI) / 180;
+  // Distance along the axis perpendicular to the lines; lines are where that
+  // distance lands near a multiple of the spacing.
+  const projected = x * Math.sin(radians) + y * Math.cos(radians);
+  const offset = ((projected % spacing) + spacing) % spacing;
+  return offset < 1;
+}
+
+/**
+ * Ink crosshatch: darker areas get more layers of hatching.
+ *
+ * No blur and no averaging — the line position is a function of the
+ * coordinate, so this is pure geometry driven by luminance. Layers are added
+ * at different angles as the tone darkens, which is how hand hatching builds
+ * value.
+ */
+export function crosshatch(
+  image: RasterImage,
+  spacingPx: number,
+  darkness: number,
+): RasterImage {
+  const spacing = Math.max(2, Math.round(spacingPx));
+  const strength = Math.max(0, Math.min(1, darkness));
+  const { width, height, data } = image;
+  const out = cloneImage(image);
+  // Each threshold adds a layer as the tone passes below it.
+  const layers: readonly (readonly [number, number])[] = [
+    [0.82, 45],
+    [0.62, -45],
+    [0.42, 0],
+    [0.22, 90],
+  ];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const value = luma(data, i) / 255;
+      let inked = false;
+      for (const [threshold, angle] of layers) {
+        if (value < threshold && onHatchLine(x, y, angle, spacing)) {
+          inked = true;
+          break;
+        }
+      }
+      const paper = 255;
+      const level = inked ? paper * (1 - strength) : paper;
+      out.data[i] = level;
+      out.data[i + 1] = level;
+      out.data[i + 2] = level;
+    }
+  }
+  return out;
+}
+
+/**
+ * Halftone: a print-style dot screen whose dots grow as the tone darkens.
+ *
+ * The dot for a cell is sized from that cell's own average tone rather than
+ * per-pixel luminance, which is what makes it read as a screen rather than as
+ * noise.
+ */
+export function halftone(
+  image: RasterImage,
+  cellPx: number,
+  angleDegrees: number,
+): RasterImage {
+  const cell = Math.max(2, Math.round(cellPx));
+  const radians = (angleDegrees * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const { width, height, data } = image;
+  const out = cloneImage(image);
+
+  // Average tone per cell in the rotated screen space, computed once.
+  const cellTone = new Map<string, { sum: number; count: number }>();
+  const cellOf = (x: number, y: number): [number, number] => {
+    const u = x * cos + y * sin;
+    const v = -x * sin + y * cos;
+    return [Math.floor(u / cell), Math.floor(v / cell)];
+  };
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const [cu, cv] = cellOf(x, y);
+      const key = `${cu},${cv}`;
+      const entry = cellTone.get(key) ?? { sum: 0, count: 0 };
+      entry.sum += luma(data, (y * width + x) * 4);
+      entry.count++;
+      cellTone.set(key, entry);
+    }
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const u = x * cos + y * sin;
+      const v = -x * sin + y * cos;
+      const cu = Math.floor(u / cell);
+      const cv = Math.floor(v / cell);
+      const entry = cellTone.get(`${cu},${cv}`)!;
+      const tone = entry.sum / entry.count / 255;
+      // A dot covering the whole cell would still leave the corners, so the
+      // darkest tone reaches slightly past half the cell.
+      const radius = (1 - tone) * cell * 0.72;
+      const du = u - (cu * cell + cell / 2);
+      const dv = v - (cv * cell + cell / 2);
+      const level = Math.hypot(du, dv) <= radius ? 0 : 255;
+      out.data[i] = level;
+      out.data[i + 1] = level;
+      out.data[i + 2] = level;
+    }
+  }
+  return out;
+}

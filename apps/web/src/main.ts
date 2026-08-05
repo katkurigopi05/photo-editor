@@ -104,6 +104,9 @@ import {
   pencilSketch,
   oilPainting,
   cartoonPosterize,
+  watercolor,
+  crosshatch,
+  halftone,
   type Mask,
   type Point,
   type RasterImage,
@@ -352,6 +355,34 @@ const EFFECTS: EffectSpec[] = [
     params: [
       range("levels", "Colours", 2, 16, 1, 5),
       range("edgeStrength", "Ink", 0, 1, 0.05, 0.8),
+    ],
+  },
+  {
+    type: "art.watercolor",
+    label: "Watercolour",
+    modes: ["photo", "video"],
+    params: [
+      range("poolRadiusPx", "Pooling", 1, 8, 1, 3),
+      range("edgeStrength", "Dried edge", 0, 1, 0.05, 0.7),
+      range("grain", "Paper", 0, 1, 0.05, 0.3),
+    ],
+  },
+  {
+    type: "art.crosshatch",
+    label: "Crosshatch",
+    modes: ["photo", "video"],
+    params: [
+      range("spacingPx", "Line spacing", 2, 24, 1, 5),
+      range("darkness", "Ink", 0, 1, 0.05, 1),
+    ],
+  },
+  {
+    type: "art.halftone",
+    label: "Halftone",
+    modes: ["photo", "video"],
+    params: [
+      range("cellPx", "Dot size", 2, 24, 1, 6),
+      range("angleDegrees", "Screen angle", 0, 90, 5, 45),
     ],
   },
   {
@@ -1148,9 +1179,7 @@ function drawLayer(
   const artFx = clip.effects.find(
     (e) =>
       e.enabled &&
-      (e.type === "art.pencil_sketch" ||
-        e.type === "art.oil_painting" ||
-        e.type === "art.cartoon"),
+      e.type.startsWith("art."),
   );
   if (artFx) {
     drawable = stylize(asset.originalUri, drawable, mw, mh, artFx);
@@ -1546,6 +1575,25 @@ function stylize(
     );
   } else if (fx.type === "art.oil_painting") {
     result = oilPainting(raster, getParamNumber(fx, "radiusPx", 4));
+  } else if (fx.type === "art.watercolor") {
+    result = watercolor(
+      raster,
+      getParamNumber(fx, "poolRadiusPx", 3),
+      getParamNumber(fx, "edgeStrength", 0.7),
+      getParamNumber(fx, "grain", 0.3),
+    );
+  } else if (fx.type === "art.crosshatch") {
+    result = crosshatch(
+      raster,
+      getParamNumber(fx, "spacingPx", 5),
+      getParamNumber(fx, "darkness", 1),
+    );
+  } else if (fx.type === "art.halftone") {
+    result = halftone(
+      raster,
+      getParamNumber(fx, "cellPx", 6),
+      getParamNumber(fx, "angleDegrees", 45),
+    );
   } else {
     result = cartoonPosterize(
       raster,

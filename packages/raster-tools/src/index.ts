@@ -47,4 +47,7 @@ export {
   pencilSketch,
   oilPainting,
   cartoonPosterize,
+  watercolor,
+  crosshatch,
+  halftone,
 } from "./artistic.js";

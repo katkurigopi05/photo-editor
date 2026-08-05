@@ -107,7 +107,13 @@ test("each painterly style reaches the exported GIF", async ({ page }) => {
   // deliberately leaves flat blocks and hard edges alone, which is all this
   // colour chart contains, so "did the picture change" is the wrong question
   // to ask of it.
-  for (const style of ["Pencil Sketch", "Cartoon"]) {
+  for (const style of [
+    "Pencil Sketch",
+    "Cartoon",
+    "Watercolour",
+    "Crosshatch",
+    "Halftone",
+  ]) {
     await importMedia(page, SOURCE);
     await setMode(page, "photo");
     await addEffect(page, style);

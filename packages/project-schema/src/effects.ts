@@ -307,6 +307,49 @@ export const cartoonParamsSchema = z
   })
   .strict();
 
+export const watercolorParamsSchema = z
+  .object({
+    poolRadiusPx: finiteNumber.refine(
+      (n) => n >= 1 && n <= 8,
+      "poolRadiusPx must be between 1 and 8",
+    ),
+    edgeStrength: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "edgeStrength must be between 0 and 1",
+    ),
+    grain: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "grain must be between 0 and 1",
+    ),
+  })
+  .strict();
+
+export const crosshatchParamsSchema = z
+  .object({
+    spacingPx: finiteNumber.refine(
+      (n) => n >= 2 && n <= 24,
+      "spacingPx must be between 2 and 24",
+    ),
+    darkness: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "darkness must be between 0 and 1",
+    ),
+  })
+  .strict();
+
+export const halftoneParamsSchema = z
+  .object({
+    cellPx: finiteNumber.refine(
+      (n) => n >= 2 && n <= 24,
+      "cellPx must be between 2 and 24",
+    ),
+    angleDegrees: finiteNumber.refine(
+      (n) => n >= 0 && n <= 90,
+      "angleDegrees must be between 0 and 90",
+    ),
+  })
+  .strict();
+
 export const EFFECT_TYPES = [
   "color.brightness",
   "color.contrast",
@@ -332,6 +375,9 @@ export const EFFECT_TYPES = [
   "art.pencil_sketch",
   "art.oil_painting",
   "art.cartoon",
+  "art.watercolor",
+  "art.crosshatch",
+  "art.halftone",
 ] as const;
 
 export const effectTypeSchema = z.enum(EFFECT_TYPES);
@@ -364,6 +410,9 @@ export const effectParamsSchemas = {
   "art.pencil_sketch": pencilSketchParamsSchema,
   "art.oil_painting": oilPaintingParamsSchema,
   "art.cartoon": cartoonParamsSchema,
+  "art.watercolor": watercolorParamsSchema,
+  "art.crosshatch": crosshatchParamsSchema,
+  "art.halftone": halftoneParamsSchema,
 } satisfies Record<EffectType, z.ZodTypeAny>;
 
 function effect<Type extends EffectType, Params extends z.ZodTypeAny>(
@@ -406,6 +455,9 @@ export const effectInstanceSchema = z.discriminatedUnion("type", [
   effect("art.pencil_sketch", pencilSketchParamsSchema),
   effect("art.oil_painting", oilPaintingParamsSchema),
   effect("art.cartoon", cartoonParamsSchema),
+  effect("art.watercolor", watercolorParamsSchema),
+  effect("art.crosshatch", crosshatchParamsSchema),
+  effect("art.halftone", halftoneParamsSchema),
 ]);
 
 export type EffectInstance = z.infer<typeof effectInstanceSchema>;
