@@ -54,7 +54,7 @@ export async function importMedia(page: Page, file: string): Promise<void> {
  */
 export async function setMode(
   page: Page,
-  mode: "photo" | "video" | "gif",
+  mode: "photo" | "video" | "animation" | "gif",
 ): Promise<void> {
   await page.evaluate((m) => document.getElementById(`mode-${m}`)?.click(), mode);
   await page.waitForTimeout(700);
