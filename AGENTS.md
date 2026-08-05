@@ -40,6 +40,10 @@ docs/                     product, architecture, ADRs, setup
 
 - TypeScript is strict; do not weaken `tsconfig`, ESLint, or tests to get green.
 - Run the full gate set before claiming completion — see `docs/setup.md`.
+- User-facing mode or feature changes must update `docs/USER_MANUAL.md` and
+  `docs/Project_Director_User_Manual.docx`. Visible mode-UI changes must also
+  refresh the affected images under `docs/assets/user-manual/`. Run
+  `pnpm manual:check`; see `docs/user-manual-maintenance.md`.
 - Do not edit `.benchmark-lock.json` (currently absent; do not create it).
 - Do not add media decoding, rendering, playback, auth, databases, or cloud in
   this phase.

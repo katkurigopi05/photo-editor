@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Enable Corepack
         run: corepack enable
       - uses: actions/setup-node@v4
@@ -19,6 +21,11 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: User manual sync
+        run: pnpm manual:check
+        env:
+          MANUAL_SYNC_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          MANUAL_SYNC_HEAD: ${{ github.sha }}
       - name: Format check
         run: pnpm format:check
       - name: Lint

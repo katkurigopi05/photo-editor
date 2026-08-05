@@ -20,7 +20,11 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
+    include: [
+      "packages/**/*.test.ts",
+      "apps/**/*.test.ts",
+      "scripts/**/*.test.ts",
+    ],
     environment: "node",
   },
 });
