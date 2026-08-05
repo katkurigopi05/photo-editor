@@ -1839,3 +1839,31 @@ select {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft));
   background: color-mix(in srgb, var(--accent) 12%, var(--panel));
 }
+
+/* --- Cartoon fill picker -------------------------------------------------- */
+.vector-fill-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+}
+.vector-fill-row label {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+}
+.vector-fill-row input[type="color"] {
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: none;
+}
+.vector-fill-row .mini {
+  min-height: 24px;
+  margin-left: auto;
+  padding-inline: 8px;
+  font-size: 10px;
+}

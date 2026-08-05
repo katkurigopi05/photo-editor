@@ -11,6 +11,10 @@ describe("vector shape sources", () => {
       "circle",
       "star",
       "speech-bubble",
+      "rectangle",
+      "triangle",
+      "arrow",
+      "heart",
     ]);
     expect(new Set(VECTOR_SHAPE_PRESETS.map((preset) => preset.label)).size).toBe(
       VECTOR_SHAPE_PRESETS.length,
@@ -76,5 +80,38 @@ describe("vector shape sources", () => {
     expect(() => createVectorShapeSource({ ...valid, height: 8192 })).toThrow(
       /dimension/i,
     );
+  });
+});
+
+describe("every shape preset renders", () => {
+  // A kind added to the union but missed in shapeMarkup would fall through the
+  // switch and return undefined, producing an SVG with no geometry at all —
+  // silently, since it still parses and still draws as a blank image.
+  it.each(VECTOR_SHAPE_PRESETS.map((preset) => preset.id))(
+    "%s produces geometry",
+    (kind) => {
+      const preset = VECTOR_SHAPE_PRESETS.find((p) => p.id === kind)!;
+      const source = createVectorShapeSource({
+        kind,
+        fillHex: preset.fillHex,
+        strokeHex: preset.strokeHex,
+        width: 256,
+        height: 256,
+      });
+      expect(source.svg).toMatch(/<(ellipse|polygon|path|rect)\b/);
+      expect(source.svg).not.toContain("undefined");
+      expect(source.byteLength).toBeGreaterThan(80);
+    },
+  );
+
+  it("honours an overridden fill colour", () => {
+    const source = createVectorShapeSource({
+      kind: "star",
+      fillHex: "#123456",
+      strokeHex: "#000000",
+      width: 128,
+      height: 128,
+    });
+    expect(source.svg).toContain('fill="#123456"');
   });
 });

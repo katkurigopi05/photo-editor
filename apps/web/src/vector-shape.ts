@@ -1,4 +1,11 @@
-export type VectorShapeKind = "circle" | "star" | "speech-bubble";
+export type VectorShapeKind =
+  | "circle"
+  | "star"
+  | "speech-bubble"
+  | "rectangle"
+  | "triangle"
+  | "arrow"
+  | "heart";
 
 export interface VectorShapePreset {
   id: VectorShapeKind;
@@ -29,6 +36,34 @@ export const VECTOR_SHAPE_PRESETS: readonly VectorShapePreset[] = [
     symbol: "▰",
     fillHex: "#ffffff",
     strokeHex: "#202638",
+  },
+  {
+    id: "rectangle",
+    label: "Rectangle",
+    symbol: "▮",
+    fillHex: "#39d3a5",
+    strokeHex: "#0d3b2e",
+  },
+  {
+    id: "triangle",
+    label: "Triangle",
+    symbol: "▲",
+    fillHex: "#ff7a5c",
+    strokeHex: "#3d1206",
+  },
+  {
+    id: "arrow",
+    label: "Arrow",
+    symbol: "➤",
+    fillHex: "#4aa8ff",
+    strokeHex: "#062944",
+  },
+  {
+    id: "heart",
+    label: "Heart",
+    symbol: "♥",
+    fillHex: "#ff5c8a",
+    strokeHex: "#4a0d22",
   },
 ];
 
@@ -94,6 +129,14 @@ function shapeMarkup(spec: VectorShapeSpec, strokeWidth: number): string {
         .join(" ");
       return `<polygon points="${points}" ${common}/>`;
     }
+    case "rectangle":
+      return `<rect x="${n(w * 0.14)}" y="${n(h * 0.2)}" width="${n(w * 0.72)}" height="${n(h * 0.6)}" rx="${n(Math.min(w, h) * 0.06)}" ${common}/>`;
+    case "triangle":
+      return `<polygon points="${n(w * 0.5)},${n(h * 0.12)} ${n(w * 0.9)},${n(h * 0.85)} ${n(w * 0.1)},${n(h * 0.85)}" ${common}/>`;
+    case "arrow":
+      return `<polygon points="${n(w * 0.08)},${n(h * 0.4)} ${n(w * 0.56)},${n(h * 0.4)} ${n(w * 0.56)},${n(h * 0.22)} ${n(w * 0.94)},${n(h * 0.5)} ${n(w * 0.56)},${n(h * 0.78)} ${n(w * 0.56)},${n(h * 0.6)} ${n(w * 0.08)},${n(h * 0.6)}" ${common}/>`;
+    case "heart":
+      return `<path d="M ${n(w * 0.5)} ${n(h * 0.86)} C ${n(w * 0.16)} ${n(h * 0.62)} ${n(w * 0.1)} ${n(h * 0.34)} ${n(w * 0.28)} ${n(h * 0.22)} C ${n(w * 0.4)} ${n(h * 0.14)} ${n(w * 0.5)} ${n(h * 0.24)} ${n(w * 0.5)} ${n(h * 0.32)} C ${n(w * 0.5)} ${n(h * 0.24)} ${n(w * 0.6)} ${n(h * 0.14)} ${n(w * 0.72)} ${n(h * 0.22)} C ${n(w * 0.9)} ${n(h * 0.34)} ${n(w * 0.84)} ${n(h * 0.62)} ${n(w * 0.5)} ${n(h * 0.86)} Z" ${common}/>`;
     case "speech-bubble":
       return `<path d="M ${n(w * 0.14)} ${n(h * 0.14)} H ${n(w * 0.86)} Q ${n(w * 0.94)} ${n(h * 0.14)} ${n(w * 0.94)} ${n(h * 0.24)} V ${n(h * 0.67)} Q ${n(w * 0.94)} ${n(h * 0.77)} ${n(w * 0.84)} ${n(h * 0.77)} H ${n(w * 0.45)} L ${n(w * 0.25)} ${n(h * 0.92)} L ${n(w * 0.29)} ${n(h * 0.77)} H ${n(w * 0.14)} Q ${n(w * 0.06)} ${n(h * 0.77)} ${n(w * 0.06)} ${n(h * 0.67)} V ${n(h * 0.24)} Q ${n(w * 0.06)} ${n(h * 0.14)} ${n(w * 0.14)} ${n(h * 0.14)} Z" ${common}/>`;
   }

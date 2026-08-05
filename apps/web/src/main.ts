@@ -822,10 +822,16 @@ async function importFiles(files: FileList | File[]): Promise<void> {
 /** Add a persistent generated SVG as a normal timeline clip. It deliberately
  * enters through asset.register + timeline.add_clip, so the cartoon uses the
  * same selection, keyframe, transition, preview and export paths as media. */
+/** Fill chosen in the Cartoon Clips panel, or null to keep each preset's own
+ * colour. Null rather than a default hex so an untouched picker does not
+ * quietly flatten a gold star and a white speech bubble to the same swatch —
+ * the shape presets carry legibility choices, not just decoration. */
+let vectorFillOverride: string | null = null;
+
 async function addVectorShape(preset: VectorShapePreset): Promise<void> {
   const source = createVectorShapeSource({
     kind: preset.id,
-    fillHex: preset.fillHex,
+    fillHex: vectorFillOverride ?? preset.fillHex,
     strokeHex: preset.strokeHex,
     width: 1024,
     height: 1024,
@@ -2621,6 +2627,36 @@ function renderLooks(): void {
 
 function renderVectorShapes(): void {
   vectorShapesEl.innerHTML = "";
+
+  const fillRow = document.createElement("div");
+  fillRow.className = "vector-fill-row";
+  const fillLabel = document.createElement("label");
+  fillLabel.htmlFor = "vector-fill";
+  fillLabel.textContent = "Fill";
+  const fill = document.createElement("input");
+  fill.type = "color";
+  fill.id = "vector-fill";
+  fill.value = vectorFillOverride ?? VECTOR_SHAPE_PRESETS[0]!.fillHex;
+  fill.title = "Colour for the next cartoon clip";
+  fill.addEventListener("input", () => {
+    vectorFillOverride = fill.value;
+    renderVectorShapes();
+  });
+  fillRow.append(fillLabel, fill);
+  if (vectorFillOverride !== null) {
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "mini";
+    reset.textContent = "Preset colours";
+    reset.title = "Go back to each shape's own colour";
+    reset.addEventListener("click", () => {
+      vectorFillOverride = null;
+      renderVectorShapes();
+    });
+    fillRow.appendChild(reset);
+  }
+  vectorShapesEl.appendChild(fillRow);
+
   for (const preset of VECTOR_SHAPE_PRESETS) {
     const button = document.createElement("button");
     button.type = "button";
@@ -2630,7 +2666,10 @@ function renderVectorShapes(): void {
     const symbol = document.createElement("span");
     symbol.className = "vector-shape-symbol";
     symbol.textContent = preset.symbol;
-    symbol.style.setProperty("--shape-fill", preset.fillHex);
+    symbol.style.setProperty(
+      "--shape-fill",
+      vectorFillOverride ?? preset.fillHex,
+    );
     const label = document.createElement("span");
     label.textContent = preset.label;
     button.append(symbol, label);
