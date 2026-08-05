@@ -268,6 +268,45 @@ export const textParamsSchema = z
   })
   .strict();
 
+/** Painterly stylization. These are deterministic pixel passes, so the same
+ * clip stylizes identically in the preview and in every exported frame. */
+export const pencilSketchParamsSchema = z
+  .object({
+    strength: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "strength must be between 0 and 1",
+    ),
+    grain: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "grain must be between 0 and 1",
+    ),
+  })
+  .strict();
+
+export const oilPaintingParamsSchema = z
+  .object({
+    // Kuwahara is O(radius^2) per pixel and runs once per exported frame, so
+    // the ceiling is part of the contract rather than a UI convention.
+    radiusPx: finiteNumber.refine(
+      (n) => n >= 1 && n <= 8,
+      "radiusPx must be between 1 and 8",
+    ),
+  })
+  .strict();
+
+export const cartoonParamsSchema = z
+  .object({
+    levels: finiteNumber.refine(
+      (n) => n >= 2 && n <= 16,
+      "levels must be between 2 and 16",
+    ),
+    edgeStrength: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "edgeStrength must be between 0 and 1",
+    ),
+  })
+  .strict();
+
 export const EFFECT_TYPES = [
   "color.brightness",
   "color.contrast",
@@ -290,6 +329,9 @@ export const EFFECT_TYPES = [
   "fx.remove_background",
   "transform.crop",
   "fx.text",
+  "art.pencil_sketch",
+  "art.oil_painting",
+  "art.cartoon",
 ] as const;
 
 export const effectTypeSchema = z.enum(EFFECT_TYPES);
@@ -319,6 +361,9 @@ export const effectParamsSchemas = {
   "fx.remove_background": removeBackgroundParamsSchema,
   "transform.crop": cropParamsSchema,
   "fx.text": textParamsSchema,
+  "art.pencil_sketch": pencilSketchParamsSchema,
+  "art.oil_painting": oilPaintingParamsSchema,
+  "art.cartoon": cartoonParamsSchema,
 } satisfies Record<EffectType, z.ZodTypeAny>;
 
 function effect<Type extends EffectType, Params extends z.ZodTypeAny>(
@@ -358,6 +403,9 @@ export const effectInstanceSchema = z.discriminatedUnion("type", [
   effect("fx.remove_background", removeBackgroundParamsSchema),
   effect("transform.crop", cropParamsSchema),
   effect("fx.text", textParamsSchema),
+  effect("art.pencil_sketch", pencilSketchParamsSchema),
+  effect("art.oil_painting", oilPaintingParamsSchema),
+  effect("art.cartoon", cartoonParamsSchema),
 ]);
 
 export type EffectInstance = z.infer<typeof effectInstanceSchema>;

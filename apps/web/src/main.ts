@@ -101,6 +101,9 @@ import {
   rotateImage,
   shiftImage,
   cloneImage as cloneRasterImage,
+  pencilSketch,
+  oilPainting,
+  cartoonPosterize,
   type Mask,
   type Point,
   type RasterImage,
@@ -325,6 +328,30 @@ const EFFECTS: EffectSpec[] = [
     params: [
       { name: "borderColorHex", label: "Color", kind: "color", def: "#ffffff" },
       range("borderWidthPx", "Width (px)", 0, 50, 1, 12),
+    ],
+  },
+  {
+    type: "art.pencil_sketch",
+    label: "Pencil Sketch",
+    modes: ["photo", "video"],
+    params: [
+      range("strength", "Strength", 0, 1, 0.05, 1),
+      range("grain", "Paper grain", 0, 1, 0.05, 0.25),
+    ],
+  },
+  {
+    type: "art.oil_painting",
+    label: "Oil Painting",
+    modes: ["photo", "video"],
+    params: [range("radiusPx", "Brush", 1, 8, 1, 4)],
+  },
+  {
+    type: "art.cartoon",
+    label: "Cartoon",
+    modes: ["photo", "video"],
+    params: [
+      range("levels", "Colours", 2, 16, 1, 5),
+      range("edgeStrength", "Ink", 0, 1, 0.05, 0.8),
     ],
   },
   {
@@ -1114,6 +1141,21 @@ function drawLayer(
     ? removeBackground(media, mw, mh, bgFx)
     : media;
 
+  // Painterly passes are whole-image pixel work — Kuwahara alone is O(r^2)
+  // per pixel — and drawLayer runs once per exported frame. The result depends
+  // only on the media and the parameters, never on the playhead, so it is
+  // computed once per (asset, effect) and reused.
+  const artFx = clip.effects.find(
+    (e) =>
+      e.enabled &&
+      (e.type === "art.pencil_sketch" ||
+        e.type === "art.oil_painting" ||
+        e.type === "art.cartoon"),
+  );
+  if (artFx) {
+    drawable = stylize(asset.originalUri, drawable, mw, mh, artFx);
+  }
+
   // Portrait blur needs the subject mask, which costs a U²-Net inference —
   // far too slow per frame. The mask is cached per asset and requested once;
   // until it lands the clip draws unblurred rather than blurring the subject
@@ -1465,6 +1507,65 @@ function compositePortraitBlur(
 
   bgCtx.drawImage(fg, 0, 0);
   return bg;
+}
+
+/**
+ * Cached painterly renders, keyed by asset and by the exact parameters used.
+ *
+ * Including the parameters in the key is what makes the cache correct rather
+ * than merely fast: dragging a slider has to re-render, and a stale entry
+ * would silently show the previous setting.
+ */
+const artCache = new Map<string, HTMLCanvasElement>();
+
+function stylize(
+  assetUri: string,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  fx: EffectInstance,
+): CanvasImageSource {
+  const key = `${assetUri}|${fx.type}|${JSON.stringify(fx.params)}|${width}x${height}`;
+  const cached = artCache.get(key);
+  if (cached) return cached;
+
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const octx = off.getContext("2d", { willReadFrequently: true })!;
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
+  const raster = { width, height, data: image.data };
+
+  let result;
+  if (fx.type === "art.pencil_sketch") {
+    result = pencilSketch(
+      raster,
+      getParamNumber(fx, "strength", 1),
+      getParamNumber(fx, "grain", 0.25),
+    );
+  } else if (fx.type === "art.oil_painting") {
+    result = oilPainting(raster, getParamNumber(fx, "radiusPx", 4));
+  } else {
+    result = cartoonPosterize(
+      raster,
+      getParamNumber(fx, "levels", 5),
+      getParamNumber(fx, "edgeStrength", 0.8),
+    );
+  }
+  // Write back through the ImageData we already read, rather than building a
+  // new one: its buffer is already the right shape for this context.
+  image.data.set(result.data);
+  octx.putImageData(image, 0, 0);
+
+  // Unbounded growth would be a leak across a long session; the cache exists
+  // for repeated frames of one export, not for the whole project history.
+  if (artCache.size > 12) {
+    const oldest = artCache.keys().next().value;
+    if (oldest !== undefined) artCache.delete(oldest);
+  }
+  artCache.set(key, off);
+  return off;
 }
 
 function removeBackground(

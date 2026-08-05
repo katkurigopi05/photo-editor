@@ -27,6 +27,7 @@ export {
 } from "./paint.js";
 
 export {
+  boxBlurRgb,
   unsharpMask,
   diffusionFill,
   colorKeyAlpha,
@@ -40,3 +41,10 @@ export {
   rotateImage,
   shiftImage,
 } from "./transform.js";
+
+export {
+  grainAt,
+  pencilSketch,
+  oilPainting,
+  cartoonPosterize,
+} from "./artistic.js";
