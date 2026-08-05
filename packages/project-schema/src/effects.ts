@@ -241,6 +241,115 @@ export const cropParamsSchema = z
     path: ["width"],
   });
 
+/** Text burned into the frame. Position is normalized (0..1) against the
+ * output, matching transform.position_x/y, so a caption sits in the same place
+ * in the preview and in a 4K export rather than drifting with resolution. */
+export const textParamsSchema = z
+  .object({
+    text: z.string().max(500),
+    fontSizeRatio: finiteNumber.refine(
+      (n) => n > 0 && n <= 0.5,
+      "fontSizeRatio must be between 0 and 0.5 of the output height",
+    ),
+    colorHex: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/, "must be a valid 6-char hex color (#RRGGBB)"),
+    outlineHex: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/, "must be a valid 6-char hex color (#RRGGBB)"),
+    x: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "x must be between 0 and 1",
+    ),
+    y: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "y must be between 0 and 1",
+    ),
+  })
+  .strict();
+
+/** Painterly stylization. These are deterministic pixel passes, so the same
+ * clip stylizes identically in the preview and in every exported frame. */
+export const pencilSketchParamsSchema = z
+  .object({
+    strength: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "strength must be between 0 and 1",
+    ),
+    grain: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "grain must be between 0 and 1",
+    ),
+  })
+  .strict();
+
+export const oilPaintingParamsSchema = z
+  .object({
+    // Kuwahara is O(radius^2) per pixel and runs once per exported frame, so
+    // the ceiling is part of the contract rather than a UI convention.
+    radiusPx: finiteNumber.refine(
+      (n) => n >= 1 && n <= 8,
+      "radiusPx must be between 1 and 8",
+    ),
+  })
+  .strict();
+
+export const cartoonParamsSchema = z
+  .object({
+    levels: finiteNumber.refine(
+      (n) => n >= 2 && n <= 16,
+      "levels must be between 2 and 16",
+    ),
+    edgeStrength: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "edgeStrength must be between 0 and 1",
+    ),
+  })
+  .strict();
+
+export const watercolorParamsSchema = z
+  .object({
+    poolRadiusPx: finiteNumber.refine(
+      (n) => n >= 1 && n <= 8,
+      "poolRadiusPx must be between 1 and 8",
+    ),
+    edgeStrength: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "edgeStrength must be between 0 and 1",
+    ),
+    grain: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "grain must be between 0 and 1",
+    ),
+  })
+  .strict();
+
+export const crosshatchParamsSchema = z
+  .object({
+    spacingPx: finiteNumber.refine(
+      (n) => n >= 2 && n <= 24,
+      "spacingPx must be between 2 and 24",
+    ),
+    darkness: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "darkness must be between 0 and 1",
+    ),
+  })
+  .strict();
+
+export const halftoneParamsSchema = z
+  .object({
+    cellPx: finiteNumber.refine(
+      (n) => n >= 2 && n <= 24,
+      "cellPx must be between 2 and 24",
+    ),
+    angleDegrees: finiteNumber.refine(
+      (n) => n >= 0 && n <= 90,
+      "angleDegrees must be between 0 and 90",
+    ),
+  })
+  .strict();
+
 export const EFFECT_TYPES = [
   "color.brightness",
   "color.contrast",
@@ -262,6 +371,13 @@ export const EFFECT_TYPES = [
   "fx.border",
   "fx.remove_background",
   "transform.crop",
+  "fx.text",
+  "art.pencil_sketch",
+  "art.oil_painting",
+  "art.cartoon",
+  "art.watercolor",
+  "art.crosshatch",
+  "art.halftone",
 ] as const;
 
 export const effectTypeSchema = z.enum(EFFECT_TYPES);
@@ -290,6 +406,13 @@ export const effectParamsSchemas = {
   "fx.border": borderParamsSchema,
   "fx.remove_background": removeBackgroundParamsSchema,
   "transform.crop": cropParamsSchema,
+  "fx.text": textParamsSchema,
+  "art.pencil_sketch": pencilSketchParamsSchema,
+  "art.oil_painting": oilPaintingParamsSchema,
+  "art.cartoon": cartoonParamsSchema,
+  "art.watercolor": watercolorParamsSchema,
+  "art.crosshatch": crosshatchParamsSchema,
+  "art.halftone": halftoneParamsSchema,
 } satisfies Record<EffectType, z.ZodTypeAny>;
 
 function effect<Type extends EffectType, Params extends z.ZodTypeAny>(
@@ -328,6 +451,13 @@ export const effectInstanceSchema = z.discriminatedUnion("type", [
   effect("fx.border", borderParamsSchema),
   effect("fx.remove_background", removeBackgroundParamsSchema),
   effect("transform.crop", cropParamsSchema),
+  effect("fx.text", textParamsSchema),
+  effect("art.pencil_sketch", pencilSketchParamsSchema),
+  effect("art.oil_painting", oilPaintingParamsSchema),
+  effect("art.cartoon", cartoonParamsSchema),
+  effect("art.watercolor", watercolorParamsSchema),
+  effect("art.crosshatch", crosshatchParamsSchema),
+  effect("art.halftone", halftoneParamsSchema),
 ]);
 
 export type EffectInstance = z.infer<typeof effectInstanceSchema>;

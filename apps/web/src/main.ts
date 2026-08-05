@@ -36,6 +36,7 @@ import {
   type PlaybackState,
 } from "@director/playback-controller";
 import {
+  browserPresetUnsupportedReason,
   planExport,
   planVideoFrames,
   startExport,
@@ -61,6 +62,7 @@ import {
   MAX_CUSTOM_THEMES,
   type ThemeTokens,
 } from "./theme.js";
+import { layoutTextLines } from "./text-overlay.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
 import {
   TRANSITION_DIRECTIONS,
@@ -99,10 +101,20 @@ import {
   rotateImage,
   shiftImage,
   cloneImage as cloneRasterImage,
+  pencilSketch,
+  oilPainting,
+  cartoonPosterize,
+  watercolor,
+  crosshatch,
+  halftone,
   type Mask,
   type Point,
   type RasterImage,
 } from "@director/raster-tools";
+import {
+  biasSubjectMask,
+  bloomHighlights,
+} from "./portrait-blur.js";
 import {
   segmentForeground,
   configureOnnxRuntime,
@@ -141,12 +153,17 @@ import {
   materializeAnimationPreset,
   type AnimationPresetId,
 } from "./animation-presets.js";
+import {
+  VECTOR_SHAPE_PRESETS,
+  createVectorShapeSource,
+  type VectorShapePreset,
+} from "./vector-shape.js";
 
 // ==========================================================================
 // Effect catalogue — drives the inspector sliders and the preview filters.
 // Ranges/defaults mirror @director/project-schema effect params.
 // ==========================================================================
-type ParamKind = "range" | "toggle" | "color";
+type ParamKind = "range" | "toggle" | "color" | "text";
 interface ParamSpec {
   name: string;
   label: string;
@@ -317,6 +334,71 @@ const EFFECTS: EffectSpec[] = [
     ],
   },
   {
+    type: "art.pencil_sketch",
+    label: "Pencil Sketch",
+    modes: ["photo", "video"],
+    params: [
+      range("strength", "Strength", 0, 1, 0.05, 1),
+      range("grain", "Paper grain", 0, 1, 0.05, 0.25),
+    ],
+  },
+  {
+    type: "art.oil_painting",
+    label: "Oil Painting",
+    modes: ["photo", "video"],
+    params: [range("radiusPx", "Brush", 1, 8, 1, 4)],
+  },
+  {
+    type: "art.cartoon",
+    label: "Cartoon",
+    modes: ["photo", "video"],
+    params: [
+      range("levels", "Colours", 2, 16, 1, 5),
+      range("edgeStrength", "Ink", 0, 1, 0.05, 0.8),
+    ],
+  },
+  {
+    type: "art.watercolor",
+    label: "Watercolour",
+    modes: ["photo", "video"],
+    params: [
+      range("poolRadiusPx", "Pooling", 1, 8, 1, 3),
+      range("edgeStrength", "Dried edge", 0, 1, 0.05, 0.7),
+      range("grain", "Paper", 0, 1, 0.05, 0.3),
+    ],
+  },
+  {
+    type: "art.crosshatch",
+    label: "Crosshatch",
+    modes: ["photo", "video"],
+    params: [
+      range("spacingPx", "Line spacing", 2, 24, 1, 5),
+      range("darkness", "Ink", 0, 1, 0.05, 1),
+    ],
+  },
+  {
+    type: "art.halftone",
+    label: "Halftone",
+    modes: ["photo", "video"],
+    params: [
+      range("cellPx", "Dot size", 2, 24, 1, 6),
+      range("angleDegrees", "Screen angle", 0, 90, 5, 45),
+    ],
+  },
+  {
+    type: "fx.text",
+    label: "Text",
+    modes: ["photo", "video"],
+    params: [
+      { name: "text", label: "Caption", kind: "text", def: "" },
+      range("fontSizeRatio", "Size", 0.02, 0.3, 0.005, 0.08),
+      { name: "colorHex", label: "Fill", kind: "color", def: "#ffffff" },
+      { name: "outlineHex", label: "Outline", kind: "color", def: "#000000" },
+      range("x", "Across", 0, 1, 0.01, 0.5),
+      range("y", "Down", 0, 1, 0.01, 0.85),
+    ],
+  },
+  {
     type: "fx.remove_background",
     label: "Remove Background",
     modes: ["photo", "video"],
@@ -358,8 +440,13 @@ const FRAME_RATE = { numerator: 30, denominator: 1 };
 const session = new EditorSession();
 /** GIF is a third output mode, not a third editor: it shares the timeline and
  * the effect stack with video, and differs only in how frames leave the app. */
-type EditorMode = "video" | "photo" | "gif";
-const MODE_ORDER: readonly EditorMode[] = ["photo", "video", "gif"];
+type EditorMode = "video" | "photo" | "animation" | "gif";
+const MODE_ORDER: readonly EditorMode[] = [
+  "photo",
+  "video",
+  "animation",
+  "gif",
+];
 /** Wheel geometry and gesture thresholds — see the .mode-wheel CSS block. */
 const MODE_WHEEL_STEP_DEG = 60;
 const MODE_WHEEL_SCROLL_PX = 40;
@@ -534,6 +621,7 @@ const playBtn = $<HTMLButtonElement>("btn-play");
 const fileInput = $<HTMLInputElement>("file-input");
 const paletteEl = $<HTMLDivElement>("effects-palette");
 const looksRow = $<HTMLDivElement>("looks-row");
+const vectorShapesEl = $<HTMLDivElement>("vector-shapes");
 
 // ==========================================================================
 // Helpers
@@ -741,6 +829,7 @@ async function importFile(file: File): Promise<void> {
     if (el instanceof HTMLVideoElement) {
       width = el.videoWidth || width;
       height = el.videoHeight || height;
+      attachOffscreen(el);
     }
     mediaCache.set(url, el as HTMLVideoElement);
   }
@@ -786,6 +875,65 @@ async function importFiles(files: FileList | File[]): Promise<void> {
       true,
     );
   }
+}
+
+/** Add a persistent generated SVG as a normal timeline clip. It deliberately
+ * enters through asset.register + timeline.add_clip, so the cartoon uses the
+ * same selection, keyframe, transition, preview and export paths as media. */
+/** Fill chosen in the Cartoon Clips panel, or null to keep each preset's own
+ * colour. Null rather than a default hex so an untouched picker does not
+ * quietly flatten a gold star and a white speech bubble to the same swatch —
+ * the shape presets carry legibility choices, not just decoration. */
+let vectorFillOverride: string | null = null;
+
+async function addVectorShape(preset: VectorShapePreset): Promise<void> {
+  const source = createVectorShapeSource({
+    kind: preset.id,
+    fillHex: vectorFillOverride ?? preset.fillHex,
+    strokeHex: preset.strokeHex,
+    width: 1024,
+    height: 1024,
+  });
+  const image = new Image();
+  image.src = source.dataUri;
+  const decoded = await image
+    .decode()
+    .then(() => true)
+    .catch(() => false);
+  if (!decoded) {
+    toast(`Could not create the ${preset.label} cartoon clip.`, true);
+    return;
+  }
+
+  const bytes = new TextEncoder().encode(source.svg);
+  const checksum = await sha256Hex(bytes.slice().buffer);
+  const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  const durationUs = "5000000";
+  assetNames.set(assetId, `${preset.label} cartoon`);
+  mediaCache.set(source.dataUri, image);
+
+  const registered = commit(
+    buildRegisterAsset(nextCtx(), {
+      asset: {
+        id: assetId,
+        projectId: PROJECT_ID,
+        kind: "generated",
+        originalUri: source.dataUri,
+        checksum,
+        metadata: {
+          fileSizeBytes: String(source.byteLength),
+          durationUs,
+          width: 1024,
+          height: 1024,
+          frameRate: FRAME_RATE,
+        },
+        createdAt: new Date().toISOString(),
+      },
+    }),
+  );
+  if (!registered) return;
+  addAssetToTimeline(assetId, "generated", durationUs);
+  toast(`${preset.label} cartoon added — animate it in the Inspector`);
 }
 
 function addAssetToTimeline(
@@ -1020,9 +1168,36 @@ function drawLayer(
   const bgFx = clip.effects.find(
     (e) => e.enabled && e.type === "fx.remove_background",
   );
-  const drawable: CanvasImageSource = bgFx
+  let drawable: CanvasImageSource = bgFx
     ? removeBackground(media, mw, mh, bgFx)
     : media;
+
+  // Painterly passes are whole-image pixel work — Kuwahara alone is O(r^2)
+  // per pixel — and drawLayer runs once per exported frame. The result depends
+  // only on the media and the parameters, never on the playhead, so it is
+  // computed once per (asset, effect) and reused.
+  const artFx = clip.effects.find(
+    (e) =>
+      e.enabled &&
+      e.type.startsWith("art."),
+  );
+  if (artFx) {
+    drawable = stylize(asset.originalUri, drawable, mw, mh, artFx);
+  }
+
+  // Portrait blur needs the subject mask, which costs a U²-Net inference —
+  // far too slow per frame. The mask is cached per asset and requested once;
+  // until it lands the clip draws unblurred rather than blurring the subject
+  // along with everything else, which is what the old implementation did.
+  const portraitFx = clip.effects.find(
+    (e) => e.enabled && e.type === "photo.portrait_blur",
+  );
+  if (portraitFx) {
+    const mask = portraitMaskFor(asset.originalUri, drawable, mw, mh);
+    if (mask) {
+      drawable = compositePortraitBlur(drawable, mw, mh, mask, portraitFx);
+    }
+  }
 
   // Transitions are a timed opacity ramp on one end of the clip. What the ramp
   // reads as is decided by whatever is underneath: nothing -> a fade against
@@ -1185,8 +1360,68 @@ function drawOverlays(
       ctx.strokeStyle = getParamString(fx, "borderColorHex", "#ffffff");
       ctx.lineWidth = w;
       ctx.strokeRect(dx + w / 2, dy + w / 2, dw - w, dh - w);
+    } else if (fx.type === "fx.text") {
+      drawTextOverlay(ctx, fx, dx, dy, dw, dh, inheritedAlpha);
     }
   }
+}
+
+/**
+ * Burn a caption into the frame.
+ *
+ * Every dimension is derived from the drawn rect rather than fixed in pixels:
+ * the font size is a ratio of height and the position is normalized, so the
+ * caption lands in the same place at preview resolution and at export
+ * resolution. That is the same convention transform.position_x/y uses, and it
+ * is what keeps preview, GIF and MP4 agreeing.
+ */
+function drawTextOverlay(
+  ctx: CanvasRenderingContext2D,
+  fx: EffectInstance,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+  inheritedAlpha: number,
+): void {
+  const text = getParamString(fx, "text", "");
+  if (text.trim() === "") return;
+
+  const fontSize = Math.max(1, getParamNumber(fx, "fontSizeRatio", 0.08) * dh);
+  const outlineWidth = Math.max(1, fontSize * 0.12);
+
+  ctx.save();
+  ctx.globalAlpha = inheritedAlpha;
+  ctx.font = `700 ${fontSize}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+
+  // Wrap inside 90% of the frame so descenders and the outline never touch the
+  // edge. Measurement comes from this very context, so the layout matches the
+  // font that will actually be drawn.
+  const lines = layoutTextLines(text, dw * 0.9, (line) =>
+    ctx.measureText(line).width,
+  );
+  const lineHeight = fontSize * 1.2;
+  const blockHeight = lineHeight * lines.length;
+  const centreX = dx + getParamNumber(fx, "x", 0.5) * dw;
+  // y positions the block's centre, so 0.5 is genuinely centred whatever the
+  // line count.
+  const startY =
+    dy + getParamNumber(fx, "y", 0.85) * dh - blockHeight / 2 + lineHeight / 2;
+
+  ctx.strokeStyle = getParamString(fx, "outlineHex", "#000000");
+  ctx.lineWidth = outlineWidth;
+  ctx.fillStyle = getParamString(fx, "colorHex", "#ffffff");
+  lines.forEach((line, index) => {
+    const y = startY + index * lineHeight;
+    // Outline first, fill over it: the reverse leaves the stroke eating into
+    // the glyph and thinning the text.
+    if (outlineWidth > 0) ctx.strokeText(line, centreX, y);
+    ctx.fillText(line, centreX, y);
+  });
+  ctx.restore();
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -1214,6 +1449,173 @@ function cornerKey(
 
 /** Color-key background removal: pixels close to the key color become
  * transparent, with a soft edge. Deterministic; no ML model. */
+/**
+ * Subject masks for portrait blur, one per asset.
+ *
+ * Segmentation is a U²-Net inference — hundreds of milliseconds — so it cannot
+ * run inside drawLayer, which repaints on every seek and once per exported
+ * frame. The mask depends only on the source media, not on the playhead or the
+ * effect's parameters, so one result serves every frame of a still clip.
+ *
+ * A null entry means "asked for, still running": it stops a repainting preview
+ * from queueing an inference per frame.
+ */
+const portraitMaskCache = new Map<string, Mask | null>();
+
+function portraitMaskFor(
+  assetUri: string,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+): Mask | undefined {
+  const cached = portraitMaskCache.get(assetUri);
+  if (cached !== undefined) return cached ?? undefined;
+
+  portraitMaskCache.set(assetUri, null);
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const octx = off.getContext("2d", { willReadFrequently: true })!;
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
+
+  void segmentForeground({ width, height, data: image.data }, U2NETP_MODEL)
+    .then((mask) => {
+      portraitMaskCache.set(assetUri, mask);
+      drawPreview();
+      toast("Portrait subject detected — background blurred.");
+    })
+    .catch(() => {
+      // Leave the entry null so it is not retried on every repaint; the clip
+      // keeps drawing sharp rather than blurring the subject too.
+      toast("Could not detect a subject for portrait blur.", true);
+    });
+  return undefined;
+}
+
+/** Blurred background composited under the sharp, masked subject. */
+function compositePortraitBlur(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  mask: Mask,
+  fx: EffectInstance,
+): HTMLCanvasElement {
+  const radius = getParamNumber(fx, "blurRadiusPx", 15);
+  const bokeh = getParamNumber(fx, "bokehStrength", 0.4);
+  const subjectScale = getParamNumber(fx, "subjectScale", 1);
+
+  // Background: the whole frame blurred, with highlights bloomed so the result
+  // reads as defocus rather than a smudge.
+  const bg = document.createElement("canvas");
+  bg.width = width;
+  bg.height = height;
+  const bgCtx = bg.getContext("2d", { willReadFrequently: true })!;
+  bgCtx.filter = radius > 0 ? `blur(${radius}px)` : "none";
+  bgCtx.drawImage(source, 0, 0, width, height);
+  bgCtx.filter = "none";
+  if (bokeh > 0) {
+    const pixels = bgCtx.getImageData(0, 0, width, height);
+    bloomHighlights(pixels.data, bokeh);
+    bgCtx.putImageData(pixels, 0, 0);
+  }
+
+  // Subject: the sharp frame, keyed to the (optionally biased) mask. Feathering
+  // the alpha keeps the cut-out from looking like a sticker.
+  const biased = featherMask(biasSubjectMask(mask, subjectScale), 2);
+  const fg = document.createElement("canvas");
+  fg.width = width;
+  fg.height = height;
+  const fgCtx = fg.getContext("2d", { willReadFrequently: true })!;
+  fgCtx.drawImage(source, 0, 0, width, height);
+  const subject = fgCtx.getImageData(0, 0, width, height);
+  for (let i = 0, p = 0; i < subject.data.length; i += 4, p++) {
+    subject.data[i + 3] = Math.min(subject.data[i + 3]!, biased.data[p]!);
+  }
+  fgCtx.putImageData(subject, 0, 0);
+
+  bgCtx.drawImage(fg, 0, 0);
+  return bg;
+}
+
+/**
+ * Cached painterly renders, keyed by asset and by the exact parameters used.
+ *
+ * Including the parameters in the key is what makes the cache correct rather
+ * than merely fast: dragging a slider has to re-render, and a stale entry
+ * would silently show the previous setting.
+ */
+const artCache = new Map<string, HTMLCanvasElement>();
+
+function stylize(
+  assetUri: string,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  fx: EffectInstance,
+): CanvasImageSource {
+  const key = `${assetUri}|${fx.type}|${JSON.stringify(fx.params)}|${width}x${height}`;
+  const cached = artCache.get(key);
+  if (cached) return cached;
+
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const octx = off.getContext("2d", { willReadFrequently: true })!;
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
+  const raster = { width, height, data: image.data };
+
+  let result;
+  if (fx.type === "art.pencil_sketch") {
+    result = pencilSketch(
+      raster,
+      getParamNumber(fx, "strength", 1),
+      getParamNumber(fx, "grain", 0.25),
+    );
+  } else if (fx.type === "art.oil_painting") {
+    result = oilPainting(raster, getParamNumber(fx, "radiusPx", 4));
+  } else if (fx.type === "art.watercolor") {
+    result = watercolor(
+      raster,
+      getParamNumber(fx, "poolRadiusPx", 3),
+      getParamNumber(fx, "edgeStrength", 0.7),
+      getParamNumber(fx, "grain", 0.3),
+    );
+  } else if (fx.type === "art.crosshatch") {
+    result = crosshatch(
+      raster,
+      getParamNumber(fx, "spacingPx", 5),
+      getParamNumber(fx, "darkness", 1),
+    );
+  } else if (fx.type === "art.halftone") {
+    result = halftone(
+      raster,
+      getParamNumber(fx, "cellPx", 6),
+      getParamNumber(fx, "angleDegrees", 45),
+    );
+  } else {
+    result = cartoonPosterize(
+      raster,
+      getParamNumber(fx, "levels", 5),
+      getParamNumber(fx, "edgeStrength", 0.8),
+    );
+  }
+  // Write back through the ImageData we already read, rather than building a
+  // new one: its buffer is already the right shape for this context.
+  image.data.set(result.data);
+  octx.putImageData(image, 0, 0);
+
+  // Unbounded growth would be a leak across a long session; the cache exists
+  // for repeated frames of one export, not for the whole project history.
+  if (artCache.size > 12) {
+    const oldest = artCache.keys().next().value;
+    if (oldest !== undefined) artCache.delete(oldest);
+  }
+  artCache.set(key, off);
+  return off;
+}
+
 function removeBackground(
   media: CanvasImageSource,
   mw: number,
@@ -2166,6 +2568,24 @@ function paramControl(
     wrap.append(label, input);
     return wrap;
   }
+  if (p.kind === "text") {
+    const wrap = document.createElement("div");
+    wrap.className = "control control-text";
+    const label = document.createElement("label");
+    const inputId = `fx-text-${fx.id}`;
+    label.htmlFor = inputId;
+    label.textContent = p.label;
+    const input = document.createElement("textarea");
+    input.id = inputId;
+    input.rows = 2;
+    input.value = getParamString(fx, p.name, String(p.def));
+    input.placeholder = "Type a caption…";
+    // Commit on change, not on input: every keystroke would be its own
+    // command, burying the operation log and making one undo per character.
+    input.addEventListener("change", () => update(input.value));
+    wrap.append(label, input);
+    return wrap;
+  }
   return sliderControl(
     p.label,
     p.min ?? 0,
@@ -2354,6 +2774,59 @@ function renderLooks(): void {
   }
 }
 
+function renderVectorShapes(): void {
+  vectorShapesEl.innerHTML = "";
+
+  const fillRow = document.createElement("div");
+  fillRow.className = "vector-fill-row";
+  const fillLabel = document.createElement("label");
+  fillLabel.htmlFor = "vector-fill";
+  fillLabel.textContent = "Fill";
+  const fill = document.createElement("input");
+  fill.type = "color";
+  fill.id = "vector-fill";
+  fill.value = vectorFillOverride ?? VECTOR_SHAPE_PRESETS[0]!.fillHex;
+  fill.title = "Colour for the next cartoon clip";
+  fill.addEventListener("input", () => {
+    vectorFillOverride = fill.value;
+    renderVectorShapes();
+  });
+  fillRow.append(fillLabel, fill);
+  if (vectorFillOverride !== null) {
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "mini";
+    reset.textContent = "Preset colours";
+    reset.title = "Go back to each shape's own colour";
+    reset.addEventListener("click", () => {
+      vectorFillOverride = null;
+      renderVectorShapes();
+    });
+    fillRow.appendChild(reset);
+  }
+  vectorShapesEl.appendChild(fillRow);
+
+  for (const preset of VECTOR_SHAPE_PRESETS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "vector-shape-chip";
+    button.title = `Add an animatable ${preset.label} cartoon clip`;
+    button.setAttribute("aria-label", button.title);
+    const symbol = document.createElement("span");
+    symbol.className = "vector-shape-symbol";
+    symbol.textContent = preset.symbol;
+    symbol.style.setProperty(
+      "--shape-fill",
+      vectorFillOverride ?? preset.fillHex,
+    );
+    const label = document.createElement("span");
+    label.textContent = preset.label;
+    button.append(symbol, label);
+    button.addEventListener("click", () => void addVectorShape(preset));
+    vectorShapesEl.appendChild(button);
+  }
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
   mediaListEl.classList.toggle("grid", galleryGrid);
@@ -2368,7 +2841,11 @@ function renderMedia(): void {
     });
     const thumb = document.createElement("div");
     thumb.className = "media-thumb";
-    if (asset.kind === "image" || asset.kind === "video") {
+    if (
+      asset.kind === "image" ||
+      asset.kind === "video" ||
+      asset.kind === "generated"
+    ) {
       thumb.style.backgroundImage = `url("${asset.originalUri}")`;
     } else {
       thumb.classList.add("audio");
@@ -2545,6 +3022,7 @@ function updateUI(): void {
   versionBadge.textContent = `v${session.getVersion()}`;
   syncPlaybackDuration();
   renderMedia();
+  renderVectorShapes();
   renderEffectsPalette();
   renderLooks();
   renderHistory();
@@ -2557,13 +3035,18 @@ function updateUI(): void {
 
 /** Effects are declared for "video" or "photo"; GIF is fed by the same
  * timeline as video, so it offers the same effect set. */
+/** Which of the two effect sets a mode uses. Animation clips are generated
+ * stills rather than footage, so they take the photo set — the same one that
+ * carries Text, Border and Tint, which is what a caption or a cartoon wants. */
 function effectMode(): "video" | "photo" {
-  return mode === "photo" ? "photo" : "video";
+  return mode === "photo" || mode === "animation" ? "photo" : "video";
 }
 
 const MODE_EMPTY_HINT: Record<EditorMode, string> = {
   photo: "Import a photo to start editing.",
   video: "Import media, then add it to the timeline to preview.",
+  animation:
+    "Add a cartoon clip below, then animate it with keyframes or Auto Motion.",
   gif: "Import a video or photos, add them to the timeline, then export a GIF.",
 };
 
@@ -2595,6 +3078,10 @@ function setMode(next: EditorMode): void {
   // (play/seek/timecode) only make sense once there's a video to play through.
   // GIF is built from the timeline, so it keeps both.
   $("app").classList.toggle("mode-photo", mode === "photo");
+  // Animation builds motion out of generated clips, so the raster (pixel)
+  // tools are noise there — but the timeline and transport are essential,
+  // which is why it does not share photo mode's chrome.
+  $("app").classList.toggle("mode-animation", mode === "animation");
   // Mode-appropriate empty-state guidance (the timeline is hidden in photo
   // mode, so "add it to the timeline" would be confusing there).
   stageEmpty.textContent = MODE_EMPTY_HINT[mode];
@@ -2610,7 +3097,7 @@ function setMode(next: EditorMode): void {
 }
 
 /** Steps the wheel by `delta` positions, clamped at both ends (the drum is a
- * three-item list, not an endless loop — wrapping from GIF back to Photo would
+ * finite list, not an endless loop — wrapping from GIF back to Photo would
  * read as the wheel jumping backwards). */
 function stepMode(delta: number): void {
   const next = MODE_ORDER[
@@ -3046,12 +3533,105 @@ async function quickAiRemoveBackground(clipId: string): Promise<void> {
 /** Wait until the video element has actually seeked to `targetSeconds` before
  * reading pixels — `currentTime` assignment is async, so capturing
  * immediately could grab the previous frame. */
-function seekVideoFrame(video: HTMLVideoElement, targetSeconds: number): Promise<void> {
-  if (Math.abs(video.currentTime - targetSeconds) < 0.02) return Promise.resolve();
+/**
+ * Put a decode-only video element in the document, invisibly.
+ *
+ * A detached `<video>` is never composited, and a browser does not present
+ * frames for something it is not compositing. Everything that reports a seek
+ * as finished — `seeked`, `currentTime`, `requestVideoFrameCallback` — then
+ * describes the seek rather than the picture, and `drawImage` keeps copying
+ * whichever frame was last presented. Exports read the element exactly once,
+ * so they get that stale frame with no repaint to correct it.
+ *
+ * `display: none` and `visibility: hidden` suppress compositing just as being
+ * detached does, so the element has to stay technically rendered: one pixel,
+ * fully transparent, out of the layout and ignoring input.
+ */
+function attachOffscreen(video: HTMLVideoElement): void {
+  video.playsInline = true;
+  Object.assign(video.style, {
+    position: "fixed",
+    left: "0",
+    top: "0",
+    width: "1px",
+    height: "1px",
+    opacity: "0",
+    pointerEvents: "none",
+    zIndex: "-1",
+  });
+  video.setAttribute("aria-hidden", "true");
+  document.body.appendChild(video);
+}
+
+/** Safety net for the frame wait. With the element composited this normally
+ * resolves within a frame or two; the cap only stops a browser that declines
+ * to present from hanging an export. */
+const FRAME_PRESENT_TIMEOUT_MS = 300;
+
+/**
+ * Seek `video` and resolve once the target frame can actually be drawn.
+ *
+ * The tempting checks are all wrong on their own. `currentTime` reports the
+ * *requested* position, so it reads as the target the instant a seek is issued
+ * — and drawLayer issues one on every preview repaint, so an export arriving
+ * moments later sees the right number over the wrong picture. `seeked` says
+ * the seek finished, not that the frame was presented. Measured mid-export:
+ * `currentTime` 4, `seeking` true, `readyState` 1 — no frame data at all,
+ * while the old early-return returned in 0ms and drawImage copied the frame
+ * from before the seek.
+ *
+ * `requestVideoFrameCallback` reports the frame that was actually presented,
+ * and its `mediaTime` says which one, so that is what this waits for.
+ */
+function seekVideoFrame(
+  video: HTMLVideoElement,
+  targetSeconds: number,
+): Promise<void> {
+  const atTarget = Math.abs(video.currentTime - targetSeconds) < 0.02;
+  // Nothing pending and a decoded frame already up: it is on screen now.
+  if (
+    atTarget &&
+    !video.seeking &&
+    video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  ) {
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const awaitPresentedFrame = (): void => {
+      if (typeof video.requestVideoFrameCallback !== "function") {
+        finish();
+        return;
+      }
+      const onFrame = (_now: number, metadata: { mediaTime: number }): void => {
+        if (settled) return;
+        // Frames already in flight can arrive first; keep waiting for the one
+        // whose own timestamp is the frame that was asked for.
+        if (Math.abs(metadata.mediaTime - targetSeconds) < 0.05) {
+          finish();
+          return;
+        }
+        video.requestVideoFrameCallback(onFrame);
+      };
+      video.requestVideoFrameCallback(onFrame);
+      setTimeout(finish, FRAME_PRESENT_TIMEOUT_MS);
+    };
+
+    if (atTarget) {
+      // A seek to this same time is already in flight — started by drawLayer's
+      // fire-and-forget preview seek. Re-assigning currentTime here would be a
+      // no-op that never fires `seeked`, so just wait for the picture.
+      awaitPresentedFrame();
+      return;
+    }
     const onSeeked = (): void => {
       video.removeEventListener("seeked", onSeeked);
-      resolve();
+      awaitPresentedFrame();
     };
     video.addEventListener("seeked", onSeeked);
     video.currentTime = targetSeconds;
@@ -4234,8 +4814,14 @@ function downloadBlob(blob: Blob, filename: string): void {
 
 /** Renders the current visual layer(s) at full native resolution — same
  * effects as the live preview, baked in — onto a fresh offscreen canvas.
- * Returns null if there's nothing visible to export. */
-function renderExportFrame(): HTMLCanvasElement | null {
+ * Returns null if there's nothing visible to export.
+ *
+ * Async because a video layer has to be seeked and decoded before it can be
+ * drawn. drawLayer's own seek is fire-and-forget — it schedules a redraw for
+ * the preview, which repaints continuously — and it is skipped entirely while
+ * the transport is playing. Neither is any use to a one-shot export, so this
+ * awaits the frame the way the GIF and MP4 loops already do. */
+async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   const seq = activeSequence();
   const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
   const visual = layers.filter((l) => {
@@ -4269,16 +4855,22 @@ function renderExportFrame(): HTMLCanvasElement | null {
   const octx = out.getContext("2d")!;
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
-    if (loc) {
-      drawLayer(
-        octx,
-        loc.clip,
-        layer.sourceTimeUs,
-        clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
-        out.width,
-        out.height,
-      );
+    if (!loc) continue;
+    const layerAsset = findAsset(loc.clip.assetId);
+    const layerMedia = layerAsset
+      ? mediaCache.get(layerAsset.originalUri)
+      : undefined;
+    if (layerMedia instanceof HTMLVideoElement) {
+      await seekVideoFrame(layerMedia, Number(layer.sourceTimeUs) / 1_000_000);
     }
+    drawLayer(
+      octx,
+      loc.clip,
+      layer.sourceTimeUs,
+      clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
+      out.width,
+      out.height,
+    );
   }
   return out;
 }
@@ -4286,8 +4878,15 @@ function renderExportFrame(): HTMLCanvasElement | null {
 /** Real, working image export: renders the current frame (effects baked in)
  * at full native resolution and downloads it as a PNG. No plan, no fake job —
  * a real file. */
-function exportPhotoImage(): void {
-  const canvasEl = renderExportFrame();
+async function exportPhotoImage(): Promise<void> {
+  // Pause first: a still is "the frame at the playhead", and letting the
+  // transport keep advancing during the seek means exporting a frame the
+  // playhead has already left.
+  if (playback.playing) {
+    playback = pause(playback);
+    syncTransport();
+  }
+  const canvasEl = await renderExportFrame();
   if (!canvasEl) {
     toast("Nothing to export.", true);
     return;
@@ -4433,6 +5032,15 @@ async function runVideoExport(
 ): Promise<VideoExportResult> {
   const project = session.getProject();
   if (!project) return { status: "empty" };
+
+  // The preset schema mirrors the Rust engine and accepts the full codec
+  // matrix; this path is WebCodecs into an MP4 muxer with H.264 hardcoded.
+  // Without this check an unsupported preset was accepted and then encoded as
+  // H.264/MP4 anyway — a wrong file rather than an error.
+  const unsupported = browserPresetUnsupportedReason(preset);
+  if (unsupported !== null) {
+    return { status: "failed", message: unsupported };
+  }
 
   const result = planExport(project, SEQUENCE_ID, preset);
   if (!result.ok) {
@@ -4920,7 +5528,7 @@ function bindGifPanel(): void {
 
 function doExport(): void {
   if (mode === "photo") {
-    exportPhotoImage();
+    void exportPhotoImage();
     return;
   }
   if (mode === "gif") {

@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   addClipPayloadSchema,
   addEffectPayloadSchema,
+  addKeyframePayloadSchema,
   addTrackPayloadSchema,
   assetRegisterPayloadSchema,
   createSequencePayloadSchema,
@@ -9,12 +10,16 @@ import {
   moveClipPayloadSchema,
   projectCreatePayloadSchema,
   removeEffectPayloadSchema,
+  removeKeyframePayloadSchema,
   reorderEffectsPayloadSchema,
   setClipAudioGainPayloadSchema,
   setClipAudioPanPayloadSchema,
+  setClipTransitionPayloadSchema,
   trimClipPayloadSchema,
+  updateClipAnimationsPayloadSchema,
   updateClipEffectsPayloadSchema,
   updateEffectParamsPayloadSchema,
+  updateKeyframePayloadSchema,
 } from "@director/command-schema";
 import type { z } from "zod";
 
@@ -163,7 +168,74 @@ const COMMAND_TOOLS: CommandTool[] = [
     description: "Set a clip's stereo pan, -1 (left) to 1 (right).",
     schema: setClipAudioPanPayloadSchema,
   },
+  {
+    name: "add_keyframe",
+    commandType: "timeline.add_keyframe",
+    title: "Add an animation keyframe",
+    description:
+      "Add a keyframe to a clip's animation track, creating the track if the " +
+      "property has none yet. Times are clip-local microseconds, not timeline " +
+      "time, and must fall within the clip's duration.",
+    schema: addKeyframePayloadSchema,
+  },
+  {
+    name: "update_keyframe",
+    commandType: "timeline.update_keyframe",
+    title: "Update an animation keyframe",
+    description:
+      "Change an existing keyframe's time, value or easing. A keyframe's " +
+      "easing governs the segment leaving it.",
+    schema: updateKeyframePayloadSchema,
+  },
+  {
+    name: "remove_keyframe",
+    commandType: "timeline.remove_keyframe",
+    title: "Remove an animation keyframe",
+    description:
+      "Delete one keyframe. Removing the last keyframe of a track removes the " +
+      "track with it.",
+    schema: removeKeyframePayloadSchema,
+  },
+  {
+    name: "update_clip_animations",
+    commandType: "timeline.update_clip_animations",
+    title: "Replace a clip's animation",
+    description:
+      "Replace every animation track on a clip in one command — how the Auto " +
+      "Motion presets are applied, and how one undo removes a whole preset. " +
+      "An empty array clears the clip's animation.",
+    schema: updateClipAnimationsPayloadSchema,
+  },
+  {
+    name: "set_clip_transition",
+    commandType: "timeline.set_clip_transition",
+    title: "Set or clear a clip transition",
+    description:
+      "Attach a transition to one end of a clip, or pass null to remove it. " +
+      "A transition is a timed ramp: `cross` fades, `slide` moves the clip " +
+      "in from a direction, and `dip` ramps against its own colour. " +
+      "transitionIn + transitionOut cannot exceed the clip's duration.",
+    schema: setClipTransitionPayloadSchema,
+  },
 ];
+
+/**
+ * The command types this module turns into tools.
+ *
+ * Exported so a test can assert it against `PUBLIC_COMMAND_TYPES`. Each tool's
+ * *input schema* is the command's payload schema, so a command that gains a
+ * field gains it here automatically — but a wholly new command still needs an
+ * entry above, and nothing else notices when one is forgotten. Animation and
+ * transition editing shipped for a week with no tools for exactly that reason.
+ */
+export const EDIT_TOOL_COMMAND_TYPES: readonly string[] = COMMAND_TOOLS.map(
+  (tool) => tool.commandType,
+);
+
+/** Tool names, for the same coverage check. */
+export const EDIT_TOOL_NAMES: readonly string[] = COMMAND_TOOLS.map(
+  (tool) => tool.name,
+);
 
 export function registerEditTools(
   server: McpServer,

@@ -183,7 +183,10 @@ privileges of whoever started it.
 `create_sequence`, `add_track`, `add_clip`, `move_clip`, `trim_clip`,
 `delete_clip`, `add_effect`, `update_effect_params`, `remove_effect`,
 `reorder_effects`, `update_clip_effects`, `set_clip_audio_gain`,
-`set_clip_audio_pan`, plus `undo` and `redo`.
+`set_clip_audio_pan`, `add_keyframe`, `update_keyframe`, `remove_keyframe`,
+`update_clip_animations`, `set_clip_transition`, plus `undo` and `redo`.
+
+Keyframe times are **clip-local** microseconds, not timeline time.
 
 Each editing tool's input schema is the command's payload schema, imported from
 `@director/command-schema` rather than restated here. A command that gains a
