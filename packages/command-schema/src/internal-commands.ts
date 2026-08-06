@@ -11,6 +11,7 @@ import {
   microsecondStringSchema,
   nonNegativeSafeIntSchema,
   timelineClipSchema,
+  clipPlaybackRateSchema,
 } from "@director/project-schema";
 
 /**
@@ -197,6 +198,21 @@ export const setClipAudioGainInverseSchema = internal(
     .strict(),
 );
 
+/** Restores a clip's rate *and* the duration derived from it: recomputing the
+ * duration on undo would repeat the truncation the forward command did. */
+export const setClipSpeedInverseSchema = internal(
+  "internal.set_clip_speed",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      playbackRate: clipPlaybackRateSchema,
+      timelineDurationUs: microsecondStringSchema,
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 export const setClipAudioPanInverseSchema = internal(
   "internal.set_clip_audio_pan",
   z
@@ -254,6 +270,7 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   setClipEffectsInverseSchema,
   setClipAudioGainInverseSchema,
   setClipAudioPanInverseSchema,
+  setClipSpeedInverseSchema,
   setClipAnimationsInverseSchema,
   setClipTransitionInverseSchema,
 ]);

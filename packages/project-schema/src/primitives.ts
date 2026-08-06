@@ -84,8 +84,48 @@ export const unitPlaybackRateSchema = z
   })
   .strict();
 
+function greatestCommonDivisor(a: number, b: number): number {
+  let x = Math.abs(a);
+  let y = Math.abs(b);
+  while (y !== 0) {
+    const next = x % y;
+    x = y;
+    y = next;
+  }
+  return x;
+}
+
+/** Slowest and fastest supported clip speeds. Beyond 4x a decoder is asked for
+ * frames faster than it can supply them; below 0.25x every source frame is held
+ * so long that the result is a slideshow. */
+const MIN_PLAYBACK_RATE = 1 / 4;
+const MAX_PLAYBACK_RATE = 4;
+
+/**
+ * A clip's playback rate: source time consumed per unit of timeline time. 2/1
+ * plays twice as fast (and therefore occupies half the timeline), 1/2 half as
+ * fast.
+ *
+ * A rational rather than a float, because every source-time computation is
+ * `sourceIn + offset * numerator / denominator` in exact BigInt arithmetic; a
+ * float rate would make the same clip resolve to different source times on
+ * different machines. Rates must be in lowest terms so that one speed has
+ * exactly one spelling and canonical JSON stays unique — 2/2 is refused, not
+ * silently reduced.
+ */
+export const clipPlaybackRateSchema = rationalSchema
+  .refine(
+    (r) => greatestCommonDivisor(r.numerator, r.denominator) === 1,
+    "playback rate must be in lowest terms",
+  )
+  .refine((r) => {
+    const rate = r.numerator / r.denominator;
+    return rate >= MIN_PLAYBACK_RATE && rate <= MAX_PLAYBACK_RATE;
+  }, "playback rate must be between 1/4 and 4");
+
 export type Rational = z.infer<typeof rationalSchema>;
 export type UnitPlaybackRate = z.infer<typeof unitPlaybackRateSchema>;
+export type ClipPlaybackRate = z.infer<typeof clipPlaybackRateSchema>;
 
 const finiteNumberSchema = z
   .number()

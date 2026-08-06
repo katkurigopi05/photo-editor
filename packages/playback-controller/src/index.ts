@@ -32,3 +32,10 @@ export {
 } from "./animation.js";
 
 export { sampleClipTransition, type TransitionSample } from "./transition.js";
+
+export {
+  resolveAudioFades,
+  audioEnvelopeGain,
+  audioEnvelopeCurve,
+  type ResolvedAudioFades,
+} from "./audio-envelope.js";

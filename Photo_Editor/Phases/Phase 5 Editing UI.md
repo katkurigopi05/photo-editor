@@ -44,3 +44,13 @@ editor built for photos, full reuse, for touch-ups/rotoscoping/thumbnails.
 library — in the `apps/web` shell.
 
 See [[Phases/Roadmap]].
+
+## Timeline editing gestures (2026-08-05)
+
+Snapping (clip edges, playhead, origin; Alt to override), trim handles on both
+clip edges, ripple trim and ripple delete, and Shift/Cmd-click multi-select.
+The maths is pure in `packages/ui-kit/src/timeline-edit.ts`; the UI still
+dispatches only existing validated commands through the
+[[Concepts/Command Engine]]. A multi-command gesture is one Undo step, recorded
+in the session rather than by weakening the engine's one-command-one-inverse
+contract. See `docs/phases/timeline-editing.md`.

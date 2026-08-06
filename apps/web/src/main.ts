@@ -13,12 +13,17 @@ import {
   buildRemoveEffect,
   buildSetClipAudioGain,
   buildSetClipAudioPan,
+  buildSetClipSpeed,
   buildAddKeyframe,
   buildUpdateKeyframe,
   buildRemoveKeyframe,
   buildUpdateClipAnimations,
   buildSetClipTransition,
   resolveClipDrag,
+  collectSnapTargets,
+  snapClipStart,
+  planRippleDelete,
+  planRippleTrim,
   usToPixels,
   type CommandContext,
 } from "@director/ui-kit";
@@ -33,6 +38,9 @@ import {
   timeToFrameIndex,
   frameToStartTimeUs,
   sampleClipTransition,
+  resolveAudioFades,
+  audioEnvelopeGain,
+  audioEnvelopeCurve,
   type PlaybackState,
 } from "@director/playback-controller";
 import {
@@ -67,6 +75,7 @@ import { SKINS, currentSkin, applySkin } from "./skin.js";
 import {
   TRANSITION_DIRECTIONS,
   TRANSITION_KINDS,
+  isAudioEffectType,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
 import {
@@ -107,6 +116,10 @@ import {
   watercolor,
   crosshatch,
   halftone,
+  whiteBalance,
+  levels,
+  toneCurve,
+  vibrance,
   type Mask,
   type Point,
   type RasterImage,
@@ -163,7 +176,11 @@ import {
 // Effect catalogue — drives the inspector sliders and the preview filters.
 // Ranges/defaults mirror @director/project-schema effect params.
 // ==========================================================================
-type ParamKind = "range" | "toggle" | "color" | "text";
+/** `seconds` is a range slider over a duration the model stores as a canonical
+ * microsecond string — the slider is in seconds because that is what a fade is
+ * spoken about in, and the conversion happens once, here, rather than in every
+ * caller. */
+type ParamKind = "range" | "toggle" | "color" | "text" | "seconds";
 interface ParamSpec {
   name: string;
   label: string;
@@ -178,6 +195,9 @@ interface EffectSpec {
   label: string;
   modes: Array<"video" | "photo">;
   params: ParamSpec[];
+  /** Audio effects are applied by the mixer and belong to the Audio section of
+   * the inspector, not to the visual effects palette. */
+  surface?: "audio";
 }
 
 const range = (
@@ -188,6 +208,16 @@ const range = (
   step: number,
   def: number,
 ): ParamSpec => ({ name, label, kind: "range", min, max, step, def });
+
+/** A duration slider in seconds whose stored value is a microsecond string. */
+const seconds = (
+  name: string,
+  label: string,
+  min: number,
+  max: number,
+  step: number,
+  def: string,
+): ParamSpec => ({ name, label, kind: "seconds", min, max, step, def });
 
 const EFFECTS: EffectSpec[] = [
   {
@@ -213,6 +243,41 @@ const EFFECTS: EffectSpec[] = [
     label: "Exposure",
     modes: ["video", "photo"],
     params: [range("amount", "Stops", -2, 2, 0.1, 0)],
+  },
+  {
+    type: "color.white_balance",
+    label: "White Balance",
+    modes: ["video", "photo"],
+    params: [
+      range("temperature", "Warmth", -1, 1, 0.05, 0),
+      range("tint", "Tint", -1, 1, 0.05, 0),
+    ],
+  },
+  {
+    type: "color.levels",
+    label: "Levels",
+    modes: ["video", "photo"],
+    params: [
+      range("blackPoint", "Blacks", 0, 1, 0.01, 0),
+      range("whitePoint", "Whites", 0, 1, 0.01, 1),
+      range("gamma", "Gamma", 0.1, 4, 0.05, 1),
+    ],
+  },
+  {
+    type: "color.tone_curve",
+    label: "Tone Curve",
+    modes: ["video", "photo"],
+    params: [
+      range("shadows", "Shadows", -1, 1, 0.05, 0),
+      range("midtones", "Midtones", -1, 1, 0.05, 0),
+      range("highlights", "Highlights", -1, 1, 0.05, 0),
+    ],
+  },
+  {
+    type: "color.vibrance",
+    label: "Vibrance",
+    modes: ["video", "photo"],
+    params: [range("amount", "Amount", -1, 1, 0.05, 0)],
   },
   {
     type: "color.hue_rotate",
@@ -414,10 +479,51 @@ const EFFECTS: EffectSpec[] = [
       range("softness", "Softness", 0, 1, 0.02, 0.1),
     ],
   },
+  {
+    type: "audio.fade",
+    label: "Fade In / Out",
+    modes: ["video", "photo"],
+    surface: "audio",
+    params: [
+      seconds("fadeInUs", "Fade in (s)", 0, 10, 0.1, "0"),
+      seconds("fadeOutUs", "Fade out (s)", 0, 10, 0.1, "0"),
+    ],
+  },
+  {
+    type: "audio.eq",
+    label: "EQ",
+    modes: ["video", "photo"],
+    surface: "audio",
+    params: [
+      range("lowGainDb", "Low (dB)", -24, 24, 0.5, 0),
+      range("midGainDb", "Mid (dB)", -24, 24, 0.5, 0),
+      range("highGainDb", "High (dB)", -24, 24, 0.5, 0),
+    ],
+  },
+  {
+    type: "audio.compressor",
+    label: "Compressor",
+    modes: ["video", "photo"],
+    surface: "audio",
+    params: [
+      range("thresholdDb", "Threshold (dB)", -60, 0, 1, -24),
+      range("ratio", "Ratio", 1, 20, 0.5, 4),
+      range("attackMs", "Attack (ms)", 0, 1000, 1, 10),
+      range("releaseMs", "Release (ms)", 0, 1000, 5, 250),
+      range("makeupGainDb", "Makeup (dB)", -24, 24, 0.5, 0),
+    ],
+  },
 ];
 
 const effectSpec = (type: string): EffectSpec | undefined =>
   EFFECTS.find((e) => e.type === type);
+
+/** Visual effects, i.e. everything the palette and the renderer deal with. */
+const visualEffects = (): EffectSpec[] =>
+  EFFECTS.filter((spec) => spec.surface !== "audio");
+
+const audioEffects = (): EffectSpec[] =>
+  EFFECTS.filter((spec) => spec.surface === "audio");
 
 function defaultParams(
   spec: EffectSpec,
@@ -453,6 +559,9 @@ const MODE_WHEEL_SCROLL_PX = 40;
 const MODE_WHEEL_DRAG_PX = 22;
 let mode: EditorMode = "photo";
 let selectedClipId: string | null = null;
+/** Extra clips picked with Shift/Cmd-click. `selectedClipId` stays the clip the
+ * Inspector is editing; these are the others the next timeline action covers. */
+const selectedClipIds = new Set<string>();
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
 
@@ -528,10 +637,29 @@ const removedAssets = new Set<string>();
 // media element is routed once through gain→pan→destination so the timeline
 // is actually audible while playing, with each clip's gain/pan applied. --
 let audioCtx: AudioContext | null = null;
+/**
+ * One fixed chain per media element: EQ shelves and peak, then a compressor,
+ * then gain and pan.
+ *
+ * The nodes always exist and sit at neutral settings when the clip carries no
+ * audio effects. `createMediaElementSource` may only run once per element, so
+ * rebuilding the graph whenever an effect is added or removed is not an option
+ * — the alternative to a fixed chain is a graph that cannot be edited.
+ */
 interface AudioRoute {
+  low: BiquadFilterNode;
+  mid: BiquadFilterNode;
+  high: BiquadFilterNode;
+  compressor: DynamicsCompressorNode;
   gain: GainNode;
   pan: StereoPannerNode;
 }
+
+/** Band corners shared by live monitoring and the export mixdown. */
+const EQ_LOW_HZ = 250;
+const EQ_MID_HZ = 1000;
+const EQ_MID_Q = 0.8;
+const EQ_HIGH_HZ = 4000;
 const audioRoutes = new Map<HTMLMediaElement, AudioRoute>();
 
 // Cached normalized waveform peaks (0..1) per audio asset id, for the
@@ -1172,6 +1300,24 @@ function drawLayer(
     ? removeBackground(media, mw, mh, bgFx)
     : media;
 
+  // Identity of the pixels `drawable` currently holds, not just of the asset
+  // they came from. Every cache below keys off this: a stylized render of a
+  // keyed-out, graded frame is a different image from one of the raw media,
+  // and keying by asset alone would serve the stale one.
+  let sourceKey = asset.originalUri;
+  if (bgFx) sourceKey += `|bg:${JSON.stringify(bgFx.params)}`;
+
+  // Grading runs before stylization, which is the order a photographer works
+  // in: correct the exposure and colour of the photograph, then paint over the
+  // corrected result. Within the grade, the clip's own stack order decides.
+  const gradingFx = clip.effects.filter(
+    (e) => e.enabled && GRADING_TYPES.has(e.type),
+  );
+  if (gradingFx.length > 0) {
+    drawable = grade(sourceKey, drawable, mw, mh, gradingFx);
+    sourceKey += `|grade:${gradeSignature(gradingFx)}`;
+  }
+
   // Painterly passes are whole-image pixel work — Kuwahara alone is O(r^2)
   // per pixel — and drawLayer runs once per exported frame. The result depends
   // only on the media and the parameters, never on the playhead, so it is
@@ -1182,7 +1328,7 @@ function drawLayer(
       e.type.startsWith("art."),
   );
   if (artFx) {
-    drawable = stylize(asset.originalUri, drawable, mw, mh, artFx);
+    drawable = stylize(sourceKey, drawable, mw, mh, artFx);
   }
 
   // Portrait blur needs the subject mask, which costs a U²-Net inference —
@@ -1548,13 +1694,13 @@ function compositePortraitBlur(
 const artCache = new Map<string, HTMLCanvasElement>();
 
 function stylize(
-  assetUri: string,
+  sourceKey: string,
   source: CanvasImageSource,
   width: number,
   height: number,
   fx: EffectInstance,
 ): CanvasImageSource {
-  const key = `${assetUri}|${fx.type}|${JSON.stringify(fx.params)}|${width}x${height}`;
+  const key = `${sourceKey}|${fx.type}|${JSON.stringify(fx.params)}|${width}x${height}`;
   const cached = artCache.get(key);
   if (cached) return cached;
 
@@ -1613,6 +1759,98 @@ function stylize(
     if (oldest !== undefined) artCache.delete(oldest);
   }
   artCache.set(key, off);
+  return off;
+}
+
+/** The grading effects, in the order the renderer must apply them: the clip's
+ * own stack order, so re-ordering the stack in the inspector re-orders the
+ * grade rather than being silently ignored. */
+const GRADING_TYPES: ReadonlySet<string> = new Set([
+  "color.white_balance",
+  "color.levels",
+  "color.tone_curve",
+  "color.vibrance",
+]);
+
+/**
+ * Colour grading passes, cached like the painterly ones.
+ *
+ * These are per-pixel work over the whole frame and drawLayer runs once per
+ * exported frame, but the result depends only on the media and the parameters,
+ * never on the playhead — so one render serves every frame of a still clip and
+ * a slider drag re-renders because the parameters are part of the key.
+ */
+const gradeCache = new Map<string, HTMLCanvasElement>();
+
+/** Everything about a grade that changes its pixels: the ordered list of
+ * passes and their exact parameters. Shared by the grade cache and by the
+ * caches downstream of it, which see graded pixels rather than raw ones. */
+function gradeSignature(gradingFx: EffectInstance[]): string {
+  return gradingFx
+    .map((fx) => `${fx.type}:${JSON.stringify(fx.params)}`)
+    .join("|");
+}
+
+function gradeImage(image: RasterImage, fx: EffectInstance): RasterImage {
+  if (fx.type === "color.white_balance") {
+    return whiteBalance(
+      image,
+      getParamNumber(fx, "temperature", 0),
+      getParamNumber(fx, "tint", 0),
+    );
+  }
+  if (fx.type === "color.levels") {
+    return levels(
+      image,
+      getParamNumber(fx, "blackPoint", 0),
+      getParamNumber(fx, "whitePoint", 1),
+      getParamNumber(fx, "gamma", 1),
+    );
+  }
+  if (fx.type === "color.tone_curve") {
+    return toneCurve(
+      image,
+      getParamNumber(fx, "shadows", 0),
+      getParamNumber(fx, "midtones", 0),
+      getParamNumber(fx, "highlights", 0),
+    );
+  }
+  return vibrance(image, getParamNumber(fx, "amount", 0));
+}
+
+function grade(
+  sourceKey: string,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  gradingFx: EffectInstance[],
+): CanvasImageSource {
+  if (gradingFx.length === 0) return source;
+
+  const key = `${sourceKey}|${width}x${height}|${gradeSignature(gradingFx)}`;
+  const cached = gradeCache.get(key);
+  if (cached) return cached;
+
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const octx = off.getContext("2d", { willReadFrequently: true })!;
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
+
+  let raster: RasterImage = { width, height, data: image.data };
+  for (const fx of gradingFx) raster = gradeImage(raster, fx);
+
+  image.data.set(raster.data);
+  octx.putImageData(image, 0, 0);
+
+  // Bounded like artCache: the cache exists for the repeated frames of one
+  // export and one slider drag, not for a whole session's history.
+  if (gradeCache.size > 12) {
+    const oldest = gradeCache.keys().next().value;
+    if (oldest !== undefined) gradeCache.delete(oldest);
+  }
+  gradeCache.set(key, off);
   return off;
 }
 
@@ -1764,7 +2002,9 @@ function renderTimeline(): void {
     for (const clip of track.clips) {
       const el = document.createElement("div");
       el.className = `clip${track.kind === "audio" ? " audio" : ""}${
-        clip.id === selectedClipId ? " selected" : ""
+        clip.id === selectedClipId || selectedClipIds.has(clip.id)
+          ? " selected"
+          : ""
       }`;
       el.style.left = `${usToPixels(clip.timelineStartUs, zoom)}px`;
       const clipWidth = Math.max(24, usToPixels(clip.timelineDurationUs, zoom));
@@ -1835,6 +2075,20 @@ function renderTimeline(): void {
       });
       el.appendChild(remove);
 
+      // Trim handles: the outer few pixels of each edge drag the in/out point
+      // instead of moving the clip, which is how every NLE behaves.
+      for (const side of ["left", "right"] as const) {
+        const handle = document.createElement("div");
+        handle.className = `clip-trim clip-trim-${side}`;
+        handle.title = `Trim ${side === "left" ? "start" : "end"} (hold Shift to ripple)`;
+        handle.setAttribute("aria-label", `Trim ${clip.id} ${side}`);
+        handle.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          startClipTrim(e, clip, track, side);
+        });
+        el.appendChild(handle);
+      }
+
       el.addEventListener("pointerdown", (e) => startClipDrag(e, clip, track));
       lane.appendChild(el);
     }
@@ -1856,13 +2110,27 @@ function assetName(asset: MediaAsset): string {
   return `${asset.kind} clip`;
 }
 
-// Drag a clip horizontally to move it (dispatches timeline.move_clip).
+/** Snap tolerance in pixels, converted to time at the current zoom so the
+ * magnet feels the same whether the timeline is zoomed in or out. */
+const SNAP_TOLERANCE_PX = 8;
+
+function snapToleranceUs(): string {
+  return String(Math.round((SNAP_TOLERANCE_PX / zoom) * 1_000_000));
+}
+
+/** Drag a clip horizontally to move it (dispatches timeline.move_clip).
+ * The drop position snaps to clip edges, the playhead and the sequence start;
+ * hold Alt to place it exactly where the pointer is instead. */
 function startClipDrag(
   e: PointerEvent,
   clip: TimelineClip,
   track: Track,
 ): void {
   e.preventDefault();
+  if (e.shiftKey || e.metaKey || e.ctrlKey) {
+    toggleClipSelection(clip.id);
+    return;
+  }
   selectClip(clip.id);
   const startX = e.clientX;
   let moved = false;
@@ -1882,12 +2150,180 @@ function startClipDrag(
       deltaPixels: ev.clientX - startX,
       pixelsPerSecond: zoom,
     });
-    if (drag.commandType === "timeline.move_clip") {
-      commit(buildMoveClip(nextCtx(), drag.payload));
-    }
+    if (drag.commandType !== "timeline.move_clip") return;
+
+    const seq = activeSequence();
+    const snapped =
+      seq && !ev.altKey
+        ? snapClipStart(
+            drag.payload.timelineStartUs,
+            clip.timelineDurationUs,
+            collectSnapTargets(seq, [clip.id], playback.currentTimeUs),
+            snapToleranceUs(),
+          )
+        : { startUs: drag.payload.timelineStartUs, snappedTo: null };
+
+    commit(
+      buildMoveClip(nextCtx(), {
+        ...drag.payload,
+        timelineStartUs: snapped.startUs,
+      }),
+    );
   };
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
+}
+
+/**
+ * Drag a clip edge to trim it.
+ *
+ * Trimming the left edge changes the in-point, which shortens the clip from its
+ * head; the clip's timeline start is moved by the same amount in the same
+ * gesture so the remaining frames stay where they were on the timeline — two
+ * commands, one undo step.
+ *
+ * Holding Shift ripples: every later clip on the track shifts by the change in
+ * duration, so the cut after this one keeps its relationship to it.
+ */
+function startClipTrim(
+  e: PointerEvent,
+  clip: TimelineClip,
+  track: Track,
+  side: "left" | "right",
+): void {
+  e.preventDefault();
+  selectClip(clip.id);
+  const startX = e.clientX;
+  let moved = false;
+
+  const onMove = (ev: PointerEvent): void => {
+    if (Math.abs(ev.clientX - startX) > 3) moved = true;
+  };
+  const onUp = (ev: PointerEvent): void => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    if (!moved) return;
+
+    const drag = resolveClipDrag({
+      kind: side === "left" ? "trim-left" : "trim-right",
+      sequenceId: SEQUENCE_ID,
+      clip,
+      deltaPixels: ev.clientX - startX,
+      pixelsPerSecond: zoom,
+    });
+    if (drag.commandType !== "timeline.trim_clip") return;
+
+    const newDuration =
+      BigInt(drag.payload.sourceOutUs) - BigInt(drag.payload.sourceInUs);
+    const ripple = ev.shiftKey
+      ? planRippleTrim(track, clip.id, newDuration.toString())
+      : { clipId: clip.id, moves: [] };
+    const headShift =
+      side === "left"
+        ? BigInt(drag.payload.sourceInUs) - BigInt(clip.sourceInUs)
+        : 0n;
+
+    session.beginGesture();
+    if (commit(buildTrimClip(nextCtx(), drag.payload))) {
+      if (headShift !== 0n) {
+        const start = BigInt(clip.timelineStartUs) + headShift;
+        commit(
+          buildMoveClip(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            clipId: clip.id,
+            targetTrackId: track.id,
+            timelineStartUs: (start < 0n ? 0n : start).toString(),
+          }),
+        );
+      }
+      for (const move of ripple.moves) {
+        commit(
+          buildMoveClip(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            clipId: move.clipId,
+            targetTrackId: track.id,
+            timelineStartUs: move.timelineStartUs,
+          }),
+        );
+      }
+    }
+    session.endGesture();
+    updateUI();
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
+/** Add or remove a clip from the multi-selection (Shift/Cmd-click). */
+function toggleClipSelection(clipId: string): void {
+  if (selectedClipIds.has(clipId)) {
+    selectedClipIds.delete(clipId);
+  } else {
+    // The clip selected on its own is part of the selection being built.
+    if (selectedClipId && selectedClipId !== clipId) {
+      selectedClipIds.add(selectedClipId);
+    }
+    selectedClipIds.add(clipId);
+  }
+  selectedClipId = clipId;
+  updateUI();
+}
+
+/** Every clip the next timeline action applies to, in timeline order. */
+function selectionClipIds(): string[] {
+  const seq = activeSequence();
+  if (!seq) return selectedClipId ? [selectedClipId] : [];
+  const chosen = new Set(selectedClipIds);
+  if (selectedClipId) chosen.add(selectedClipId);
+  const ordered: string[] = [];
+  for (const track of seq.tracks) {
+    for (const clip of [...track.clips].sort(
+      (a, b) => Number(BigInt(a.timelineStartUs) - BigInt(b.timelineStartUs)),
+    )) {
+      if (chosen.has(clip.id)) ordered.push(clip.id);
+    }
+  }
+  return ordered;
+}
+
+/**
+ * Delete the selection, optionally closing the gaps behind it.
+ *
+ * A ripple delete is several commands — the delete plus a move per following
+ * clip — dispatched inside one gesture, so a single Undo puts the cut back.
+ */
+function deleteSelection(ripple: boolean): void {
+  const clipIds = selectionClipIds();
+  if (clipIds.length === 0) return;
+
+  session.beginGesture();
+  // Right to left: deleting an earlier clip first would move the later ones
+  // out from under the positions this plan was computed for.
+  for (const clipId of [...clipIds].reverse()) {
+    const loc = locateClip(clipId);
+    if (!loc) continue;
+    const plan = ripple
+      ? planRippleDelete(loc.track, clipId)
+      : { deleteClipId: clipId, moves: [] };
+    if (!commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId })))
+      continue;
+    for (const move of plan.moves) {
+      if (clipIds.includes(move.clipId)) continue; // about to be deleted too
+      commit(
+        buildMoveClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: move.clipId,
+          targetTrackId: loc.track.id,
+          timelineStartUs: move.timelineStartUs,
+        }),
+      );
+    }
+  }
+  session.endGesture();
+
+  selectedClipIds.clear();
+  selectedClipId = null;
+  updateUI();
 }
 
 // ==========================================================================
@@ -2063,6 +2499,107 @@ function animationPropertyControl(
   footer.append(count, easing);
   wrap.append(header, input, footer);
   return wrap;
+}
+
+/**
+ * The speeds a Speed control offers.
+ *
+ * Discrete presets rather than a free slider, because the rate is a *reduced*
+ * rational — a slider would have to invent a denominator for every position and
+ * most of them would be refused by the schema.
+ */
+const SPEED_PRESETS: ReadonlyArray<{
+  label: string;
+  rate: { numerator: number; denominator: number };
+}> = [
+  { label: "0.25×", rate: { numerator: 1, denominator: 4 } },
+  { label: "0.5×", rate: { numerator: 1, denominator: 2 } },
+  { label: "0.75×", rate: { numerator: 3, denominator: 4 } },
+  { label: "1×", rate: { numerator: 1, denominator: 1 } },
+  { label: "1.5×", rate: { numerator: 3, denominator: 2 } },
+  { label: "2×", rate: { numerator: 2, denominator: 1 } },
+  { label: "4×", rate: { numerator: 4, denominator: 1 } },
+];
+
+const rateKey = (rate: { numerator: number; denominator: number }): string =>
+  `${rate.numerator}/${rate.denominator}`;
+
+/**
+ * Retiming.
+ *
+ * Slowing a clip lengthens it in place, which the reducer refuses if the next
+ * clip is in the way — so the change is issued as one gesture: retime, then
+ * ripple the clips after it. Speeding up ripples too, closing the gap the
+ * shorter clip would otherwise leave.
+ */
+function speedSection(clip: TimelineClip): HTMLElement {
+  const speed = section("Speed");
+  const control = document.createElement("div");
+  control.className = "control";
+  const label = document.createElement("label");
+  label.textContent = "Clip speed";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Clip speed");
+  for (const preset of SPEED_PRESETS) {
+    const option = new Option(preset.label, rateKey(preset.rate));
+    option.selected = rateKey(preset.rate) === rateKey(clip.playbackRate);
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => {
+    const preset = SPEED_PRESETS.find((p) => rateKey(p.rate) === select.value);
+    if (preset) setClipSpeed(clip, preset.rate);
+  });
+  control.append(label, select);
+  speed.appendChild(control);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "Retiming keeps the same frames and spreads them over more or less " +
+    "timeline. Audio is resampled with the picture, so a slowed clip drops in " +
+    "pitch — there is no pitch-preserving stretch yet.";
+  speed.appendChild(note);
+  return speed;
+}
+
+function setClipSpeed(
+  clip: TimelineClip,
+  rate: { numerator: number; denominator: number },
+): void {
+  const loc = locateClip(clip.id);
+  if (!loc) return;
+  const sourceSpan = BigInt(clip.sourceOutUs) - BigInt(clip.sourceInUs);
+  const newDuration =
+    (sourceSpan * BigInt(rate.denominator)) / BigInt(rate.numerator);
+  const ripple = planRippleTrim(loc.track, clip.id, newDuration.toString());
+
+  session.beginGesture();
+  // Lengthening: the clips after it have to move out of the way first, or the
+  // retime is refused as an overlap.
+  const movesFirst = newDuration > BigInt(clip.timelineDurationUs);
+  const applyMoves = (): void => {
+    for (const move of ripple.moves) {
+      commit(
+        buildMoveClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: move.clipId,
+          targetTrackId: loc.track.id,
+          timelineStartUs: move.timelineStartUs,
+        }),
+      );
+    }
+  };
+  if (movesFirst) applyMoves();
+  const retimed = commit(
+    buildSetClipSpeed(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: clip.id,
+      playbackRate: rate,
+    }),
+  );
+  if (retimed && !movesFirst) applyMoves();
+  session.endGesture();
+  updateUI();
 }
 
 function animationSection(clip: TimelineClip): HTMLElement {
@@ -2430,50 +2967,21 @@ function renderInspector(): void {
     inspectorEl.appendChild(transitionSection(clip));
   }
 
-  // --- Effects ---
+  inspectorEl.appendChild(speedSection(clip));
+
+  // --- Effects (visual only; audio effects live in the Audio section) ---
   const fxSection = section("Effects");
-  for (const fx of clip.effects) {
-    const spec = effectSpec(fx.type);
-    const header = document.createElement("div");
-    header.className = "effect-row";
-    const name = document.createElement("span");
-    name.className = "fx-name";
-    name.textContent = spec?.label ?? fx.type;
-    const remove = document.createElement("button");
-    remove.className = "mini";
-    remove.textContent = "Remove";
-    remove.addEventListener("click", () =>
-      commit(
-        buildRemoveEffect(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
-          clipId: clip.id,
-          effectId: fx.id,
-        }),
-      ),
-    );
-    header.append(name, remove);
-    fxSection.appendChild(header);
-
-    if (spec) {
-      for (const p of spec.params) {
-        fxSection.appendChild(paramControl(clip.id, fx, spec, p));
-      }
-    }
-  }
-
-  const addWrap = document.createElement("div");
-  addWrap.className = "control";
-  const select = document.createElement("select");
-  const placeholder = new Option("＋ Add effect…", "");
-  select.appendChild(placeholder);
-  for (const spec of EFFECTS.filter((s) => s.modes.includes(effectMode()))) {
-    select.appendChild(new Option(spec.label, spec.type));
-  }
-  select.addEventListener("change", () => {
-    if (select.value) addEffectByType(select.value as EffectType);
-  });
-  addWrap.appendChild(select);
-  fxSection.appendChild(addWrap);
+  appendEffectRows(
+    fxSection,
+    clip,
+    clip.effects.filter((fx) => !isAudioEffectType(fx.type)),
+  );
+  fxSection.appendChild(
+    addEffectSelect(
+      "＋ Add effect…",
+      visualEffects().filter((s) => s.modes.includes(effectMode())),
+    ),
+  );
   inspectorEl.appendChild(fxSection);
 
   // --- Audio (only for clips that actually carry audio) ---
@@ -2513,7 +3021,73 @@ function renderInspector(): void {
         ),
     ),
   );
+  // Fades, EQ and the compressor are effects like any other — validated,
+  // undoable, reorderable — they just belong beside gain and pan rather than
+  // beside blur.
+  appendEffectRows(
+    audioSection,
+    clip,
+    clip.effects.filter((fx) => isAudioEffectType(fx.type)),
+  );
+  audioSection.appendChild(
+    addEffectSelect("＋ Add audio effect…", audioEffects()),
+  );
   inspectorEl.appendChild(audioSection);
+}
+
+/** One header + parameter block per effect, with a Remove button. */
+function appendEffectRows(
+  container: HTMLElement,
+  clip: TimelineClip,
+  effects: readonly EffectInstance[],
+): void {
+  for (const fx of effects) {
+    const spec = effectSpec(fx.type);
+    const header = document.createElement("div");
+    header.className = "effect-row";
+    const name = document.createElement("span");
+    name.className = "fx-name";
+    name.textContent = spec?.label ?? fx.type;
+    const remove = document.createElement("button");
+    remove.className = "mini";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () =>
+      commit(
+        buildRemoveEffect(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          effectId: fx.id,
+        }),
+      ),
+    );
+    header.append(name, remove);
+    container.appendChild(header);
+
+    if (spec) {
+      for (const p of spec.params) {
+        container.appendChild(paramControl(clip.id, fx, spec, p));
+      }
+    }
+  }
+}
+
+function addEffectSelect(
+  placeholderLabel: string,
+  specs: readonly EffectSpec[],
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "control";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", placeholderLabel.replace("＋ ", ""));
+  select.appendChild(new Option(placeholderLabel, ""));
+  for (const spec of specs) {
+    select.appendChild(new Option(spec.label, spec.type));
+  }
+  select.addEventListener("change", () => {
+    if (select.value) addEffectByType(select.value as EffectType);
+  });
+  wrap.appendChild(select);
+  return wrap;
 }
 
 function section(title: string): HTMLDivElement {
@@ -2586,6 +3160,20 @@ function paramControl(
     wrap.append(label, input);
     return wrap;
   }
+  if (p.kind === "seconds") {
+    // Slider in seconds, stored as canonical microseconds: rounded to whole
+    // microseconds so the value the command carries is exactly what the
+    // schema accepts, with no float residue.
+    const storedUs = getParamString(fx, p.name, String(p.def));
+    return sliderControl(
+      p.label,
+      p.min ?? 0,
+      p.max ?? 10,
+      p.step ?? 0.1,
+      Number(storedUs) / 1_000_000,
+      (value) => update(String(Math.round(value * 1_000_000))),
+    );
+  }
   return sliderControl(
     p.label,
     p.min ?? 0,
@@ -2614,6 +3202,9 @@ function sliderControl(
   lab.append(name, val);
   const input = document.createElement("input");
   input.type = "range";
+  // The visible text sits in a sibling span, so the slider itself would
+  // otherwise reach assistive tech (and a test runner) with no name at all.
+  input.setAttribute("aria-label", label);
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
@@ -2668,7 +3259,9 @@ function addEffectByType(type: EffectType): void {
 
 function renderEffectsPalette(): void {
   paletteEl.innerHTML = "";
-  for (const spec of EFFECTS.filter((s) => s.modes.includes(effectMode()))) {
+  for (const spec of visualEffects().filter((s) =>
+    s.modes.includes(effectMode()),
+  )) {
     const chip = document.createElement("button");
     chip.className = "fx-chip";
     chip.textContent = spec.label;
@@ -2937,14 +3530,74 @@ function audioRouteFor(el: HTMLMediaElement): AudioRoute {
   if (!route) {
     const ctx = audioCtx!;
     const source = ctx.createMediaElementSource(el);
-    const gain = ctx.createGain();
-    const pan = ctx.createStereoPanner();
-    source.connect(gain).connect(pan).connect(ctx.destination);
+    const chain = buildAudioChain(ctx);
+    source.connect(chain.low);
+    chain.pan.connect(ctx.destination);
     el.muted = false;
-    route = { gain, pan };
+    route = chain;
     audioRoutes.set(el, route);
   }
   return route;
+}
+
+/** The shared EQ → compressor → gain → pan chain, built neutral. Used for both
+ * live monitoring and the offline export mixdown, so a clip that was monitored
+ * one way cannot export another. */
+function buildAudioChain(ctx: BaseAudioContext): AudioRoute {
+  const low = ctx.createBiquadFilter();
+  low.type = "lowshelf";
+  low.frequency.value = EQ_LOW_HZ;
+  const mid = ctx.createBiquadFilter();
+  mid.type = "peaking";
+  mid.frequency.value = EQ_MID_HZ;
+  mid.Q.value = EQ_MID_Q;
+  const high = ctx.createBiquadFilter();
+  high.type = "highshelf";
+  high.frequency.value = EQ_HIGH_HZ;
+  const compressor = ctx.createDynamicsCompressor();
+  const gain = ctx.createGain();
+  const pan = ctx.createStereoPanner();
+
+  low.connect(mid).connect(high).connect(compressor).connect(gain).connect(pan);
+  applyAudioEffectsToChain({ low, mid, high, compressor, gain, pan }, []);
+  return { low, mid, high, compressor, gain, pan };
+}
+
+/** Point the chain's EQ and compressor at a clip's audio effect stack.
+ * Absent effects reset to neutral rather than keeping the previous clip's
+ * settings, which is what makes one cached chain safe to reuse. */
+function applyAudioEffectsToChain(
+  route: AudioRoute,
+  effects: readonly EffectInstance[],
+): void {
+  const eq = effects.find((fx) => fx.enabled && fx.type === "audio.eq");
+  route.low.gain.value = eq ? getParamNumber(eq, "lowGainDb", 0) : 0;
+  route.mid.gain.value = eq ? getParamNumber(eq, "midGainDb", 0) : 0;
+  route.high.gain.value = eq ? getParamNumber(eq, "highGainDb", 0) : 0;
+
+  const comp = effects.find(
+    (fx) => fx.enabled && fx.type === "audio.compressor",
+  );
+  // Ratio 1:1 with a 0 dB threshold is a compressor doing nothing, which is how
+  // the chain stays transparent for clips that never asked for one.
+  route.compressor.threshold.value = comp
+    ? getParamNumber(comp, "thresholdDb", -24)
+    : 0;
+  route.compressor.ratio.value = comp ? getParamNumber(comp, "ratio", 4) : 1;
+  route.compressor.attack.value = comp
+    ? getParamNumber(comp, "attackMs", 10) / 1000
+    : 0.003;
+  route.compressor.release.value = comp
+    ? getParamNumber(comp, "releaseMs", 250) / 1000
+    : 0.25;
+}
+
+/** Makeup gain in dB from a clip's compressor, 0 when there is none. */
+function makeupGainDb(effects: readonly EffectInstance[]): number {
+  const comp = effects.find(
+    (fx) => fx.enabled && fx.type === "audio.compressor",
+  );
+  return comp ? getParamNumber(comp, "makeupGainDb", 0) : 0;
 }
 
 /** Drive live media playback to match the transport: every audio/video clip
@@ -2968,8 +3621,26 @@ function syncAudioMonitors(): void {
     if (!loc) continue;
 
     const route = audioRouteFor(el);
-    route.gain.gain.value = dbToGain(loc.clip.audioGainDb);
+    const audioFx = loc.clip.effects.filter((fx) => isAudioEffectType(fx.type));
+    applyAudioEffectsToChain(route, audioFx);
+    // Fades — authored, or implied by an overlap with a neighbour on the same
+    // track — are sampled at the playhead. The export mixdown ramps the same
+    // envelope sample-accurately; both read `audioEnvelopeGain`, so a fade
+    // heard here is the fade that lands in the file.
+    const envelope = audioEnvelopeGain(
+      clipLocalTimeUs(playback.currentTimeUs, loc.clip.timelineStartUs),
+      loc.clip.timelineDurationUs,
+      resolveAudioFades(loc.clip, loc.track.clips),
+    );
+    route.gain.gain.value =
+      dbToGain(loc.clip.audioGainDb + makeupGainDb(audioFx)) * envelope;
     route.pan.pan.value = Math.max(-1, Math.min(1, loc.clip.audioPan));
+
+    // A retimed clip plays its source faster or slower; the element's own rate
+    // does the resampling, so monitoring matches the exported mixdown (which
+    // resamples the decoded buffer the same way, pitch and all).
+    el.playbackRate =
+      loc.clip.playbackRate.numerator / loc.clip.playbackRate.denominator;
 
     // Resync the element clock only when it has drifted (or just started /
     // was seeked); small drift is left alone so playback stays smooth.
@@ -4674,9 +5345,8 @@ function bindEvents(): void {
     );
   });
 
-  $("btn-delete").addEventListener("click", () => {
-    if (selectedClipId) deleteClip(selectedClipId);
-  });
+  $("btn-delete").addEventListener("click", () => deleteSelection(false));
+  $("btn-ripple-delete").addEventListener("click", () => deleteSelection(true));
 
   $("btn-split").addEventListener("click", splitSelectedClip);
   $("btn-export").addEventListener("click", doExport);
@@ -4710,13 +5380,8 @@ function bindEvents(): void {
       (e.code === "Delete" || e.code === "Backspace") &&
       selectedClipId
     ) {
-      commit(
-        buildDeleteClip(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
-          clipId: selectedClipId,
-        }),
-      );
-      selectedClipId = null;
+      // Shift+Delete ripples: the gap closes behind the deleted clips.
+      deleteSelection(e.shiftKey);
     } else if (e.code === "Space") {
       e.preventDefault();
       if (!playback.playing) ensureAudioContextResumed();
@@ -4940,18 +5605,52 @@ async function renderAndEncodeAudio(
     if (!buffer) continue;
     const source = offline.createBufferSource();
     source.buffer = buffer;
-    const gain = offline.createGain();
-    gain.gain.value = 10 ** (clip.gainDb / 20);
-    const panner = offline.createStereoPanner();
-    panner.pan.value = Math.max(-1, Math.min(1, clip.pan));
-    source.connect(gain).connect(panner).connect(offline.destination);
+    // Same chain as live monitoring, driven by the same effect stack.
+    const chain = buildAudioChain(offline);
+    applyAudioEffectsToChain(chain, clip.effects);
+    chain.gain.gain.value = 10 ** ((clip.gainDb + makeupGainDb(clip.effects)) / 20);
+    chain.pan.pan.value = Math.max(-1, Math.min(1, clip.pan));
+    source.connect(chain.low);
+    chain.pan.connect(offline.destination);
+
+    // A retimed clip resamples its source, pitch and all — the same varispeed
+    // the live monitor applies via HTMLMediaElement.playbackRate. Pitch-
+    // preserving time-stretch is a different device and is not implemented.
+    source.playbackRate.value =
+      clip.playbackRate.numerator / clip.playbackRate.denominator;
 
     const startSec = Number(clip.timelineStartUs) / 1_000_000;
     const offsetSec = Number(clip.sourceInUs) / 1_000_000;
-    const clipDurationSec =
+    const sourceSpanSec =
       (Number(clip.sourceOutUs) - Number(clip.sourceInUs)) / 1_000_000;
-    if (clipDurationSec <= 0) continue;
-    source.start(startSec, offsetSec, clipDurationSec);
+    // How long the clip occupies the timeline, which is the source span divided
+    // by the rate — `start(when, offset, duration)` takes the *source* duration,
+    // so it gets the span, while the fade curve spans the timeline duration.
+    const clipDurationSec = Number(clip.timelineDurationUs) / 1_000_000;
+    if (sourceSpanSec <= 0 || clipDurationSec <= 0) continue;
+
+    // Fades ride on top of the clip's static gain as a value curve over the
+    // clip's own span — sample-accurate, and computed by the same function the
+    // monitor polls, so the export cannot fade somewhere else.
+    if (clip.fades.fadeInUs !== "0" || clip.fades.fadeOutUs !== "0") {
+      const curvePoints = Math.max(
+        2,
+        Math.min(4096, Math.ceil(clipDurationSec * 200)),
+      );
+      const shape = audioEnvelopeCurve(
+        clip.timelineDurationUs,
+        clip.fades,
+        curvePoints,
+      );
+      const staticGain = chain.gain.gain.value;
+      const curve = new Float32Array(shape.length);
+      for (let i = 0; i < shape.length; i++) curve[i] = shape[i]! * staticGain;
+      chain.gain.gain.setValueCurveAtTime(curve, startSec, clipDurationSec);
+    }
+
+    // The third argument is measured in source time, so it is the untimed span
+    // — the rate above decides how much timeline that covers.
+    source.start(startSec, offsetSec, sourceSpanSec);
   }
 
   const rendered = await offline.startRendering();

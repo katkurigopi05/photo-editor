@@ -16,7 +16,7 @@ import {
   sequenceSchema,
   timelineClipSchema,
   trackSchema,
-  unitPlaybackRateSchema,
+  clipPlaybackRateSchema,
 } from "@director/project-schema";
 import { envelopeBaseShape } from "./envelope.js";
 
@@ -110,7 +110,7 @@ export const clipInputSchema = timelineClipSchema
     audioGainDb: true,
     audioPan: true,
   })
-  .extend({ playbackRate: unitPlaybackRateSchema })
+  .extend({ playbackRate: clipPlaybackRateSchema })
   .strict();
 
 export const addClipPayloadSchema = z
@@ -284,6 +284,25 @@ export const setClipAudioPanCommandSchema = command(
   setClipAudioPanPayloadSchema,
 );
 
+// --- timeline.set_clip_speed ------------------------------------------------
+
+/** Retime a clip. The reducer recomputes `timelineDurationUs` from the source
+ * range and the new rate; the source range itself is untouched, because speed
+ * changes how the same frames are spread over the timeline, not which frames
+ * are used. */
+export const setClipSpeedPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    playbackRate: clipPlaybackRateSchema,
+  })
+  .strict();
+
+export const setClipSpeedCommandSchema = command(
+  "timeline.set_clip_speed",
+  setClipSpeedPayloadSchema,
+);
+
 // --- timeline animation keyframes ------------------------------------------
 
 export const addKeyframePayloadSchema = z
@@ -379,6 +398,7 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   updateClipEffectsCommandSchema,
   setClipAudioGainCommandSchema,
   setClipAudioPanCommandSchema,
+  setClipSpeedCommandSchema,
   addKeyframeCommandSchema,
   updateKeyframeCommandSchema,
   removeKeyframeCommandSchema,
@@ -410,6 +430,7 @@ export type SetClipAudioGainCommand = z.infer<
 export type SetClipAudioPanCommand = z.infer<
   typeof setClipAudioPanCommandSchema
 >;
+export type SetClipSpeedCommand = z.infer<typeof setClipSpeedCommandSchema>;
 export type AddKeyframeCommand = z.infer<typeof addKeyframeCommandSchema>;
 export type UpdateKeyframeCommand = z.infer<typeof updateKeyframeCommandSchema>;
 export type RemoveKeyframeCommand = z.infer<typeof removeKeyframeCommandSchema>;
@@ -438,6 +459,7 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.update_clip_effects",
   "timeline.set_clip_audio_gain",
   "timeline.set_clip_audio_pan",
+  "timeline.set_clip_speed",
   "timeline.add_keyframe",
   "timeline.update_keyframe",
   "timeline.remove_keyframe",

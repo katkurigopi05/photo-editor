@@ -1,10 +1,16 @@
-import type { Project } from "@director/project-schema";
+import {
+  isAudioEffectType,
+  type EffectInstance,
+  type Project,
+} from "@director/project-schema";
 import {
   frameToStartTimeUs,
   framesInDuration,
   resolveAtTime,
+  resolveAudioFades,
   sequenceDurationUs,
   type ActiveClip,
+  type ResolvedAudioFades,
 } from "@director/playback-controller";
 import { isCodecContainerCompatible, type ExportPreset } from "./preset.js";
 
@@ -36,6 +42,14 @@ export interface AudioClipPlacement {
   sourceOutUs: string;
   gainDb: number;
   pan: number;
+  /** Source time consumed per unit of timeline time, as a reduced rational. */
+  playbackRate: { numerator: number; denominator: number };
+  /** The clip's audio effects (EQ, compressor, fade), in stack order. Visual
+   * effects are left out: the mixdown has no use for a blur. */
+  effects: EffectInstance[];
+  /** Fades after resolving same-track overlaps into crossfades, so the export
+   * mixdown ramps exactly where live monitoring did. */
+  fades: ResolvedAudioFades;
 }
 
 export interface ExportPlan {
@@ -103,6 +117,11 @@ export function planExport(
         sourceOutUs: clip.sourceOutUs,
         gainDb: clip.audioGainDb,
         pan: clip.audioPan,
+        playbackRate: clip.playbackRate,
+        effects: clip.effects.filter((fx) => isAudioEffectType(fx.type)),
+        // Neighbours are the rest of this track: an overlap is what turns two
+        // adjacent clips into a crossfade.
+        fades: resolveAudioFades(clip, track.clips),
       });
     }
   }
