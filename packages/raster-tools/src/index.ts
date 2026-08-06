@@ -51,3 +51,5 @@ export {
   crosshatch,
   halftone,
 } from "./artistic.js";
+
+export { whiteBalance, levels, toneCurve, vibrance } from "./grade.js";

@@ -12,7 +12,7 @@ import {
   nonNegativeSafeIntSchema,
   positiveSafeIntSchema,
   rationalSchema,
-  unitPlaybackRateSchema,
+  clipPlaybackRateSchema,
 } from "./primitives.js";
 
 export const assetKindSchema = z.enum(["image", "video", "audio", "generated"]);
@@ -55,7 +55,7 @@ export const timelineClipSchema = z
     timelineDurationUs: microsecondStringSchema,
     sourceInUs: microsecondStringSchema,
     sourceOutUs: microsecondStringSchema,
-    playbackRate: unitPlaybackRateSchema,
+    playbackRate: clipPlaybackRateSchema,
     audioGainDb: audioGainDbSchema,
     audioPan: audioPanSchema,
     effects: z.array(effectInstanceSchema),

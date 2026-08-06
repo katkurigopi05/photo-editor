@@ -1583,6 +1583,34 @@ select {
 .clip-remove:hover {
   background: var(--danger);
 }
+/* Trim handles: invisible until the pointer is over the clip, so a timeline of
+   short clips does not read as a row of grab bars. */
+.clip-trim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 8px;
+  cursor: ew-resize;
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0)
+  );
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.clip-trim-left {
+  left: 0;
+}
+.clip-trim-right {
+  right: 0;
+  transform: scaleX(-1);
+}
+.clip:hover .clip-trim,
+.clip.selected .clip-trim {
+  opacity: 1;
+}
 .clip.selected {
   outline: 2px solid #fff;
   box-shadow:

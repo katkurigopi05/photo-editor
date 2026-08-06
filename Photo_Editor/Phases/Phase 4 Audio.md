@@ -21,3 +21,13 @@ monitor vs. export routing, waveform caching against real audio — need Phase 1
 decode, not stubbed.
 
 See [[Phases/Roadmap]].
+
+## Fades, EQ and compression (2026-08-05)
+
+The per-clip effects chain the phase specified is now built: `audio.fade`,
+`audio.eq` and `audio.compressor` are ordinary [[Data Model/EffectInstance]]
+entries on the clip, so they are validated, undoable and replayable like any
+visual effect. Overlapping two clips on one audio track crossfades them at equal
+power. Live monitoring and the export mixdown share one envelope implementation
+(`packages/playback-controller/src/audio-envelope.ts`), so what is heard is what
+is written. See `docs/phases/audio-polish.md`.

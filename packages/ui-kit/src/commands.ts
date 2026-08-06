@@ -14,6 +14,7 @@ import type {
   ReorderEffectsCommand,
   SetClipAudioGainCommand,
   SetClipAudioPanCommand,
+  SetClipSpeedCommand,
   TrimClipCommand,
   UpdateClipEffectsCommand,
   UpdateClipAnimationsCommand,
@@ -128,6 +129,11 @@ export const buildSetClipAudioPan = (
   payload: SetClipAudioPanCommand["payload"],
 ): SetClipAudioPanCommand =>
   envelope(ctx, "timeline.set_clip_audio_pan", payload);
+
+export const buildSetClipSpeed = (
+  ctx: CommandContext,
+  payload: SetClipSpeedCommand["payload"],
+): SetClipSpeedCommand => envelope(ctx, "timeline.set_clip_speed", payload);
 
 export const buildAddKeyframe = (
   ctx: CommandContext,

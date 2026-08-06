@@ -227,6 +227,8 @@ export function applyForward(
       return updateClipEffects(project, command);
     case "timeline.set_clip_audio_gain":
       return setClipAudioGain(project, command);
+    case "timeline.set_clip_speed":
+      return setClipSpeed(project, command);
     case "timeline.set_clip_audio_pan":
       return setClipAudioPan(project, command);
     case "timeline.add_keyframe":
@@ -1881,6 +1883,120 @@ function setClipAudioPan(
   };
 }
 
+/**
+ * Retime a clip.
+ *
+ * The source range is left alone — speed decides how the same frames are spread
+ * over the timeline — so the new timeline duration is
+ * `(sourceOut - sourceIn) * denominator / numerator`. That division truncates
+ * toward zero at sub-microsecond precision, which is why the inverse carries the
+ * previous duration verbatim rather than recomputing it: recomputing would
+ * repeat the truncation and undo would not restore the original bytes.
+ */
+function setClipSpeed(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.set_clip_speed" }>,
+): ForwardResult {
+  const { sequenceId, clipId, playbackRate } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  const sourceSpan = toBig(clip.sourceOutUs) - toBig(clip.sourceInUs);
+  const newDuration =
+    (sourceSpan * BigInt(playbackRate.denominator)) /
+    BigInt(playbackRate.numerator);
+  if (newDuration <= 0n) {
+    return {
+      ok: false,
+      error: makeError(
+        "INVALID_TIME_RANGE",
+        "the retimed clip would have no duration",
+        ["payload", "playbackRate"],
+      ),
+    };
+  }
+
+  const oldDuration = toBig(clip.timelineDurationUs);
+  const start = toBig(clip.timelineStartUs);
+
+  if (newDuration > oldDuration) {
+    const conflict = findOverlapConflict(
+      location.track.clips,
+      start,
+      start + newDuration,
+      clip.transitionIn,
+      clipId,
+    );
+    if (conflict) {
+      return {
+        ok: false,
+        error: makeError(
+          "OVERLAP",
+          `the retimed clip overlaps existing clip ${conflict.id}`,
+          ["payload", "playbackRate"],
+          { conflictClipId: conflict.id },
+        ),
+      };
+    }
+  }
+
+  // Keyframes are authored in clip-local time, so a clip that gets shorter can
+  // strand them past its own end — the same rule trimming already enforces.
+  const strandedKeyframe = clip.animations
+    ?.flatMap((track) => track.keyframes)
+    .find((keyframe) => toBig(keyframe.timeUs) > newDuration);
+  if (strandedKeyframe !== undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "OUT_OF_BOUNDS",
+        `retimed duration ${newDuration} would strand keyframe ${strandedKeyframe.id} at ${strandedKeyframe.timeUs}`,
+        ["payload", "playbackRate"],
+        {
+          keyframeId: strandedKeyframe.id,
+          keyframeTimeUs: strandedKeyframe.timeUs,
+          durationUs: newDuration.toString(),
+        },
+      ),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const newClip: TimelineClip = {
+    ...clip,
+    playbackRate,
+    timelineDurationUs: newDuration.toString(),
+  };
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_speed",
+      payload: {
+        sequenceId,
+        clipId,
+        playbackRate: clip.playbackRate,
+        timelineDurationUs: clip.timelineDurationUs,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
 // --- shared validation ------------------------------------------------------
 
 function validateSourceRange(
@@ -2134,6 +2250,20 @@ export function applyInverse(
       return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => ({
         ...clip,
         audioPan: pan,
+      }));
+    }
+    case "internal.set_clip_speed": {
+      const {
+        sequenceId,
+        clipId,
+        playbackRate,
+        timelineDurationUs,
+        restoreUpdatedAt,
+      } = inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => ({
+        ...clip,
+        playbackRate,
+        timelineDurationUs,
       }));
     }
     case "internal.set_clip_animations": {

@@ -14,6 +14,7 @@ import {
   reorderEffectsPayloadSchema,
   setClipAudioGainPayloadSchema,
   setClipAudioPanPayloadSchema,
+  setClipSpeedPayloadSchema,
   setClipTransitionPayloadSchema,
   trimClipPayloadSchema,
   updateClipAnimationsPayloadSchema,
@@ -167,6 +168,17 @@ const COMMAND_TOOLS: CommandTool[] = [
     title: "Set clip pan",
     description: "Set a clip's stereo pan, -1 (left) to 1 (right).",
     schema: setClipAudioPanPayloadSchema,
+  },
+  {
+    name: "set_clip_speed",
+    commandType: "timeline.set_clip_speed",
+    title: "Retime a clip",
+    description:
+      "Set a clip's playback rate as a reduced rational: 2/1 plays twice as " +
+      "fast and occupies half the timeline, 1/2 half as fast and twice the " +
+      "timeline. Supported between 1/4 and 4. The source range is unchanged; " +
+      "slowing a clip fails with OVERLAP if the clip after it is in the way.",
+    schema: setClipSpeedPayloadSchema,
   },
   {
     name: "add_keyframe",
