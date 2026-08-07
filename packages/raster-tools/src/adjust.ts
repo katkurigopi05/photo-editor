@@ -419,3 +419,97 @@ export function composeMasks(
   }
   return out;
 }
+
+// --- Colour Grading (three-way) --------------------------------------------
+
+/** One grading wheel: a hue to push toward, and how hard to push. */
+export interface GradingWheel {
+  /** Hue in degrees, 0…360. */
+  hue: number;
+  /** Strength 0…100. */
+  saturation: number;
+}
+
+export interface ColorGradingOptions {
+  shadows?: GradingWheel;
+  midtones?: GradingWheel;
+  highlights?: GradingWheel;
+  /**
+   * Where the boundary between shadows and highlights sits, −100…+100.
+   * Positive moves the boundary down, so more of the picture counts as
+   * highlight; negative moves it up and widens the shadow band. Lightroom's
+   * Balance slider.
+   */
+  balance?: number;
+  /** Overall strength of the whole grade, 0…100. Defaults to 100. */
+  blend?: number;
+}
+
+/** Weight for each tonal band at luminance `t` (0…1), after balance. */
+function bandWeights(
+  t: number,
+  balance: number,
+): { shadow: number; mid: number; high: number } {
+  // Balance slides the crossover point; at 0 the bands meet at mid-grey.
+  const pivot = 0.5 - (balance / 100) * 0.3;
+  const shadow = Math.max(0, 1 - t / Math.max(0.001, pivot));
+  const high = Math.max(0, (t - pivot) / Math.max(0.001, 1 - pivot));
+  // Midtones are what neither end claims, which keeps the three weights from
+  // summing past 1 and over-tinting the middle of the range.
+  const mid = Math.max(0, 1 - shadow - high);
+  return { shadow, mid, high };
+}
+
+/**
+ * Lightroom's Colour Grading: separate hue/strength wheels for shadows,
+ * midtones and highlights, plus a balance control over where those bands sit.
+ *
+ * Each wheel pushes its band toward a colour rather than replacing it, so a
+ * graded frame keeps its own tonality — the point of grading is a cast, not a
+ * duotone. Weights are computed from luminance and normalized so the three
+ * bands cannot stack into a saturated mess in the middle.
+ */
+export function colorGrading(
+  image: RasterImage,
+  options: ColorGradingOptions,
+  mask?: Mask,
+): RasterImage {
+  const { shadows, midtones, highlights } = options;
+  if (!shadows && !midtones && !highlights) return cloneImage(image);
+
+  const balance = options.balance ?? 0;
+  const blend = (options.blend ?? 100) / 100;
+
+  const target = (wheel: GradingWheel | undefined): [number, number, number] =>
+    wheel ? hslToRgb(wheel.hue, 1, 0.5) : [0, 0, 0];
+  const shadowTint = target(shadows);
+  const midTint = target(midtones);
+  const highTint = target(highlights);
+
+  return mapPixels(image, mask, (r, g, b) => {
+    const t = luma(r, g, b) / 255;
+    const weights = bandWeights(t, balance);
+    const contributions: [number, [number, number, number], number][] = [
+      [weights.shadow, shadowTint, (shadows?.saturation ?? 0) / 100],
+      [weights.mid, midTint, (midtones?.saturation ?? 0) / 100],
+      [weights.high, highTint, (highlights?.saturation ?? 0) / 100],
+    ];
+
+    let nr = r;
+    let ng = g;
+    let nb = b;
+    for (const [weight, tint, strength] of contributions) {
+      const amount = weight * strength * blend;
+      if (amount <= 0) continue;
+      // Push toward the tint at constant luminance: mix in the tint's colour
+      // while keeping the pixel's own brightness, so grading does not double as
+      // an exposure change.
+      const tintLuma = luma(tint[0], tint[1], tint[2]);
+      const scale = tintLuma === 0 ? 0 : luma(nr, ng, nb) / tintLuma;
+      nr += (tint[0] * scale - nr) * amount * 0.5;
+      ng += (tint[1] * scale - ng) * amount * 0.5;
+      nb += (tint[2] * scale - nb) * amount * 0.5;
+    }
+    return [nr, ng, nb];
+  });
+}

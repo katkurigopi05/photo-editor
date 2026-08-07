@@ -468,6 +468,85 @@ export const audioCompressorParamsSchema = z
   })
   .strict();
 
+/**
+ * Lightroom's remaining panels, modelled on the reference note in the vault:
+ * the rest of Light, the Colour Mixer, Colour Grading, Effects (Presence) and
+ * Detail. Each carries Lightroom's own −100…100 slider convention so a value
+ * means the same thing to a user who knows the reference product.
+ */
+
+const lightroomAmount = finiteNumber.refine(
+  (n) => n >= -100 && n <= 100,
+  "must be between -100 and 100",
+);
+
+export const toneParamsSchema = z
+  .object({
+    highlights: lightroomAmount,
+    shadows: lightroomAmount,
+    whites: lightroomAmount,
+    blacks: lightroomAmount,
+  })
+  .strict();
+
+/** One band of the Colour Mixer. A stack can carry one instance per band,
+ * which is how eight bands stay editable without eight times the controls. */
+export const hslMixerParamsSchema = z
+  .object({
+    band: z.enum([
+      "red",
+      "orange",
+      "yellow",
+      "green",
+      "aqua",
+      "blue",
+      "purple",
+      "magenta",
+    ]),
+    hue: lightroomAmount,
+    saturation: lightroomAmount,
+    luminance: lightroomAmount,
+  })
+  .strict();
+
+const hueDegrees = finiteNumber.refine(
+  (n) => n >= 0 && n <= 360,
+  "hue must be between 0 and 360 degrees",
+);
+const wheelStrength = finiteNumber.refine(
+  (n) => n >= 0 && n <= 100,
+  "must be between 0 and 100",
+);
+
+export const colorGradingParamsSchema = z
+  .object({
+    shadowsHue: hueDegrees,
+    shadowsStrength: wheelStrength,
+    midtonesHue: hueDegrees,
+    midtonesStrength: wheelStrength,
+    highlightsHue: hueDegrees,
+    highlightsStrength: wheelStrength,
+    /** Where the shadow/highlight boundary sits; negative widens shadows. */
+    balance: lightroomAmount,
+    blend: wheelStrength,
+  })
+  .strict();
+
+export const presenceParamsSchema = z
+  .object({
+    clarity: lightroomAmount,
+    texture: lightroomAmount,
+    dehaze: lightroomAmount,
+  })
+  .strict();
+
+export const noiseReductionParamsSchema = z
+  .object({
+    luminance: wheelStrength,
+    color: wheelStrength,
+  })
+  .strict();
+
 export const EFFECT_TYPES = [
   "color.brightness",
   "color.contrast",
@@ -487,6 +566,11 @@ export const EFFECT_TYPES = [
   "color.levels",
   "color.tone_curve",
   "color.vibrance",
+  "light.tone",
+  "color.hsl_mixer",
+  "color.color_grading",
+  "fx.presence",
+  "detail.noise_reduction",
   "photo.portrait_blur",
   "color.duotone",
   "fx.retro_noise",
@@ -537,6 +621,11 @@ export const effectParamsSchemas = {
   "color.levels": levelsParamsSchema,
   "color.tone_curve": toneCurveParamsSchema,
   "color.vibrance": vibranceParamsSchema,
+  "light.tone": toneParamsSchema,
+  "color.hsl_mixer": hslMixerParamsSchema,
+  "color.color_grading": colorGradingParamsSchema,
+  "fx.presence": presenceParamsSchema,
+  "detail.noise_reduction": noiseReductionParamsSchema,
   "photo.portrait_blur": portraitBlurParamsSchema,
   "color.duotone": duotoneParamsSchema,
   "fx.retro_noise": retroNoiseParamsSchema,
@@ -589,6 +678,11 @@ export const effectInstanceSchema = z.discriminatedUnion("type", [
   effect("color.levels", levelsParamsSchema),
   effect("color.tone_curve", toneCurveParamsSchema),
   effect("color.vibrance", vibranceParamsSchema),
+  effect("light.tone", toneParamsSchema),
+  effect("color.hsl_mixer", hslMixerParamsSchema),
+  effect("color.color_grading", colorGradingParamsSchema),
+  effect("fx.presence", presenceParamsSchema),
+  effect("detail.noise_reduction", noiseReductionParamsSchema),
   effect("photo.portrait_blur", portraitBlurParamsSchema),
   effect("color.duotone", duotoneParamsSchema),
   effect("fx.retro_noise", retroNoiseParamsSchema),

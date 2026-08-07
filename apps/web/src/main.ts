@@ -120,6 +120,17 @@ import {
   levels,
   toneCurve,
   vibrance,
+  highlights as adjustHighlights,
+  shadows as adjustShadows,
+  whites as adjustWhites,
+  blacks as adjustBlacks,
+  colorMixer,
+  colorGrading,
+  clarity,
+  texture,
+  dehaze,
+  noiseReduction,
+  type HslBand,
   type Mask,
   type Point,
   type RasterImage,
@@ -180,7 +191,7 @@ import {
  * microsecond string — the slider is in seconds because that is what a fade is
  * spoken about in, and the conversion happens once, here, rather than in every
  * caller. */
-type ParamKind = "range" | "toggle" | "color" | "text" | "seconds";
+type ParamKind = "range" | "toggle" | "color" | "text" | "seconds" | "choice";
 interface ParamSpec {
   name: string;
   label: string;
@@ -188,6 +199,8 @@ interface ParamSpec {
   min?: number;
   max?: number;
   step?: number;
+  /** Options for a `choice` param, in the order they should be offered. */
+  choices?: readonly string[];
   def: number | boolean | string;
 }
 interface EffectSpec {
@@ -278,6 +291,80 @@ const EFFECTS: EffectSpec[] = [
     label: "Vibrance",
     modes: ["video", "photo"],
     params: [range("amount", "Amount", -1, 1, 0.05, 0)],
+  },
+  {
+    type: "light.tone",
+    label: "Tone (Light)",
+    modes: ["video", "photo"],
+    params: [
+      range("highlights", "Highlights", -100, 100, 1, 0),
+      range("shadows", "Shadows", -100, 100, 1, 0),
+      range("whites", "Whites", -100, 100, 1, 0),
+      range("blacks", "Blacks", -100, 100, 1, 0),
+    ],
+  },
+  {
+    // One band per instance: eight bands at three sliders each would be
+    // twenty-four controls on one effect, so the stack carries one instance
+    // per band the photograph actually needs.
+    type: "color.hsl_mixer",
+    label: "Colour Mixer (HSL)",
+    modes: ["video", "photo"],
+    params: [
+      {
+        name: "band",
+        label: "Band",
+        kind: "choice",
+        choices: [
+          "red",
+          "orange",
+          "yellow",
+          "green",
+          "aqua",
+          "blue",
+          "purple",
+          "magenta",
+        ],
+        def: "red",
+      },
+      range("hue", "Hue", -100, 100, 1, 0),
+      range("saturation", "Saturation", -100, 100, 1, 0),
+      range("luminance", "Luminance", -100, 100, 1, 0),
+    ],
+  },
+  {
+    type: "color.color_grading",
+    label: "Colour Grading",
+    modes: ["video", "photo"],
+    params: [
+      range("shadowsHue", "Shadow hue", 0, 360, 1, 220),
+      range("shadowsStrength", "Shadow strength", 0, 100, 1, 0),
+      range("midtonesHue", "Midtone hue", 0, 360, 1, 120),
+      range("midtonesStrength", "Midtone strength", 0, 100, 1, 0),
+      range("highlightsHue", "Highlight hue", 0, 360, 1, 40),
+      range("highlightsStrength", "Highlight strength", 0, 100, 1, 0),
+      range("balance", "Balance", -100, 100, 1, 0),
+      range("blend", "Blend", 0, 100, 1, 100),
+    ],
+  },
+  {
+    type: "fx.presence",
+    label: "Presence",
+    modes: ["video", "photo"],
+    params: [
+      range("clarity", "Clarity", -100, 100, 1, 0),
+      range("texture", "Texture", -100, 100, 1, 0),
+      range("dehaze", "Dehaze", -100, 100, 1, 0),
+    ],
+  },
+  {
+    type: "detail.noise_reduction",
+    label: "Noise Reduction",
+    modes: ["video", "photo"],
+    params: [
+      range("luminance", "Luminance", 0, 100, 1, 0),
+      range("color", "Colour", 0, 100, 1, 0),
+    ],
   },
   {
     type: "color.hue_rotate",
@@ -1770,6 +1857,11 @@ const GRADING_TYPES: ReadonlySet<string> = new Set([
   "color.levels",
   "color.tone_curve",
   "color.vibrance",
+  "light.tone",
+  "color.hsl_mixer",
+  "color.color_grading",
+  "fx.presence",
+  "detail.noise_reduction",
 ]);
 
 /**
@@ -1817,7 +1909,59 @@ function gradeImage(image: RasterImage, fx: EffectInstance): RasterImage {
   }
   // The effect's amount is −1…1; the shared adjustment speaks Lightroom's
   // −100…100, so one scale converts between them in the single place it matters.
-  return vibrance(image, getParamNumber(fx, "amount", 0) * 100);
+  if (fx.type === "color.vibrance") {
+    // The effect's amount is −1…1; the shared adjustment speaks Lightroom's
+    // −100…100, so one scale converts between them in the single place it
+    // matters.
+    return vibrance(image, getParamNumber(fx, "amount", 0) * 100);
+  }
+  if (fx.type === "light.tone") {
+    // Four separate passes rather than one combined formula: each control has
+    // its own tonal weighting, and running them in Lightroom's own order keeps
+    // the result recognisable to anyone who knows the reference product.
+    let out = adjustHighlights(image, getParamNumber(fx, "highlights", 0));
+    out = adjustShadows(out, getParamNumber(fx, "shadows", 0));
+    out = adjustWhites(out, getParamNumber(fx, "whites", 0));
+    return adjustBlacks(out, getParamNumber(fx, "blacks", 0));
+  }
+  if (fx.type === "color.hsl_mixer") {
+    const band = getParamString(fx, "band", "red") as HslBand;
+    return colorMixer(image, {
+      [band]: {
+        hue: getParamNumber(fx, "hue", 0),
+        saturation: getParamNumber(fx, "saturation", 0),
+        luminance: getParamNumber(fx, "luminance", 0),
+      },
+    });
+  }
+  if (fx.type === "color.color_grading") {
+    return colorGrading(image, {
+      shadows: {
+        hue: getParamNumber(fx, "shadowsHue", 220),
+        saturation: getParamNumber(fx, "shadowsStrength", 0),
+      },
+      midtones: {
+        hue: getParamNumber(fx, "midtonesHue", 120),
+        saturation: getParamNumber(fx, "midtonesStrength", 0),
+      },
+      highlights: {
+        hue: getParamNumber(fx, "highlightsHue", 40),
+        saturation: getParamNumber(fx, "highlightsStrength", 0),
+      },
+      balance: getParamNumber(fx, "balance", 0),
+      blend: getParamNumber(fx, "blend", 100),
+    });
+  }
+  if (fx.type === "fx.presence") {
+    let out = clarity(image, getParamNumber(fx, "clarity", 0));
+    out = texture(out, getParamNumber(fx, "texture", 0));
+    return dehaze(out, getParamNumber(fx, "dehaze", 0));
+  }
+  return noiseReduction(
+    image,
+    getParamNumber(fx, "luminance", 0),
+    getParamNumber(fx, "color", 0),
+  );
 }
 
 function grade(
@@ -3160,6 +3304,26 @@ function paramControl(
     // command, burying the operation log and making one undo per character.
     input.addEventListener("change", () => update(input.value));
     wrap.append(label, input);
+    return wrap;
+  }
+  if (p.kind === "choice") {
+    const wrap = document.createElement("div");
+    wrap.className = "control";
+    const label = document.createElement("label");
+    label.textContent = p.label;
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", `${spec.label} ${p.label}`);
+    const current = getParamString(fx, p.name, String(p.def));
+    for (const choice of p.choices ?? []) {
+      const option = new Option(
+        choice.charAt(0).toUpperCase() + choice.slice(1),
+        choice,
+      );
+      option.selected = choice === current;
+      select.appendChild(option);
+    }
+    select.addEventListener("change", () => update(select.value));
+    wrap.append(label, select);
     return wrap;
   }
   if (p.kind === "seconds") {

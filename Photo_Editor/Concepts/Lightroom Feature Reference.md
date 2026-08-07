@@ -92,3 +92,20 @@ Derived from the gap between the tables above and what exists today:
 
 Related: [[Rules/Local Only]], [[Concepts/Command Engine]],
 [[Data Model/EffectInstance]].
+
+## Progress (2026-08-06)
+
+Priorities 2 and 4 are built, and priority 1 is half built:
+
+- **Masking** — the generators exist (`linearGradientMask`,
+  `radialGradientMask`, `brushStrokeMask`, `luminanceRangeMask`,
+  `colorRangeMask`) and compose through `composeMasks`. What remains is making a
+  mask *project state*: a schema, commands, and UI so it can be authored,
+  stored and replayed. Until then masks are reachable from code only.
+- **Colour Mixer, Colour Grading, Presence (Clarity/Texture/Dehaze), Noise
+  Reduction** — built, and wired into the app as `EffectInstance` types, so they
+  render in the preview and bake into every export.
+
+Still open: AI masks, per-channel tone curve with control points,
+[[Concepts/Local Catalog]], optics and perspective. See
+`docs/phases/lightroom-panels.md`.

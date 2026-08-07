@@ -16,6 +16,11 @@ export {
   invertMask,
   featherMask,
   maskBounds,
+  linearGradientMask,
+  radialGradientMask,
+  brushStrokeMask,
+  luminanceRangeMask,
+  colorRangeMask,
 } from "./mask.js";
 
 export {
@@ -79,4 +84,9 @@ export {
   tint,
   vibrance,
   whites,
+  colorGrading,
+  type ColorGradingOptions,
+  type GradingWheel,
 } from "./adjust.js";
+
+export { clarity, texture, dehaze, noiseReduction } from "./detail.js";
