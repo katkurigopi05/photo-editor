@@ -340,19 +340,63 @@
         <div id="export-options" class="export-options">
           <label class="export-field"
             >Resolution
-            <select id="export-resolution">
-              <option value="1920x1080">1080p — 1920×1080</option>
-              <option value="1280x720" selected>720p — 1280×720</option>
-              <option value="854x480">480p — 854×480</option>
-            </select>
+            <select id="export-resolution"></select>
+          </label>
+          <div id="export-custom-size" class="export-field export-custom hidden">
+            <label
+              >Width
+              <input
+                id="export-width"
+                type="number"
+                min="16"
+                max="7680"
+                step="2"
+                value="1920"
+              />
+            </label>
+            <label
+              >Height
+              <input
+                id="export-height"
+                type="number"
+                min="16"
+                max="7680"
+                step="2"
+                value="1080"
+              />
+            </label>
+          </div>
+          <label class="export-field"
+            >Frame rate
+            <select id="export-fps"></select>
           </label>
           <label class="export-field"
             >Quality
-            <select id="export-quality">
-              <option value="12000">High (12 Mbps)</option>
-              <option value="8000" selected>Medium (8 Mbps)</option>
-              <option value="4000">Low (4 Mbps)</option>
+            <select id="export-quality"></select>
+          </label>
+          <label
+            id="export-custom-bitrate"
+            class="export-field hidden"
+            >Bitrate (kbps)
+            <input
+              id="export-bitrate"
+              type="number"
+              min="200"
+              max="200000"
+              step="100"
+              value="8000"
+            />
+          </label>
+          <label class="export-field"
+            >Audio
+            <select id="export-audio-codec">
+              <option value="opus" selected>Include audio (Opus)</option>
+              <option value="none">No audio</option>
             </select>
+          </label>
+          <label id="export-audio-bitrate-field" class="export-field"
+            >Audio bitrate
+            <select id="export-audio-bitrate"></select>
           </label>
           <div id="export-summary" class="export-summary"></div>
         </div>
