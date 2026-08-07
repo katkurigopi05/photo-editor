@@ -180,6 +180,10 @@ transitions, audio adjustment, current-frame retouching, and MP4 export.
 Features:
 
 - Video and audio tracks with clip selection, split, delete, drag, and zoom.
+- Markers: press M to pin a note to the selected clip at the playhead, or
+  Shift+M for a to-do. Markers appear along the clip, jump the playhead when
+  clicked, and are listed in the Inspector where they can be renamed, ticked, or
+  removed. They ride the clip, so trimming or moving it carries them along.
 - Dragged clips snap to clip edges, the playhead, and the sequence start. Hold
   Alt while dropping to place a clip exactly where you release it.
 - Trim handles on each clip edge change the in/out point. Hold Shift while
@@ -323,6 +327,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 | Space | Play or pause when page body has focus. |
 | Delete / Backspace | Delete the selected clips when page body has focus. |
 | Shift + Delete | Ripple delete: remove the selection and close the gap. |
+| M | Add a marker to the selected clip at the playhead. |
+| Shift + M | Add a to-do marker at the playhead. |
 | Shift or Cmd/Ctrl + click | Add a clip to the selection. |
 | Alt while dropping a clip | Ignore snapping and drop where released. |
 | Shift while trimming | Ripple trim: shift later clips by the same amount. |
@@ -349,6 +355,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-07:** Added clip markers — notes, chapters and to-dos — with pins on
+  the timeline, an Inspector list, and the M shortcut.
 - **2026-08-07:** The media bin gained Favorite/Rejected ratings, name search,
   and a rating filter.
 - **2026-08-07:** Large files now import by streaming rather than by loading the

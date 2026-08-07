@@ -16,6 +16,9 @@ import type {
   SetClipAudioGainCommand,
   SetClipAudioPanCommand,
   SetClipSpeedCommand,
+  AddMarkerCommand,
+  UpdateMarkerCommand,
+  RemoveMarkerCommand,
   AddMaskCommand,
   UpdateMaskCommand,
   RemoveMaskCommand,
@@ -144,6 +147,21 @@ export const buildSetClipSpeed = (
   ctx: CommandContext,
   payload: SetClipSpeedCommand["payload"],
 ): SetClipSpeedCommand => envelope(ctx, "timeline.set_clip_speed", payload);
+
+export const buildAddMarker = (
+  ctx: CommandContext,
+  payload: AddMarkerCommand["payload"],
+): AddMarkerCommand => envelope(ctx, "timeline.add_marker", payload);
+
+export const buildUpdateMarker = (
+  ctx: CommandContext,
+  payload: UpdateMarkerCommand["payload"],
+): UpdateMarkerCommand => envelope(ctx, "timeline.update_marker", payload);
+
+export const buildRemoveMarker = (
+  ctx: CommandContext,
+  payload: RemoveMarkerCommand["payload"],
+): RemoveMarkerCommand => envelope(ctx, "timeline.remove_marker", payload);
 
 export const buildAddMask = (
   ctx: CommandContext,

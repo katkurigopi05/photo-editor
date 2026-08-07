@@ -14,6 +14,7 @@ import {
   timelineClipSchema,
   clipPlaybackRateSchema,
   clipMasksSchema,
+  clipMarkersSchema,
 } from "@director/project-schema";
 
 /**
@@ -214,6 +215,22 @@ export const setClipAudioGainInverseSchema = internal(
 
 /** Restores a clip's rate *and* the duration derived from it: recomputing the
  * duration on undo would repeat the truncation the forward command did. */
+/** Restores a clip's whole marker list. Same reasoning as the mask inverse:
+ * the list is small, and carrying it entire keeps undo exact — including the
+ * difference between no markers and an empty list. `null` restores the absent
+ * member. */
+export const setClipMarkersInverseSchema = internal(
+  "internal.set_clip_markers",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      markers: clipMarkersSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 /** Restores a clip's whole mask list. One inverse for every mask command: the
  * list is small geometry, and carrying it entire is what makes undo exact
  * without a per-command reconstruction rule. `null` restores "no masks at all",
@@ -316,6 +333,7 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   setClipAudioGainInverseSchema,
   setClipAudioPanInverseSchema,
   setClipSpeedInverseSchema,
+  setClipMarkersInverseSchema,
   setClipMasksInverseSchema,
   setEffectMaskInverseSchema,
   setClipAnimationsInverseSchema,

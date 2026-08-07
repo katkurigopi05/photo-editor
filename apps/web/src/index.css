@@ -1767,6 +1767,60 @@ select {
 .clip.selected .clip-trim {
   opacity: 1;
 }
+/* Marker pins sit along the clip's foot, clear of the keyframe diamonds on its
+   top edge, so a clip can carry both without them colliding. */
+.clip-marker {
+  position: absolute;
+  bottom: 2px;
+  transform: translateX(-50%);
+  z-index: 3;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+}
+.clip-marker:hover,
+.clip-marker:focus-visible {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.clip-marker-chapter {
+  color: var(--warning, #ffd166);
+}
+.clip-marker.done {
+  opacity: 0.5;
+}
+.marker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.marker-row:has(input[type="checkbox"]) {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+}
+.marker-name {
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.marker-jump {
+  font-variant-numeric: tabular-nums;
+}
+
 .clip.selected {
   outline: 2px solid #fff;
   box-shadow:

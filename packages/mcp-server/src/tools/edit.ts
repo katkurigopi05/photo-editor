@@ -16,6 +16,9 @@ import {
   setClipAudioPanPayloadSchema,
   setAssetRatingPayloadSchema,
   setClipSpeedPayloadSchema,
+  addMarkerPayloadSchema,
+  updateMarkerPayloadSchema,
+  removeMarkerPayloadSchema,
   addMaskPayloadSchema,
   updateMaskPayloadSchema,
   removeMaskPayloadSchema,
@@ -194,6 +197,33 @@ const COMMAND_TOOLS: CommandTool[] = [
       "timeline. Supported between 1/4 and 4. The source range is unchanged; " +
       "slowing a clip fails with OVERLAP if the clip after it is in the way.",
     schema: setClipSpeedPayloadSchema,
+  },
+  {
+    name: "add_marker",
+    commandType: "timeline.add_marker",
+    title: "Pin a marker to a clip",
+    description:
+      "Add a named marker at a clip-local microsecond time. Kinds are " +
+      "'standard' (a note), 'chapter' (a navigation point) and 'todo' (a note " +
+      "with a done flag). The time must fall inside the clip; markers ride the " +
+      "clip, so trimming or moving it carries them along.",
+    schema: addMarkerPayloadSchema,
+  },
+  {
+    name: "update_marker",
+    commandType: "timeline.update_marker",
+    title: "Rename, move or tick a marker",
+    description:
+      "Change a marker's time, name, kind or done flag. Every field but the " +
+      "identity is optional; a new time must still fall inside the clip.",
+    schema: updateMarkerPayloadSchema,
+  },
+  {
+    name: "remove_marker",
+    commandType: "timeline.remove_marker",
+    title: "Remove a marker",
+    description: "Delete one marker from a clip.",
+    schema: removeMarkerPayloadSchema,
   },
   {
     name: "add_mask",

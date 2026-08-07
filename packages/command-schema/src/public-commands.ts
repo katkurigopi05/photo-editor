@@ -20,6 +20,8 @@ import {
   clipPlaybackRateSchema,
   clipMaskSchema,
   maskContributionSchema,
+  clipMarkerSchema,
+  markerKindSchema,
 } from "@director/project-schema";
 import { envelopeBaseShape } from "./envelope.js";
 
@@ -302,6 +304,55 @@ export const setClipAudioPanCommandSchema = command(
   setClipAudioPanPayloadSchema,
 );
 
+// --- timeline markers -------------------------------------------------------
+
+/** Pin a note to a moment of a clip. The time is clip-local, so it must fall
+ * inside the clip; the reducer refuses anything else. */
+export const addMarkerPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    marker: clipMarkerSchema,
+  })
+  .strict();
+
+export const addMarkerCommandSchema = command(
+  "timeline.add_marker",
+  addMarkerPayloadSchema,
+);
+
+/** Every field optional but the identity: renaming, moving and ticking a
+ * marker are the same edit from the model's point of view. */
+export const updateMarkerPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    markerId: z.string().min(1),
+    timeUs: microsecondStringSchema.optional(),
+    name: z.string().min(1).max(200).optional(),
+    kind: markerKindSchema.optional(),
+    done: z.boolean().optional(),
+  })
+  .strict();
+
+export const updateMarkerCommandSchema = command(
+  "timeline.update_marker",
+  updateMarkerPayloadSchema,
+);
+
+export const removeMarkerPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    markerId: z.string().min(1),
+  })
+  .strict();
+
+export const removeMarkerCommandSchema = command(
+  "timeline.remove_marker",
+  removeMarkerPayloadSchema,
+);
+
 // --- timeline masks ---------------------------------------------------------
 
 /** Add a mask to a clip. Masks are geometry, not pixels, so the whole mask
@@ -481,6 +532,9 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   setClipAudioGainCommandSchema,
   setClipAudioPanCommandSchema,
   setClipSpeedCommandSchema,
+  addMarkerCommandSchema,
+  updateMarkerCommandSchema,
+  removeMarkerCommandSchema,
   addMaskCommandSchema,
   updateMaskCommandSchema,
   removeMaskCommandSchema,
@@ -518,6 +572,9 @@ export type SetClipAudioPanCommand = z.infer<
   typeof setClipAudioPanCommandSchema
 >;
 export type SetClipSpeedCommand = z.infer<typeof setClipSpeedCommandSchema>;
+export type AddMarkerCommand = z.infer<typeof addMarkerCommandSchema>;
+export type UpdateMarkerCommand = z.infer<typeof updateMarkerCommandSchema>;
+export type RemoveMarkerCommand = z.infer<typeof removeMarkerCommandSchema>;
 export type AddMaskCommand = z.infer<typeof addMaskCommandSchema>;
 export type UpdateMaskCommand = z.infer<typeof updateMaskCommandSchema>;
 export type RemoveMaskCommand = z.infer<typeof removeMaskCommandSchema>;
@@ -552,6 +609,9 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.set_clip_audio_gain",
   "timeline.set_clip_audio_pan",
   "timeline.set_clip_speed",
+  "timeline.add_marker",
+  "timeline.update_marker",
+  "timeline.remove_marker",
   "timeline.add_mask",
   "timeline.update_mask",
   "timeline.remove_mask",

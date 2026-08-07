@@ -15,6 +15,9 @@ import {
   buildSetClipAudioPan,
   buildSetAssetRating,
   buildSetClipSpeed,
+  buildAddMarker,
+  buildUpdateMarker,
+  buildRemoveMarker,
   buildAddMask,
   buildUpdateMask,
   buildRemoveMask,
@@ -191,6 +194,7 @@ import type {
   AnimationEasing,
   AnimationProperty,
   ClipMask,
+  MarkerKind,
   MaskContribution,
   EffectInstance,
   EffectType,
@@ -2482,6 +2486,33 @@ function renderTimeline(): void {
         el.appendChild(marker);
       }
 
+      // Marker pins along the clip's foot: a note is meant to be found again,
+      // so it has to be visible on the timeline and not only in a panel.
+      for (const marker of clip.markers ?? []) {
+        const pin = document.createElement("button");
+        pin.className = `clip-marker clip-marker-${marker.kind}${
+          marker.done ? " done" : ""
+        }`;
+        pin.style.left = `clamp(4px, ${keyframePositionPercent(
+          marker.timeUs,
+          clip.timelineDurationUs,
+        )}%, calc(100% - 4px))`;
+        pin.textContent =
+          marker.kind === "chapter" ? "▮" : marker.kind === "todo" ? "☐" : "●";
+        pin.title = `${marker.name} — ${formatTime(marker.timeUs)}`;
+        pin.setAttribute(
+          "aria-label",
+          `Marker ${marker.name} at ${formatTime(marker.timeUs)}`,
+        );
+        pin.addEventListener("pointerdown", (event) => event.stopPropagation());
+        pin.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectedClipId = clip.id;
+          seekToClipAnimationTime(clip, marker.timeUs);
+        });
+        el.appendChild(pin);
+      }
+
       const remove = document.createElement("button");
       remove.className = "clip-remove";
       remove.textContent = "✕";
@@ -3400,6 +3431,7 @@ function renderInspector(): void {
     inspectorEl.appendChild(transitionSection(clip));
   }
 
+  inspectorEl.appendChild(markersSection(clip));
   inspectorEl.appendChild(speedSection(clip));
   if (asset && asset.kind !== "audio") {
     inspectorEl.appendChild(masksSection(clip));
@@ -3469,6 +3501,157 @@ function renderInspector(): void {
     addEffectSelect("＋ Add audio effect…", audioEffects()),
   );
   inspectorEl.appendChild(audioSection);
+}
+
+/**
+ * Markers: notes pinned to moments of the clip.
+ *
+ * They change nothing about the render, so the section is a list rather than a
+ * panel of controls: jump to one, rename it, tick a to-do, delete it.
+ */
+function markersSection(clip: TimelineClip): HTMLElement {
+  const section_ = section("Markers");
+  const markers = clip.markers ?? [];
+
+  for (const marker of markers) {
+    const row = document.createElement("div");
+    row.className = "effect-row marker-row";
+
+    const jump = document.createElement("button");
+    jump.className = "mini marker-jump";
+    jump.textContent = formatTime(marker.timeUs);
+    jump.title = "Move the playhead to this marker";
+    jump.setAttribute("aria-label", `Go to ${marker.name}`);
+    jump.addEventListener("click", () =>
+      seekToClipAnimationTime(clip, marker.timeUs),
+    );
+
+    const name = document.createElement("input");
+    name.className = "marker-name";
+    name.value = marker.name;
+    name.setAttribute("aria-label", `Marker name at ${formatTime(marker.timeUs)}`);
+    // On change, not on input: a command per keystroke would bury the log and
+    // make one undo per character.
+    name.addEventListener("change", () => {
+      if (name.value.trim() === "") {
+        name.value = marker.name;
+        return;
+      }
+      commit(
+        buildUpdateMarker(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          markerId: marker.id,
+          name: name.value.trim(),
+        }),
+      );
+    });
+
+    const remove = document.createElement("button");
+    remove.className = "mini";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove ${marker.name}`);
+    remove.addEventListener("click", () =>
+      commit(
+        buildRemoveMarker(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          markerId: marker.id,
+        }),
+      ),
+    );
+
+    if (marker.kind === "todo") {
+      const done = document.createElement("input");
+      done.type = "checkbox";
+      done.checked = marker.done === true;
+      done.setAttribute("aria-label", `${marker.name} done`);
+      done.addEventListener("change", () =>
+        commit(
+          buildUpdateMarker(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            clipId: clip.id,
+            markerId: marker.id,
+            done: done.checked,
+          }),
+        ),
+      );
+      row.append(done);
+    }
+    row.append(jump, name, remove);
+    section_.appendChild(row);
+  }
+
+  const addWrap = document.createElement("div");
+  addWrap.className = "control";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Add marker");
+  select.appendChild(new Option("＋ Add marker at playhead…", ""));
+  for (const [value, label] of [
+    ["standard", "Note"],
+    ["chapter", "Chapter"],
+    ["todo", "To-do"],
+  ] as const) {
+    select.appendChild(new Option(label, value));
+  }
+  select.addEventListener("change", () => {
+    if (select.value) addMarkerAtPlayhead(select.value as MarkerKind);
+  });
+  addWrap.appendChild(select);
+  section_.appendChild(addWrap);
+
+  if (markers.length === 0) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent =
+      "Markers ride the clip: trimming or moving it carries them along. Press M to drop one at the playhead.";
+    section_.appendChild(hint);
+  }
+  return section_;
+}
+
+/**
+ * Add a marker to the selected clip at the playhead.
+ *
+ * The playhead can sit outside the selected clip, and a marker's time is
+ * clip-local — so the caller is told where it landed rather than being handed a
+ * validation error from the reducer.
+ */
+function addMarkerAtPlayhead(kind: MarkerKind = "standard"): void {
+  const loc = locateClip(selectedClipId);
+  if (!loc) {
+    toast("Select a clip first, then add a marker.", true);
+    return;
+  }
+  const { clip } = loc;
+  const local = BigInt(playback.currentTimeUs) - BigInt(clip.timelineStartUs);
+  if (local < 0n || local >= BigInt(clip.timelineDurationUs)) {
+    toast("Move the playhead over the selected clip to mark it.", true);
+    return;
+  }
+  const count = (clip.markers ?? []).length + 1;
+  const name =
+    kind === "chapter"
+      ? `Chapter ${count}`
+      : kind === "todo"
+        ? `To-do ${count}`
+        : `Marker ${count}`;
+  if (
+    commit(
+      buildAddMarker(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        marker: {
+          id: `marker-${crypto.randomUUID().slice(0, 8)}`,
+          timeUs: local.toString(),
+          name,
+          kind,
+        },
+      }),
+    )
+  ) {
+    toast(`${name} added at ${formatTime(local.toString())}.`);
+  }
 }
 
 /**
@@ -6272,6 +6455,8 @@ function bindEvents(): void {
     ) {
       // Shift+Delete ripples: the gap closes behind the deleted clips.
       deleteSelection(e.shiftKey);
+    } else if (e.code === "KeyM" && !e.metaKey && !e.ctrlKey) {
+      addMarkerAtPlayhead(e.shiftKey ? "todo" : "standard");
     } else if (e.code === "Space") {
       e.preventDefault();
       if (!playback.playing) ensureAudioContextResumed();

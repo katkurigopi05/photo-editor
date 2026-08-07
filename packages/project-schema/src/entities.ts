@@ -3,6 +3,7 @@ import { animationTracksSchema } from "./animations.js";
 import { transitionSchema } from "./transitions.js";
 import { effectInstanceSchema } from "./effects.js";
 import { clipMasksSchema } from "./masks.js";
+import { clipMarkersSchema } from "./markers.js";
 import {
   audioGainDbSchema,
   audioPanSchema,
@@ -69,6 +70,9 @@ export const timelineClipSchema = z
     // Optional for the same reason as `animations`: every project written
     // before masks existed must still parse byte-for-byte identically.
     masks: clipMasksSchema.optional(),
+    // Optional for the same reason as `masks`: a project written before
+    // markers existed must still parse byte-for-byte identically.
+    markers: clipMarkersSchema.optional(),
     // Optional preserves byte-equivalent parsing of schema-v1 projects. New
     // animation commands will materialize the array only when first used.
     animations: animationTracksSchema.optional(),
