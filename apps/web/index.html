@@ -28,6 +28,7 @@
   </head>
   <body>
     <div id="app">
+      <h1 class="visually-hidden">Project Director — photo, video and GIF editor</h1>
       <header id="topbar">
         <div class="top-left">
           <span class="logo">🎬 Project Director</span>
@@ -176,7 +177,7 @@
 
       <main id="workspace">
         <!-- LEFT: media bin + history -->
-        <aside id="left-panel" class="panel">
+        <aside id="left-panel" class="panel" aria-label="Media, looks and effects">
           <div class="panel-title panel-title-row">
             <span>Media</span>
             <button
@@ -214,7 +215,11 @@
         </aside>
 
         <!-- CENTER: preview + transport -->
-        <section id="center-panel" class="panel">
+        <section
+          id="center-panel"
+          class="panel"
+          aria-label="Preview and transport"
+        >
           <div id="stage" class="stage">
             <canvas id="preview"></canvas>
             <button
@@ -249,7 +254,7 @@
         </section>
 
         <!-- RIGHT: inspector -->
-        <aside id="right-panel" class="panel">
+        <aside id="right-panel" class="panel" aria-label="Inspector">
           <!-- GIF output settings. Present only in GIF mode; the encoder is
                fetched the moment that mode is selected, and this section
                reports where that load got to. -->
@@ -310,7 +315,7 @@
       </main>
 
       <!-- BOTTOM: timeline -->
-      <footer id="timeline" class="panel">
+      <footer id="timeline" class="panel" aria-label="Timeline">
         <div class="timeline-toolbar">
           <button id="btn-add-track" class="tool">＋ Track</button>
           <button id="btn-split" class="tool">✂ Split</button>

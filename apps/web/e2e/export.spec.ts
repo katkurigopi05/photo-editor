@@ -124,40 +124,47 @@ test("still export captures the frame at the playhead, not the previous one", as
   // Video elements were never in the document, so nothing was composited and no
   // frame was ever presented; currentTime reported the *requested* position, so
   // the export believed it was ready and copied the frame still on screen.
+  //
+  // Both measurements are of exported files, not of the preview canvas. An
+  // earlier version compared the export against preview signatures, which quietly
+  // coupled it to the stage's size and aspect: the preview is letterboxed and
+  // the export is not, so a layout change moved the numbers and the margin
+  // between "right frame" and "stale frame" vanished.
   await importMedia(page, "video/motion-1280x720-5s.mp4");
   await setMode(page, "video");
 
-  const reference: Record<number, number[]> = {};
-  for (const fraction of [50, 800]) {
-    await seekFraction(page, fraction);
-    await page.waitForTimeout(900);
-    reference[fraction] = await previewSignature(page);
-  }
+  const exportSignature = async (): Promise<number[]> => {
+    const bytes = await downloadBytes(page, "#btn-export");
+    return page.evaluate(
+      async ({ b64, fn }) => {
+        const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const bitmap = await createImageBitmap(
+          new Blob([bin], { type: "image/png" }),
+        );
+        return (await eval(fn)(bitmap)) as number[];
+      },
+      { b64: bytes.toString("base64"), fn: SIGNATURE_FN },
+    );
+  };
 
-  // Settle early in the clip, then jump far and export with no settle time.
+  // Settle early in the clip and export that frame.
   await seekFraction(page, 50);
   await page.waitForTimeout(900);
+  await setMode(page, "photo");
+  const early = await exportSignature();
+
+  // Jump far and export immediately, with no settle time. A stale export would
+  // hand back the frame above.
+  await setMode(page, "video");
   await seekFraction(page, 800);
   await setMode(page, "photo");
+  const late = await exportSignature();
 
-  const bytes = await downloadBytes(page, "#btn-export");
-  const exported = await page.evaluate(
-    async ({ b64, fn }) => {
-      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-      const bitmap = await createImageBitmap(
-        new Blob([bin], { type: "image/png" }),
-      );
-      return (await eval(fn)(bitmap)) as number[];
-    },
-    { b64: bytes.toString("base64"), fn: SIGNATURE_FN },
-  );
-
-  const toTarget = signatureDistance(exported, reference[800]!);
-  const toStale = signatureDistance(exported, reference[50]!);
+  const distance = signatureDistance(early, late);
   expect(
-    toTarget,
-    `target=${toTarget.toFixed(2)} stale=${toStale.toFixed(2)}`,
-  ).toBeLessThan(toStale);
+    distance,
+    `early-vs-late=${distance.toFixed(2)} (a stale export would be near zero)`,
+  ).toBeGreaterThan(5);
 });
 
 test("MP4 export of a video clip writes distinct frames", async ({ page }) => {

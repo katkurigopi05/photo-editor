@@ -53,6 +53,11 @@ Basic workflow:
 | Timeline | Adds tracks and arranges clips. Split, delete, ripple delete, trim, snap-assisted drag, multi-select, and zoom are available. |
 | Top bar | Theme and skin controls, Undo, Redo, version badge, and Export. |
 
+The workspace adapts to the window: below about 1000 pixels wide it stacks into
+a single column with the preview on top and the panels beneath it. Every control
+shows a focus ring when reached with the keyboard, and animation is dropped
+when the system asks for reduced motion.
+
 ### Shared tools
 
 - Import supports images, video, and audio that the current browser can decode.
@@ -335,6 +340,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-07:** The workspace now reflows on narrow windows instead of
+  squeezing the preview, every control shows a keyboard focus ring, and reduced
+  motion is honoured throughout.
 - **2026-08-07:** Export gained 4K/1440p and custom resolutions, selectable
   frame rates including 29.97 and 59.94, custom bitrates, audio bitrate and
   no-audio options, and streams to disk where the browser supports it.

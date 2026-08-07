@@ -275,10 +275,23 @@ body {
   outline-offset: 2px;
 }
 
+/*
+ * Reduced motion.
+ *
+ * Previously only the mode wheel honoured the preference, which is the
+ * animation most obviously *decorative* — while the panel slides, toast
+ * entrances, hover transitions and the export bar kept moving. A blanket rule
+ * is the honest reading of "reduce": nothing here conveys meaning through
+ * motion that it does not also convey through position or text.
+ */
 @media (prefers-reduced-motion: reduce) {
-  .mode-wheel-drum,
-  .mode-wheel-item {
-    transition: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 .timecode {
@@ -572,12 +585,90 @@ body {
   color: var(--danger);
 }
 
+/*
+ * Keyboard focus.
+ *
+ * Four components styled their own focus ring and everything else — every
+ * button, select, slider, chip and clip — showed whatever the browser default
+ * happened to be, which against these panel colours is often nothing. A
+ * keyboard user could not see where they were. One baseline rule covers every
+ * interactive element; the component rules above it still win where they are
+ * more specific.
+ */
+:where(button, [href], input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* The timeline clip is a div with a pointer handler; give it the same ring so
+   tabbing through the timeline is visible. */
+.clip:focus-visible {
+  outline: 2px solid var(--on-accent);
+  outline-offset: 2px;
+}
+
+/* Visually hidden, still announced: the page heading and panel names exist for
+   screen readers without changing a pixel of the design. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ---- workspace ---- */
 #workspace {
   display: grid;
-  grid-template-columns: 264px 1fr 328px;
+  grid-template-columns: 264px minmax(0, 1fr) 328px;
   gap: 8px;
   min-height: 0;
+}
+
+/*
+ * Responsive reflow.
+ *
+ * The three columns used to be fixed either side of a flexible middle, so
+ * narrowing the window took every pixel out of the *stage* — the one panel the
+ * work happens in. At 768px it was a 110px sliver with two full-width sidebars
+ * beside it. The sidebars give ground first, and below the point where that
+ * stops being enough the layout stacks with the picture on top.
+ */
+@media (max-width: 1400px) {
+  #workspace {
+    grid-template-columns: 232px minmax(0, 1fr) 288px;
+  }
+}
+@media (max-width: 1150px) {
+  /* The sidebars are lists and sliders — they lose width more gracefully than
+     a picture does. */
+  #workspace {
+    grid-template-columns: 200px minmax(0, 1fr) 248px;
+  }
+  #left-panel,
+  #right-panel {
+    padding: 10px;
+  }
+}
+@media (max-width: 1000px) {
+  #workspace {
+    /* One column, stage first: on a narrow window the picture matters more
+       than having the tools permanently in view. */
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(320px, 1fr) auto auto;
+  }
+  #left-panel,
+  #right-panel {
+    max-height: 40vh;
+  }
+  #center-panel {
+    order: -1;
+  }
 }
 .panel {
   background: var(--panel);
