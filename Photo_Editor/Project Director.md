@@ -13,10 +13,36 @@ codebase in this workspace.
 > `[[wikilinks]]`. Start here, or open the Graph view to see how everything
 > connects. See [[How this vault works]].
 
+## Product scope
+
+> [!important] Personal use, on a local machine
+> This is a **single-user desktop application that runs fully offline**. No
+> account, no cloud sync, no sharing, no telemetry; AI runs on-device. That is a
+> product decision with architectural teeth — see [[Rules/Local Only]].
+
+[Adobe Lightroom](https://lightroom.adobe.com/) is the feature reference for the
+photo side: we take its **editing and library model** (non-destructive
+adjustments, masking, ratings/keywords/search) and drop its **service model**
+(sync, sharing, subscription, hosted generative AI). The full mapping — adopted,
+scaled down, and deliberately excluded — is in
+[[Concepts/Lightroom Feature Reference]].
+
+Current priority order from that gap analysis:
+
+1. **Masking as a first-class object** — the single highest-leverage gap; makes
+   every existing adjustment usable as a local adjustment
+2. **HSL / Color Mixer**
+3. **[[Concepts/Local Catalog|Local catalog]]** — ratings, flags, keywords, search
+4. Color Grading (3-way), Dehaze, Texture
+5. Optics and perspective correction
+
 ## Maps of content
 
 - [[Rules/Non-negotiables|Non-negotiables]] — the rules every phase inherits
+- [[Rules/Local Only|Local Only]] — offline, single-user, on-device scope
 - [[Concepts/Command Engine|Command Engine]] — how mutations happen
+- [[Concepts/Lightroom Feature Reference|Lightroom Feature Reference]] — what we take and what we drop
+- [[Concepts/Local Catalog|Local Catalog]] — the library layer
 - [[Data Model/Project|Data Model]] — what a project is made of
 - [[Phases/Roadmap|Build Roadmap]] — phases and order
 

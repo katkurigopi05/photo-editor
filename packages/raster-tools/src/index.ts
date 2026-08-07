@@ -40,3 +40,26 @@ export {
   rotateImage,
   shiftImage,
 } from "./transform.js";
+
+export {
+  type HslAdjustment,
+  type HslBand,
+  type MaskMode,
+  HSL_BANDS,
+  blacks,
+  colorMixer,
+  composeMasks,
+  contrast,
+  exposure,
+  highlights,
+  hslToRgb,
+  luma,
+  mapPixels,
+  rgbToHsl,
+  saturation,
+  shadows,
+  temperature,
+  tint,
+  vibrance,
+  whites,
+} from "./adjust.js";
