@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createImage, pixelIndex, type RasterImage } from "../src/types.js";
-import { whiteBalance, levels, toneCurve, vibrance } from "../src/grade.js";
+import { whiteBalance, levels, toneCurve } from "../src/grade.js";
 
 /**
  * Colour grading is the one part of the effect stack a photographer judges by
@@ -203,61 +203,5 @@ describe("toneCurve", () => {
   it("leaves alpha untouched", () => {
     const out = toneCurve(solid(10, 20, 30, 44), 1, 1, 1);
     expect(out.data[3]).toBe(44);
-  });
-});
-
-describe("vibrance", () => {
-  it("is an exact no-op at amount 0", () => {
-    const image = solid(200, 60, 40);
-    const out = vibrance(image, 0);
-    expect(Array.from(out.data)).toEqual(Array.from(image.data));
-  });
-
-  it("leaves a neutral gray untouched at any amount", () => {
-    // Saturating a gray must not invent a colour cast.
-    expect(rgbAt(vibrance(solid(128, 128, 128), 1), 0)).toEqual([
-      128, 128, 128,
-    ]);
-    expect(rgbAt(vibrance(solid(128, 128, 128), -1), 0)).toEqual([
-      128, 128, 128,
-    ]);
-  });
-
-  it("boosts a muted colour more than an already saturated one", () => {
-    const muted = solid(140, 128, 128); // barely off-gray
-    const vivid = solid(255, 0, 0); // fully saturated
-    const mutedGain =
-      rgbAt(vibrance(muted, 1), 0)[0] - rgbAt(vibrance(muted, 0), 0)[0];
-    const vividGain =
-      rgbAt(vibrance(vivid, 1), 0)[0] - rgbAt(vibrance(vivid, 0), 0)[0];
-    expect(mutedGain).toBeGreaterThan(vividGain);
-  });
-
-  it("desaturates toward gray at a negative amount", () => {
-    const out = rgbAt(vibrance(solid(200, 60, 40), -1), 0);
-    const spreadBefore = 200 - 40;
-    const spreadAfter = Math.max(...out) - Math.min(...out);
-    expect(spreadAfter).toBeLessThan(spreadBefore);
-  });
-
-  it("stays inside 0-255 at full boost", () => {
-    const out = vibrance(solid(250, 10, 5), 1);
-    for (const v of out.data) {
-      expect(v).toBeGreaterThanOrEqual(0);
-      expect(v).toBeLessThanOrEqual(255);
-    }
-  });
-
-  it("leaves alpha untouched", () => {
-    const out = vibrance(solid(200, 60, 40, 12), 1);
-    expect(out.data[3]).toBe(12);
-  });
-
-  it("is deterministic across repeated calls", () => {
-    const image = ramp();
-    const first = Array.from(vibrance(image, 0.7).data);
-    for (let i = 0; i < 3; i++) {
-      expect(Array.from(vibrance(image, 0.7).data)).toEqual(first);
-    }
   });
 });

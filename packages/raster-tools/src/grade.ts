@@ -3,25 +3,21 @@ import { cloneImage, type RasterImage } from "./types.js";
 /**
  * Colour grading.
  *
- * Four independent passes — white balance, levels, tone curve, vibrance — that
- * a photographer expects to find under different names in every editor. They
+ * Three independent passes — white balance, levels, tone curve — that a
+ * photographer expects to find under different names in every editor. Vibrance
+ * belongs to the same family but lives in `adjust.ts`, whose mask-aware version
+ * supersedes the one this module used to carry. They
  * are pure and deterministic, like the painterly passes, because they run
  * inside the shared draw path: the preview, the still export, every GIF frame
  * and every MP4 frame must grade a given source pixel to the same output byte.
  *
- * Three of the four are per-channel point operations, so they are built as
+ * All three are per-channel point operations, so they are built as
  * 256-entry lookup tables and then applied — the cost is a table build plus one
  * array read per channel, independent of image size or parameter magnitude.
- * Vibrance is not channel-independent (it needs the pixel's own saturation) and
- * is computed per pixel.
  *
  * Alpha is never touched, so a graded clip still keys out against a removed
  * background.
  */
-
-const LUMA_R = 0.2126;
-const LUMA_G = 0.7152;
-const LUMA_B = 0.0722;
 
 /** Apply three per-channel lookup tables, leaving alpha alone. */
 function applyLuts(
@@ -162,45 +158,6 @@ export function toneCurve(
     return result;
   });
   return applyLuts(image, lut, lut, lut);
-}
-
-/**
- * Vibrance: saturation weighted by how unsaturated the pixel already is.
- *
- * A flat saturation boost drives already-vivid colours to clipped, cartoon
- * primaries. Vibrance scales its effect by `1 - saturation`, so muted colour
- * gains the most and a fully saturated red barely moves — the reason portrait
- * work reaches for vibrance rather than saturation, since skin is the muted
- * colour that would otherwise go last.
- *
- * A neutral gray has zero saturation and stays exactly neutral at any amount,
- * so the pass can never invent a colour cast.
- */
-export function vibrance(image: RasterImage, amount: number): RasterImage {
-  const out = cloneImage(image);
-  if (amount === 0) return out;
-
-  for (let i = 0; i < out.data.length; i += 4) {
-    const r = image.data[i]!;
-    const g = image.data[i + 1]!;
-    const b = image.data[i + 2]!;
-
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    if (max === min) continue; // neutral: nothing to saturate
-
-    const saturation = (max - min) / max;
-    // Boosting weights toward muted pixels; cutting applies evenly, because a
-    // desaturate that spared vivid colour would never reach gray.
-    const weight = amount > 0 ? 1 - saturation : 1;
-    const gain = 1 + amount * weight;
-
-    const grey = LUMA_R * r + LUMA_G * g + LUMA_B * b;
-    out.data[i] = Math.round(grey + (r - grey) * gain);
-    out.data[i + 1] = Math.round(grey + (g - grey) * gain);
-    out.data[i + 2] = Math.round(grey + (b - grey) * gain);
-  }
-  return out;
 }
 
 /** Exported for callers that want a neutral table to compose against. */

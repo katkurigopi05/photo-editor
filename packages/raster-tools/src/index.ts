@@ -16,6 +16,11 @@ export {
   invertMask,
   featherMask,
   maskBounds,
+  linearGradientMask,
+  radialGradientMask,
+  brushStrokeMask,
+  luminanceRangeMask,
+  colorRangeMask,
 } from "./mask.js";
 
 export {
@@ -52,4 +57,36 @@ export {
   halftone,
 } from "./artistic.js";
 
-export { whiteBalance, levels, toneCurve, vibrance } from "./grade.js";
+export { whiteBalance, levels, toneCurve } from "./grade.js";
+
+// Lightroom-modelled adjustments. `vibrance` lives here rather than in
+// `grade.ts` because both modules had one and this is the mask-aware version;
+// the grading effect calls it with its −1…1 amount scaled to Lightroom's
+// −100…100 convention.
+export {
+  type HslAdjustment,
+  type HslBand,
+  type MaskMode,
+  HSL_BANDS,
+  blacks,
+  colorMixer,
+  composeMasks,
+  contrast,
+  exposure,
+  highlights,
+  hslToRgb,
+  luma,
+  mapPixels,
+  rgbToHsl,
+  saturation,
+  shadows,
+  temperature,
+  tint,
+  vibrance,
+  whites,
+  colorGrading,
+  type ColorGradingOptions,
+  type GradingWheel,
+} from "./adjust.js";
+
+export { clarity, texture, dehaze, noiseReduction } from "./detail.js";

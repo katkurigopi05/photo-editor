@@ -1,7 +1,7 @@
 # Project Director User Manual
 
 Photo · Video · Animation · GIF  
-Project version 0.1.0 · Updated August 5, 2026
+Project version 0.1.0 · Updated August 6, 2026
 
 > Maintenance rule: this Markdown file is the editable source of truth. Keep it,
 > `Project_Director_User_Manual.docx`, and affected screenshots synchronized by
@@ -62,6 +62,8 @@ Basic workflow:
   crop/reframe, rotate, flip, artistic treatments, text, and background removal.
 - Colour grading, available in Photo and Video mode: White Balance, Levels,
   Tone Curve, and Vibrance.
+- Lightroom-style panels: Tone (Light), Colour Mixer (HSL), Colour Grading,
+  Presence (Clarity, Texture, Dehaze), and Noise Reduction.
 - Clip speed (0.25×–4×) under Speed in the Inspector, for any clip.
 - Visual clips can animate Position X, Position Y, Scale, Rotation, and Opacity.
 - Easing choices: linear, hold, ease-in, ease-out, and ease-in-out.
@@ -81,6 +83,14 @@ Features:
   invert, blur, opacity, crop/reframe, rotate, flip, vignette, and tint.
 - Colour grading: White Balance (Warmth, Tint), Levels (Blacks, Whites,
   Gamma), Tone Curve (Shadows, Midtones, Highlights), and Vibrance.
+- Tone (Light): Highlights, Shadows, Whites, and Blacks on Lightroom's
+  −100…+100 scale.
+- Colour Mixer (HSL): pick one of eight colour bands and move its Hue,
+  Saturation, and Luminance. Add one Colour Mixer per band you need.
+- Colour Grading: separate hue and strength wheels for shadows, midtones, and
+  highlights, plus Balance and an overall Blend.
+- Presence: Clarity (midtone form), Texture (fine detail), and Dehaze.
+- Noise Reduction: separate Luminance and Colour amounts.
 - Creative effects: Portrait Blur, Duotone, Border, Pencil Sketch, Oil
   Painting, Cartoon, Watercolour, Crosshatch, Halftone, and Text.
 - Raster tools: Move, Crop, Transform, Brush, Eraser, Clone Stamp, Lasso,
@@ -112,6 +122,19 @@ Example — grade a photograph:
 
 Grading applies before artistic treatments, and the graded result is what every
 export writes. Reorder or disable individual grading effects in the Inspector.
+
+Example — a Lightroom-style pass:
+
+1. Add Tone (Light) and set Highlights, Shadows, Whites, and Blacks.
+2. Add Presence and use Clarity for midtone form, Texture for fine detail, and
+   Dehaze for a flat, washed-out frame.
+3. Add Colour Mixer (HSL), choose a band, and move its Hue, Saturation, or
+   Luminance. Add another Colour Mixer for each further band.
+4. Add Colour Grading to tint shadows, midtones, and highlights separately.
+   Balance moves the boundary between shadow and highlight; negative widens the
+   shadow band.
+5. Add Noise Reduction last. Colour can be pushed much harder than Luminance,
+   which costs real detail.
 
 Raster strokes use local Undo/Redo until Apply. Project Undo handles the
 resulting applied operation.
@@ -265,6 +288,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-06:** Added the Lightroom-modelled panels — Tone (Light), Colour
+  Mixer (HSL), Colour Grading, Presence (Clarity/Texture/Dehaze), and Noise
+  Reduction — in Photo and Video mode.
 - **2026-08-05:** Added clip speed (0.25×–4×). Audio is resampled with the
   picture, so a slowed clip drops in pitch; pitch-preserving stretch is not
   implemented.
