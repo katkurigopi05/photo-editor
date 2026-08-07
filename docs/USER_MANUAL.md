@@ -1,7 +1,7 @@
 # Project Director User Manual
 
 Photo · Video · Animation · GIF  
-Project version 0.1.0 · Updated August 6, 2026
+Project version 0.1.0 · Updated August 7, 2026
 
 > Maintenance rule: this Markdown file is the editable source of truth. Keep it,
 > `Project_Director_User_Manual.docx`, and affected screenshots synchronized by
@@ -57,7 +57,8 @@ Basic workflow:
 
 - Import supports images, video, and audio that the current browser can decode.
 - Images receive a default five-second duration.
-- One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade.
+- One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
+  applies to every selected clip at once.
 - Common effects: brightness, contrast, saturation, exposure, blur, opacity,
   crop/reframe, rotate, flip, artistic treatments, text, and background removal.
 - Colour grading, available in Photo and Video mode: White Balance, Levels,
@@ -173,8 +174,10 @@ Features:
 - Trim handles on each clip edge change the in/out point. Hold Shift while
   trimming to ripple: later clips on the track shift by the same amount.
 - Ripple Delete removes the selection and closes the gap behind it.
-- Shift-click or Cmd/Ctrl-click selects several clips; Delete and Ripple Delete
-  apply to all of them. Each gesture is a single Undo step.
+- Shift-click or Cmd/Ctrl-click selects several clips. Effects, Looks, Delete
+  and Ripple Delete all apply to every selected clip, and each apply is a single
+  Undo step however many clips and effects it touched. The Inspector still edits
+  one clip; it says which while a multi-selection is active.
 - Start, previous frame, play/pause, next frame, seek, and synchronized audio.
 - Visual controls including hue rotation and Retro Noise in addition to shared
   adjustments, colour grading, and artistic effects.
@@ -307,6 +310,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-07:** Effects and Looks now apply to every selected clip, as one
+  Undo step. Audio effects skip selected clips that carry no audio.
 - **2026-08-06:** Added masks as project state — Radial, Linear, Luminance
   range, and Colour range — with a Mask control on every visual effect.
 - **2026-08-06:** Added the Lightroom-modelled panels — Tone (Light), Colour
