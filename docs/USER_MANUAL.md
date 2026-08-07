@@ -61,6 +61,9 @@ when the system asks for reduced motion.
 ### Shared tools
 
 - Import supports images, video, and audio that the current browser can decode.
+- Large files import without being loaded into memory: the file is read in
+  chunks while a progress line shows how far along it is. Multi-gigabyte video
+  imports as normal.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.
@@ -328,6 +331,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 - **File will not import:** use an image, video, or audio format the browser can
   decode; try PNG/JPEG or H.264 MP4.
+- **A very large file takes a while to import:** the file is read once, end to
+  end, to identify it. The progress line in the toast shows how far along it is;
+  editing starts as soon as it finishes.
 - **Blank preview:** select the clip and move the playhead inside its range.
 - **GIF encoder failure:** verify module loading, leave GIF mode, and reselect it.
 - **GIF too large:** reduce width, frame rate, colors, duration, or boomerang.
@@ -340,6 +346,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-07:** Large files now import by streaming rather than by loading the
+  whole file into memory, with progress shown for files above 64 MB.
 - **2026-08-07:** The workspace now reflows on narrow windows instead of
   squeezing the preview, every control shows a keyboard focus ring, and reduced
   motion is honoured throughout.

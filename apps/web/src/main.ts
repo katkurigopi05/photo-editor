@@ -80,6 +80,11 @@ import {
 } from "./theme.js";
 import { layoutTextLines } from "./text-overlay.js";
 import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
+import { checksumBlob } from "./checksum.js";
+import type {
+  ChecksumRequest,
+  ChecksumResponse,
+} from "./checksum-worker.js";
 import {
   buildExportPreset,
   h264CodecString,
@@ -923,11 +928,95 @@ function formatTime(us: string | number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
 }
 
-async function sha256Hex(data: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+/** A file size a person can read at a glance. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+/**
+ * The hashing worker, created on first use and kept for the session.
+ *
+ * A worker per import would pay its startup cost on every file of a batch;
+ * one worker, addressed by request id, handles them in turn.
+ */
+let checksumWorker: Worker | null = null;
+let checksumRequestCounter = 0;
+
+function ensureChecksumWorker(): Worker | null {
+  if (checksumWorker) return checksumWorker;
+  try {
+    // The `.ts` specifier is the bundler's form: Vite rewrites it to the built
+    // worker chunk. Pointing at `.js` resolves to nothing in dev, and the
+    // failure arrives as an async error event rather than a throw — which is
+    // how a missing worker turned into an import that hung forever.
+    checksumWorker = new Worker(
+      new URL("./checksum-worker.ts", import.meta.url),
+      { type: "module" },
+    );
+  } catch {
+    // No worker (older browser, blocked context): hashing still happens, just
+    // on this thread. Slower and less responsive, never wrong.
+    checksumWorker = null;
+  }
+  return checksumWorker;
+}
+
+/**
+ * SHA-256 of a file, streamed.
+ *
+ * Previously `file.arrayBuffer()` read the whole file to hash it, so importing
+ * anything past the browser's ArrayBuffer ceiling failed outright and smaller
+ * files still spiked memory by their full size. The bytes now flow through the
+ * hasher a chunk at a time, in a worker, with progress for the files big enough
+ * that the wait is noticeable.
+ */
+async function checksumFile(
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<string> {
+  const worker = ensureChecksumWorker();
+  if (!worker) return checksumBlob(file, (done, total) =>
+    onProgress?.(total > 0 ? done / total : 1),
+  );
+
+  const id = `checksum-${(checksumRequestCounter += 1)}`;
+  return new Promise<string>((resolve, reject) => {
+    const onMessage = (event: MessageEvent<ChecksumResponse>): void => {
+      const message = event.data;
+      if (message.id !== id) return;
+      if (message.type === "progress") {
+        onProgress?.(
+          message.total > 0 ? message.bytesHashed / message.total : 1,
+        );
+        return;
+      }
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      if (message.type === "done") resolve(message.checksum);
+      else reject(new Error(message.message));
+    };
+    // A worker that dies mid-request would otherwise leave this promise
+    // pending and the import silently stuck.
+    const onError = (): void => {
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      checksumWorker = null;
+      void checksumBlob(file, (done, total) =>
+        onProgress?.(total > 0 ? done / total : 1),
+      ).then(resolve, reject);
+    };
+    worker.addEventListener("message", onMessage);
+    worker.addEventListener("error", onError);
+    worker.postMessage({ id, file } satisfies ChecksumRequest);
+  });
 }
 
 function activeSequence(): Sequence | undefined {
@@ -1082,7 +1171,19 @@ async function importFile(file: File): Promise<void> {
     mediaCache.set(url, el as HTMLVideoElement);
   }
 
-  const checksum = await sha256Hex(await file.arrayBuffer());
+  // Large files take long enough that silence reads as a hang; the toast
+  // carries the progress rather than a spinner that says nothing.
+  const LOUD_ENOUGH_BYTES = 64 * 1024 * 1024;
+  const announce = file.size >= LOUD_ENOUGH_BYTES;
+  if (announce) {
+    toast(`Reading ${file.name} (${formatBytes(file.size)})…`);
+  }
+  const checksum = await checksumFile(file, (fraction) => {
+    if (!announce) return;
+    toast(
+      `Reading ${file.name} — ${Math.round(fraction * 100)}% of ${formatBytes(file.size)}`,
+    );
+  });
   const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
   assetNames.set(assetId, file.name);
   const metadata: MediaAsset["metadata"] = {
@@ -1154,7 +1255,7 @@ async function addVectorShape(preset: VectorShapePreset): Promise<void> {
   }
 
   const bytes = new TextEncoder().encode(source.svg);
-  const checksum = await sha256Hex(bytes.slice().buffer);
+  const checksum = await checksumBlob(new Blob([bytes]));
   const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
   const durationUs = "5000000";
   assetNames.set(assetId, `${preset.label} cartoon`);
@@ -4140,6 +4241,9 @@ function renderMedia(): void {
     if (removedAssets.has(asset.id)) continue;
     const el = document.createElement("div");
     el.className = "media-item";
+    // The registered digest, exposed so a test can compare it with the file on
+    // disk — the one property of streamed hashing that has to stay true.
+    el.dataset.checksum = asset.checksum;
     el.draggable = true;
     el.addEventListener("dragstart", (e) => {
       e.dataTransfer?.setData("application/x-asset-id", asset.id);
@@ -5831,7 +5935,7 @@ async function applyRasterEdit(): Promise<void> {
   const sourceAsset = loc ? findAsset(loc.clip.assetId) : undefined;
   try {
     const blob = await rasterSession.toBlob();
-    const checksum = await sha256Hex(await blob.arrayBuffer());
+    const checksum = await checksumBlob(blob);
     const url = URL.createObjectURL(blob);
     const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
     const baseName = sourceAsset ? assetName(sourceAsset) : "photo";

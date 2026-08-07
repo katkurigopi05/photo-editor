@@ -4,7 +4,6 @@ import {
   gifFrameMetrics,
   importMedia,
   LUMA_FN,
-  previewSignature,
   seekFraction,
   setMode,
   SIGNATURE_FN,
