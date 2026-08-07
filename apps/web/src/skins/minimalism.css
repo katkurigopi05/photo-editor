@@ -1,0 +1,118 @@
+/* Minimalism — Swiss discipline. Nothing renders that isn't information:
+   no fills, no shadows, no radii. Structure comes from a single hairline and
+   from space; the accent appears exactly once per state, never decoratively. */
+
+:root[data-skin="minimalism"] {
+  --radius: 2px;
+  --radius-lg: 2px;
+  --shadow: none;
+  --shadow-soft: none;
+  --min-line: color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+:root[data-skin="minimalism"] body {
+  background-image: none;
+  background-color: var(--bg);
+}
+
+:root[data-skin="minimalism"] #topbar,
+:root[data-skin="minimalism"] .panel,
+:root[data-skin="minimalism"] .theme-panel,
+:root[data-skin="minimalism"] .export-card,
+:root[data-skin="minimalism"] .toast,
+:root[data-skin="minimalism"] .drop-card {
+  background: transparent;
+  border: 1px solid var(--min-line);
+  box-shadow: none;
+}
+
+:root[data-skin="minimalism"] #topbar {
+  border-width: 0 0 1px;
+}
+
+:root[data-skin="minimalism"] .tool,
+:root[data-skin="minimalism"] .mini,
+:root[data-skin="minimalism"] .import-btn,
+:root[data-skin="minimalism"] .fx-chip,
+:root[data-skin="minimalism"] .look-chip,
+:root[data-skin="minimalism"] .raster-tool-btn,
+:root[data-skin="minimalism"] .compare-btn,
+:root[data-skin="minimalism"] .view-toggle,
+:root[data-skin="minimalism"] .media-item,
+:root[data-skin="minimalism"] .history-item,
+:root[data-skin="minimalism"] select {
+  background: transparent;
+  border: 1px solid var(--min-line);
+  box-shadow: none;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* Hover is a border-weight change, not a fill. */
+:root[data-skin="minimalism"] .tool:hover,
+:root[data-skin="minimalism"] .mini:hover,
+:root[data-skin="minimalism"] .fx-chip:hover,
+:root[data-skin="minimalism"] .look-chip:hover,
+:root[data-skin="minimalism"] .media-item:hover,
+:root[data-skin="minimalism"] .import-btn:hover {
+  background: transparent;
+  border-color: var(--text);
+  color: var(--text);
+}
+
+:root[data-skin="minimalism"] .tool:focus-visible,
+:root[data-skin="minimalism"] .mini:focus-visible,
+:root[data-skin="minimalism"] .fx-chip:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The single place color is allowed: the current action. */
+:root[data-skin="minimalism"] .tool.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+:root[data-skin="minimalism"] .mini.active,
+:root[data-skin="minimalism"] .raster-tool-btn.active,
+:root[data-skin="minimalism"] .compare-btn.active,
+:root[data-skin="minimalism"] .mode-btn.active,
+:root[data-skin="minimalism"] .theme-btn.active {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+:root[data-skin="minimalism"] .mode-switch,
+:root[data-skin="minimalism"] .theme-switch {
+  background: transparent;
+  border: 1px solid var(--min-line);
+  border-radius: 2px;
+}
+
+:root[data-skin="minimalism"] .stage,
+:root[data-skin="minimalism"] .timeline-body {
+  background-image: none;
+  background-color: transparent;
+  border: 1px solid var(--min-line);
+}
+
+:root[data-skin="minimalism"] .logo {
+  background: none;
+  -webkit-text-fill-color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+:root[data-skin="minimalism"] .clip {
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  color: var(--text);
+  box-shadow: none;
+}
+
+:root[data-skin="minimalism"] .clip::before {
+  background: var(--accent);
+}

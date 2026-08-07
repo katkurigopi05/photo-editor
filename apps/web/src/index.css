@@ -152,6 +152,11 @@ body {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   padding: 0 16px;
+  /* Own stacking context above the workspace: the theme dropdown escapes the
+     bar's bounds, and skins that use backdrop-filter here would otherwise trap
+     it in a context that the preview canvas paints over. */
+  position: relative;
+  z-index: 30;
   background: var(--panel);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-lg);
@@ -210,6 +215,71 @@ body {
   background: var(--accent-grad);
   color: var(--on-accent);
   box-shadow: 0 2px 10px rgba(124, 92, 255, 0.4);
+}
+
+/* ---- mode wheel ----
+   A three-position drum: the housing is the window, the drum rotates behind
+   it, and the item facing the viewer is the selected mode. The housing reuses
+   .mode-switch and the items reuse .mode-btn, so a skin's recessed track and
+   raised selection carry over without a single skin-specific rule.
+   Only transform and opacity animate — both compositor-friendly. */
+.mode-wheel {
+  position: relative;
+  width: 108px;
+  /* Taller than one item on purpose: the extra height is the gap the
+     neighbouring modes peek through, which is what tells you the control
+     turns. */
+  height: 46px;
+  padding: 0;
+  overflow: hidden;
+  perspective: 240px;
+  touch-action: none;
+  cursor: ns-resize;
+}
+.mode-wheel-drum {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(var(--angle, 0deg));
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.32, 1);
+}
+.mode-wheel-item {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 28px;
+  margin-top: -14px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 999px;
+  /* 60deg per step keeps the neighbours legible at the window's edge; a full
+     360/3 spacing would put them edge-on and unreadable. The 24px radius is
+     the one that makes 28px faces meet at 60deg — half the face height over
+     tan(30deg) — so the drum reads as a solid cylinder rather than three
+     floating cards. */
+  transform: rotateX(calc(var(--slot) * 60deg)) translateZ(24px);
+  backface-visibility: hidden;
+  /* --distance is set per item by main.ts: 0 for the selection, 1 or 2 for
+     the modes rotating away from it. */
+  opacity: calc(1 - var(--distance, 0) * 0.42);
+  transition: opacity 0.34s ease;
+}
+.mode-wheel-item[aria-checked="false"] {
+  background: transparent;
+  box-shadow: none;
+}
+.mode-wheel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mode-wheel-drum,
+  .mode-wheel-item {
+    transition: none;
+  }
 }
 .timecode {
   font-variant-numeric: tabular-nums;
@@ -294,6 +364,50 @@ body {
   grid-template-columns: repeat(3, 1fr);
   gap: 7px;
   margin-bottom: 8px;
+}
+
+/* UI style (skin) picker — each swatch is a miniature of the material the
+   skin applies, so the choice reads without having to try it. */
+.skin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+  margin-bottom: 12px;
+}
+.skin-swatch {
+  height: 46px;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+  cursor: pointer;
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  transition:
+    transform 0.08s,
+    border-color 0.15s;
+}
+.skin-swatch:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+}
+.skin-swatch.active {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.skin-swatch-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 2px 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .theme-swatch {
   height: 40px;
@@ -731,6 +845,47 @@ body {
   gap: 6px;
   margin-bottom: 4px;
 }
+.vector-shapes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.vector-shape-chip {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 4px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    transform 0.05s;
+}
+.vector-shape-chip:hover {
+  border-color: var(--accent);
+  background: var(--panel-3);
+  transform: translateY(-1px);
+}
+.vector-shape-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.vector-shape-symbol {
+  color: var(--shape-fill, var(--accent));
+  font-size: 24px;
+  line-height: 1;
+  filter: drop-shadow(0 0 1px var(--text));
+}
 .look-chip {
   padding: 6px 11px;
   background: var(--accent-grad);
@@ -981,6 +1136,145 @@ input[type="range"]::-moz-range-thumb {
   text-transform: uppercase;
   letter-spacing: 0.6px;
 }
+.animation-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.animation-section h4 {
+  margin-bottom: 0;
+}
+.animation-auto {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line-soft));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+}
+.animation-auto > label {
+  color: var(--accent-2);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+.animation-auto-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+}
+.animation-auto-row select {
+  width: 100%;
+  min-width: 0;
+}
+.animation-auto-row .mini {
+  min-height: 30px;
+  padding-inline: 9px;
+}
+.animation-auto-description {
+  margin: 0;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.animation-nav {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 6px;
+}
+.animation-nav .mini {
+  width: 34px;
+  min-height: 28px;
+  padding: 3px;
+}
+.animation-time {
+  min-width: 0;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.animation-help {
+  margin: 0;
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.animation-control {
+  min-width: 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--line-soft);
+}
+.animation-control-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 28px;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.animation-control-header label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.animation-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.animation-control input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.animation-control-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 5px;
+  color: var(--faint);
+  font-size: 10px;
+}
+.animation-easing {
+  width: auto;
+  min-width: 94px;
+  max-width: 58%;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+}
+.animation-easing:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.keyframe-diamond {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.keyframe-diamond:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.keyframe-diamond.active {
+  border-color: transparent;
+  background: var(--accent-grad);
+  color: var(--on-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+}
 .control {
   margin: 10px 0;
 }
@@ -1045,6 +1339,10 @@ input[type="range"]::-moz-range-thumb {
   color: var(--on-accent);
   border-color: transparent;
 }
+.mini:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
 select {
   width: 100%;
   padding: 8px;
@@ -1054,6 +1352,70 @@ select {
   border-radius: 8px;
   cursor: pointer;
   font-weight: 600;
+}
+
+/* ---- GIF output (right panel, GIF mode only) ---- */
+.gif-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 4px;
+}
+.gif-section.hidden {
+  display: none;
+}
+.gif-status {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+}
+.gif-status.ready {
+  border-left-color: var(--accent-2);
+  color: var(--accent-2);
+}
+.gif-status.failed {
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+.gif-field {
+  gap: 5px;
+}
+.gif-toggles {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.gif-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+.gif-toggle input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.gif-summary {
+  font-size: 11.5px;
+  color: var(--faint);
+  min-height: 15px;
+}
+.gif-export-btn {
+  justify-content: center;
+}
+.gif-export-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ---- timeline ---- */
@@ -1174,11 +1536,32 @@ select {
   z-index: 1;
   pointer-events: none;
 }
+.clip-keyframe-marker {
+  position: absolute;
+  bottom: 4px;
+  z-index: 2;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  transform: translateX(-50%) rotate(45deg);
+  border: 1px solid color-mix(in srgb, var(--accent-2) 65%, #fff);
+  border-radius: 1px;
+  background: var(--accent-2);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+.clip-keyframe-marker:hover,
+.clip-keyframe-marker:focus-visible {
+  width: 12px;
+  height: 12px;
+  outline: 2px solid var(--on-accent);
+  outline-offset: 2px;
+}
 .clip-remove {
   position: absolute;
   top: 3px;
   right: 3px;
-  z-index: 2;
+  z-index: 3;
   width: 16px;
   height: 16px;
   padding: 0;
@@ -1199,6 +1582,34 @@ select {
 }
 .clip-remove:hover {
   background: var(--danger);
+}
+/* Trim handles: invisible until the pointer is over the clip, so a timeline of
+   short clips does not read as a row of grab bars. */
+.clip-trim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 8px;
+  cursor: ew-resize;
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0)
+  );
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.clip-trim-left {
+  left: 0;
+}
+.clip-trim-right {
+  right: 0;
+  transform: scaleX(-1);
+}
+.clip:hover .clip-trim,
+.clip.selected .clip-trim {
+  opacity: 1;
 }
 .clip.selected {
   outline: 2px solid #fff;
@@ -1358,4 +1769,129 @@ select {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 18px;
+}
+
+/* --- Transitions ---------------------------------------------------------- */
+.transition-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.transition-section h4 {
+  margin-bottom: 0;
+}
+.transition-end {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line-soft));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+}
+.transition-end-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--accent-2);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+.transition-end-header .mini {
+  min-height: 26px;
+  padding-inline: 9px;
+}
+/* kind | duration slider | read-out | easing (| colour when dipping) */
+.transition-row {
+  display: grid;
+  align-items: center;
+  grid-template-columns:
+    minmax(0, 1fr) minmax(0, 1.2fr) auto minmax(0, 1fr) auto;
+  gap: 6px;
+}
+.transition-row select,
+.transition-row input[type="range"] {
+  width: 100%;
+  min-width: 0;
+}
+.transition-row input[type="color"] {
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: none;
+}
+.transition-duration {
+  color: var(--faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --- Text overlay caption field ------------------------------------------ */
+.control-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.control-text textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  resize: vertical;
+}
+.control-text textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- Animation mode -------------------------------------------------------
+   Motion built from generated clips: the timeline and transport stay (they
+   are how keyframes are placed), but the raster pixel tools do not apply to
+   a vector shape, and the cartoon palette becomes the primary affordance. */
+#app.mode-animation .raster-rail {
+  display: none;
+}
+#app.mode-animation .vector-shapes {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+}
+
+/* --- Cartoon fill picker -------------------------------------------------- */
+.vector-fill-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+}
+.vector-fill-row label {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+}
+.vector-fill-row input[type="color"] {
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: none;
+}
+.vector-fill-row .mini {
+  min-height: 24px;
+  margin-left: auto;
+  padding-inline: 8px;
+  font-size: 10px;
 }

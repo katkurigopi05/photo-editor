@@ -10,7 +10,7 @@ const MAX_COLOR_DISTANCE = Math.sqrt(3) * 255;
 
 /** Separable box blur over the RGB channels (alpha untouched), via a running
  * sum so cost is independent of radius. */
-function boxBlurRgb(image: RasterImage, radiusPx: number): RasterImage {
+export function boxBlurRgb(image: RasterImage, radiusPx: number): RasterImage {
   const r = Math.max(0, Math.round(radiusPx));
   const { width, height } = image;
   const out = cloneImage(image);

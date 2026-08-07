@@ -287,6 +287,100 @@ decisions worth keeping when this phase is actually specified:
   and after any AI call, per-workspace rate limits, and explicit handling
   for the Model Gateway not leaking user metadata to third-party providers.
 
+### Personal-editor enhancement direction (Remini reference)
+
+Remini is a useful reference for making advanced enhancement approachable, not
+for expanding Project Director into an avatar generator, advertising platform,
+subscription service, or business API. Its strongest transferable pattern is a
+one-click enhancement followed by Before/After comparison and optional finer
+controls. As of August 2026, Remini presents unblur/sharpen, denoise, old-photo
+restoration, 2x enlargement, color correction, face/background enhancement, and
+video enhancement as separate capabilities:
+
+- <https://remini.ai/>
+- <https://remini.ai/unblur-sharpener>
+- <https://remini.ai/denoiser>
+- <https://remini.ai/photo-restorer>
+- <https://remini.ai/image-enlarger>
+- <https://remini.ai/face-enhancer>
+- <https://remini.ai/video-enhancer>
+
+For Project Director's personal, local-first editor, prioritize the following:
+
+1. **Smart Restore MVP** — one command applies a reversible, inspectable effect
+   stack with `General`, `Portrait`, and `Old Photo` presets. Start with local
+   denoising plus the existing White Balance, Levels, Vibrance, and Sharpen
+   operations. Expose one overall Strength control and retain the existing
+   press-and-hold Before/After comparison. Applying or replacing a preset must
+   remain one Undo step and must never modify the imported original.
+2. **High-quality 2x upscale at export** — offer upscaling as an export option
+   so large generated pixels do not need to live in project state. The export
+   plan records the requested scale and implementation version; output is
+   generated from a frozen project version. Begin with a deterministic local
+   resampler, then allow a local super-resolution model behind the same stable
+   intent when licensing, memory use, and quality are verified.
+3. **Old-photo repair** — add dust/scratch reduction, faded-color recovery, and
+   localized repair as explicit operations. Prefer an honest repair mask and
+   user-adjustable strength over silently reconstructing uncertain detail.
+4. **Conservative face enhancement** — keep face-detail recovery separate from
+   beautification. It must be opt-in, strength-adjustable, locally previewed,
+   and evaluated for identity drift. Any model that invents plausible detail
+   must label the result as reconstructed rather than recovered.
+5. **Video enhancement last** — temporal denoise, restoration, and upscale are
+   valuable but require shot-aware processing and temporal-consistency tests.
+   Do not ship a frame-by-frame photo enhancer as video enhancement if it
+   flickers, changes identity between frames, or produces unstable edges.
+
+#### Required libraries and tools
+
+Do not add a new dependency merely because it appears in this roadmap. Add it
+with the feature that uses it, pin it through the appropriate lockfile, record
+its license and model provenance, and prove that the existing implementation
+cannot meet the requirement more simply. The preferred stack is:
+
+| Capability | Library or tool | Status and purpose |
+| --- | --- | --- |
+| Effect composition | `@director/raster-tools`, project-schema effects, and editor-state commands | **Already present; required for the MVP.** Extend the existing deterministic pixel operations with a denoise primitive, then materialize Smart Restore as one validated, reversible effect-stack command. No new AI runtime is required for the first version. |
+| Browser model inference | [`onnxruntime-web`](https://onnxruntime.ai/docs/get-started/with-javascript/web.html) | **Already present; required for model-backed features.** Reuse the same local runtime as AI background removal. Prefer WebGPU for compute-heavy models with a WASM fallback, run work off the UI thread, and explicitly release tensors/sessions. Keep the JavaScript bundle and WASM binaries from the same package build. |
+| Browser processing isolation | Web Workers, `OffscreenCanvas`, transferable `ArrayBuffer`s, and WebCrypto `subtle.digest` | **Browser platform APIs; required.** Enhancement must not freeze the editor. Transfer pixels to a worker where supported, tile memory-heavy work, report progress/cancellation outside project state, and SHA-256-verify every downloaded or bundled model before inference. |
+| Classical denoise and masked repair | [OpenCV.js](https://docs.opencv.org/4.x/d5/d10/tutorial_js_root.html), preferably a reproducible custom WASM build from official OpenCV source | **Evaluate before adding.** Useful for non-local-means denoising, filtering, color conversion, resizing, and mask-driven inpainting. Compile only the modules/functions actually used, with WASM/SIMD and optional threads; first confirm the needed APIs are exposed by the JavaScript build. OpenCV 4.x is Apache-2.0. |
+| 2x learned upscale | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), beginning with `RealESRGAN_x2plus` | **Candidate, not a browser package dependency.** Convert and validate an approved model to ONNX, then execute tiled inference through `onnxruntime-web`; do not ship the Python/PyTorch runtime in the app. The official implementation supports tiled inference and is BSD-3-Clause, but redistribution rights for each exact weight/conversion must still be recorded. |
+| Face-detail restoration | [GFPGAN](https://github.com/TencentARC/GFPGAN) plus a face detector/alignment model exported to ONNX | **Research-gated candidate.** GFPGAN is Apache-2.0, but its own documentation notes that restoration can change identity. It may be used only after identity-drift evaluation, with an opt-in strength control and separate compositing over the untouched source. Do not make it part of Smart Restore's default path. |
+| Model conversion and inspection | Python 3, PyTorch, `onnx`, `onnxruntime`, and [Netron](https://github.com/lutzroeder/netron) | **Developer-only toolchain.** Use outside the shipped application to export models, simplify/static-shape them where safe, inspect operators, compare ONNX output against the source framework, and generate golden fixtures. Add exact versions to `requirements-ai.txt` only when the first converted model is adopted. |
+| Video decode/encode | WebCodecs in the web app; FFmpeg for native/offline validation and fixture inspection | **WebCodecs already required for MP4 export; FFmpeg is a future developer/native tool.** Video enhancement must decode, process, and encode through a bounded frame queue. FFmpeg does not belong in the browser bundle. |
+| Verification | Vitest, Playwright, canonical JSON tests, pixel fixtures, PSNR/SSIM, and temporal-difference/flicker metrics | **Existing test runners; new quality fixtures required.** Tests must cover command rejection immutability, undo/redo/replay, Before/After parity, alpha preservation, tile seams, cancellation, memory bounds, deterministic classical output, model checksum failure, and real exported-file decode. |
+
+Before accepting any new model, create a model card in the repository recording:
+
+- source URL, upstream commit/release, task, architecture, and exact filename;
+- code license, weight license, training-data disclosure if available, and
+  required attribution/NOTICE text;
+- SHA-256, byte size, ONNX opset, input/output tensor contract, color range,
+  normalization, supported execution providers, and tile overlap;
+- peak memory and median/p95 runtime on the supported reference browsers;
+- quality results on portraits, landscapes, old photos, text, transparency,
+  very small inputs, already-sharp inputs, and adversarial failure cases; and
+- known hallucination, identity, color-shift, seam, and temporal-consistency
+  risks, plus the UI label used to disclose reconstructed content.
+
+For the first Smart Restore milestone, the only approved runtime additions are
+none: use the current project packages and browser APIs. OpenCV.js becomes a
+dependency only if its measured quality/performance beats a focused
+`raster-tools` implementation enough to justify its WASM cost. Real-ESRGAN and
+GFPGAN require separate evaluation milestones and must not be silently pulled
+in as transitive dependencies of the MVP.
+
+The default product boundary remains deliberately personal: no accounts,
+subscriptions, advertisements, weekly quotas, collaboration, or business API.
+Media should stay on-device by default. If a future optional provider is added,
+the UI must disclose the upload before it happens, make retention behavior
+explicit, and route it through the Model Gateway rather than embedding provider
+details in commands or project state.
+
+Do not carry forward Remini's generative AI Photos/avatar workflow. It creates
+new identity imagery rather than improving media the user is editing, so it is
+outside Project Director's focused personal-editor purpose.
+
 **Not carried forward as-is:** the reference architecture's specific product
 choices (Kafka/Postgres/Redis/Kubernetes, a particular embedding store,
 CRDT-vs-OT for collaboration) are implementation details to decide when this

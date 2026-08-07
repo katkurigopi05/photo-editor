@@ -1,6 +1,7 @@
 import type {
   AddClipCommand,
   AddEffectCommand,
+  AddKeyframeCommand,
   AddTrackCommand,
   AssetRegisterCommand,
   CreateSequenceCommand,
@@ -9,12 +10,17 @@ import type {
   ProjectCommand,
   ProjectCreateCommand,
   RemoveEffectCommand,
+  RemoveKeyframeCommand,
   ReorderEffectsCommand,
   SetClipAudioGainCommand,
   SetClipAudioPanCommand,
+  SetClipSpeedCommand,
   TrimClipCommand,
   UpdateClipEffectsCommand,
+  UpdateClipAnimationsCommand,
+  SetClipTransitionCommand,
   UpdateEffectParamsCommand,
+  UpdateKeyframeCommand,
 } from "@director/command-schema";
 
 /**
@@ -123,3 +129,35 @@ export const buildSetClipAudioPan = (
   payload: SetClipAudioPanCommand["payload"],
 ): SetClipAudioPanCommand =>
   envelope(ctx, "timeline.set_clip_audio_pan", payload);
+
+export const buildSetClipSpeed = (
+  ctx: CommandContext,
+  payload: SetClipSpeedCommand["payload"],
+): SetClipSpeedCommand => envelope(ctx, "timeline.set_clip_speed", payload);
+
+export const buildAddKeyframe = (
+  ctx: CommandContext,
+  payload: AddKeyframeCommand["payload"],
+): AddKeyframeCommand => envelope(ctx, "timeline.add_keyframe", payload);
+
+export const buildUpdateKeyframe = (
+  ctx: CommandContext,
+  payload: UpdateKeyframeCommand["payload"],
+): UpdateKeyframeCommand => envelope(ctx, "timeline.update_keyframe", payload);
+
+export const buildRemoveKeyframe = (
+  ctx: CommandContext,
+  payload: RemoveKeyframeCommand["payload"],
+): RemoveKeyframeCommand => envelope(ctx, "timeline.remove_keyframe", payload);
+
+export const buildUpdateClipAnimations = (
+  ctx: CommandContext,
+  payload: UpdateClipAnimationsCommand["payload"],
+): UpdateClipAnimationsCommand =>
+  envelope(ctx, "timeline.update_clip_animations", payload);
+
+export const buildSetClipTransition = (
+  ctx: CommandContext,
+  payload: SetClipTransitionCommand["payload"],
+): SetClipTransitionCommand =>
+  envelope(ctx, "timeline.set_clip_transition", payload);

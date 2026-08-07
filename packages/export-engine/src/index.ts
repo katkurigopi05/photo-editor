@@ -8,6 +8,10 @@ export {
   type Container,
   type AudioCodec,
   type ExportPreset,
+  BROWSER_VIDEO_CODECS,
+  BROWSER_CONTAINERS,
+  BROWSER_AUDIO_CODECS,
+  browserPresetUnsupportedReason,
 } from "./preset.js";
 
 export {

@@ -160,15 +160,90 @@ export function deriveTheme(
 
 // ---- presets ------------------------------------------------------------
 
-/** Named preset themes, each a fully independent palette. Original values. */
-export const PRESETS: Record<string, ThemeTokens> = {
-  nebula: deriveTheme("#0c0e1a", "#171a2c", "#eceaf7", "#9b6bff"),
-  ember: deriveTheme("#1a1210", "#241815", "#f6ece4", "#ff7a45"),
-  pine: deriveTheme("#0a1512", "#12211c", "#e6f2ec", "#35c98f"),
-  glacier: deriveTheme("#eef3f7", "#ffffff", "#16232c", "#1f9ecb"),
-  rosewood: deriveTheme("#170d10", "#241419", "#f6e9ec", "#e8547e"),
-  sandstone: deriveTheme("#f6efe2", "#fffaf1", "#3a2f22", "#c97a2b"),
+export interface ThemeSeeds {
+  bg: string;
+  panel: string;
+  text: string;
+  accent: string;
+}
+
+/** A preset carries one palette per light/dark mode. Without both, selecting a
+ * preset would pin the palette and leave the dark/light switch with nothing to
+ * change — the inline overrides always beat the [data-theme] rules. */
+export interface PresetDefinition {
+  dark: ThemeSeeds;
+  light: ThemeSeeds;
+}
+
+function seeds(
+  bg: string,
+  panel: string,
+  text: string,
+  accent: string,
+): ThemeSeeds {
+  return { bg, panel, text, accent };
+}
+
+/** Named preset themes, each a fully independent palette in both modes.
+ * Original values; each pair keeps its hue family across modes. */
+export const PRESETS: Record<string, PresetDefinition> = {
+  nebula: {
+    dark: seeds("#0c0e1a", "#171a2c", "#eceaf7", "#9b6bff"),
+    light: seeds("#f2f0fb", "#ffffff", "#1b1830", "#6b34e0"),
+  },
+  ember: {
+    dark: seeds("#1a1210", "#241815", "#f6ece4", "#ff7a45"),
+    light: seeds("#fdf2ea", "#fffaf6", "#2b1a12", "#c2491a"),
+  },
+  pine: {
+    dark: seeds("#0a1512", "#12211c", "#e6f2ec", "#35c98f"),
+    light: seeds("#edf7f2", "#ffffff", "#0d241c", "#0a7d55"),
+  },
+  glacier: {
+    dark: seeds("#0b1219", "#131d26", "#e6f1f8", "#3fb6e0"),
+    light: seeds("#eef3f7", "#ffffff", "#16232c", "#0f7ba3"),
+  },
+  rosewood: {
+    dark: seeds("#170d10", "#241419", "#f6e9ec", "#e8547e"),
+    light: seeds("#fdf0f3", "#fffafb", "#2a121a", "#c01f52"),
+  },
+  sandstone: {
+    dark: seeds("#16120c", "#221c13", "#f4ecdd", "#d98b39"),
+    light: seeds("#f6efe2", "#fffaf1", "#3a2f22", "#9a5a16"),
+  },
 };
+
+/** Tokens for a preset in the given mode, or null if the key is unknown. */
+export function presetTokens(
+  key: string,
+  mode: "dark" | "light",
+): ThemeTokens | null {
+  const preset = PRESETS[key];
+  if (!preset) return null;
+  const s = preset[mode];
+  return deriveTheme(s.bg, s.panel, s.text, s.accent);
+}
+
+/** Flip a hand-picked custom palette into the opposite mode: swap background
+ * and text, and rebuild the panel a step away from the new background. The
+ * accent is hue-carrying and stays put, so a custom theme keeps its identity
+ * on both sides of the dark/light switch. */
+export function counterpartSeeds(s: ThemeSeeds): ThemeSeeds {
+  // The new background sits one small step darker/lighter than the new panel,
+  // in whichever direction the flipped mode runs.
+  const towardEdge = relativeLuminance(s.text) < 0.4 ? "#000000" : "#ffffff";
+  return {
+    bg: mix(s.text, towardEdge, 0.05),
+    panel: s.text,
+    text: s.bg,
+    accent: s.accent,
+  };
+}
+
+/** True when a palette's background is dark enough to belong to dark mode. */
+export function seedsAreDark(s: ThemeSeeds): boolean {
+  return relativeLuminance(s.bg) < 0.4;
+}
 
 export const PRESET_LABELS: Record<string, string> = {
   nebula: "Nebula",

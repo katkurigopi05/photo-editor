@@ -20,6 +20,7 @@ weaken strictness, lint rules, or tests to get a green result.
 ```bash
 # TypeScript workspace
 pnpm format:check     # Prettier
+pnpm manual:check     # user-facing feature changes include manual updates
 pnpm lint             # ESLint (typescript-eslint recommended)
 pnpm typecheck        # tsc --noEmit, strict + exactOptionalPropertyTypes
 pnpm test             # Vitest (all packages)

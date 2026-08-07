@@ -20,6 +20,21 @@ import {
 export class EditorSession {
   private state: EditorState;
   private lastError: CommandError | null = null;
+  /**
+   * How many logged operations each undo step covers, oldest first. Their sum
+   * is always the length of the operation log: an ordinary command contributes
+   * a 1, and a gesture such as a ripple delete — one keypress, several commands
+   * — contributes its own size, so one Undo puts the whole thing back.
+   *
+   * Deliberately *not* a change to the engine: the operation log keeps one
+   * command, one inverse and one version per entry, so replay and the persisted
+   * log are untouched. This is session state describing which entries arrived
+   * together, exactly like selection or playback state.
+   */
+  private undoSteps: number[] = [];
+  private redoSteps: number[] = [];
+  /** Commands dispatched so far inside an open gesture, or null when none. */
+  private openGesture: number | null = null;
 
   constructor(initial: EditorState = createEditorState()) {
     this.state = initial;
@@ -41,6 +56,23 @@ export class EditorSession {
       redoStack: [],
     };
     this.lastError = null;
+    this.undoSteps = [];
+    this.redoSteps = [];
+    this.openGesture = null;
+  }
+
+  /** Start recording the following dispatches as one undoable gesture. */
+  beginGesture(): void {
+    this.openGesture = 0;
+  }
+
+  /** Close the gesture. A gesture in which every command failed contributes
+   * nothing, rather than an empty step that Undo would appear to skip. */
+  endGesture(): void {
+    if (this.openGesture !== null && this.openGesture > 0) {
+      this.undoSteps.push(this.openGesture);
+    }
+    this.openGesture = null;
   }
 
   getProject(): Project | null {
@@ -67,34 +99,60 @@ export class EditorSession {
    * an expected domain failure (retrievable via `getLastError`). */
   dispatch(command: unknown): ProjectOperation | null {
     const result = executeCommand(this.state, command);
-    if (result.ok) {
-      this.state = result.state;
-      this.lastError = null;
-      return result.operation;
+    if (!result.ok) {
+      this.lastError = result.error;
+      return null;
     }
-    this.lastError = result.error;
-    return null;
+    this.state = result.state;
+    this.lastError = null;
+    if (this.openGesture === null) this.undoSteps.push(1);
+    else this.openGesture += 1;
+    // The engine clears the redo branch on any new command, so the steps
+    // recorded for those operations are dead with it.
+    this.redoSteps = [];
+    return result.operation;
   }
 
+  /** Undo one step: a whole gesture when the top of the history is one,
+   * otherwise a single operation. */
   undo(): boolean {
-    const result = undo(this.state);
-    if (result.ok) {
+    const steps = this.undoSteps.pop() ?? 1;
+    let undone = 0;
+    for (let i = 0; i < steps; i++) {
+      const result = undo(this.state);
+      if (!result.ok) {
+        this.lastError = result.error;
+        break;
+      }
       this.state = result.state;
       this.lastError = null;
-      return true;
+      undone += 1;
     }
-    this.lastError = result.error;
-    return false;
+    if (undone === 0) return false;
+    // A partially applied step would leave the two stacks disagreeing about
+    // where the boundary is; record what actually happened.
+    this.redoSteps.push(undone);
+    if (undone < steps) this.undoSteps.push(steps - undone);
+    return true;
   }
 
+  /** Redo one step, restoring a whole gesture when that is what was undone. */
   redo(): boolean {
-    const result = redo(this.state);
-    if (result.ok) {
+    const steps = this.redoSteps.pop() ?? 1;
+    let redone = 0;
+    for (let i = 0; i < steps; i++) {
+      const result = redo(this.state);
+      if (!result.ok) {
+        this.lastError = result.error;
+        break;
+      }
       this.state = result.state;
       this.lastError = null;
-      return true;
+      redone += 1;
     }
-    this.lastError = result.error;
-    return false;
+    if (redone === 0) return false;
+    this.undoSteps.push(redone);
+    if (redone < steps) this.redoSteps.push(steps - redone);
+    return true;
   }
 }

@@ -13,7 +13,17 @@ import {
   buildRemoveEffect,
   buildSetClipAudioGain,
   buildSetClipAudioPan,
+  buildSetClipSpeed,
+  buildAddKeyframe,
+  buildUpdateKeyframe,
+  buildRemoveKeyframe,
+  buildUpdateClipAnimations,
+  buildSetClipTransition,
   resolveClipDrag,
+  collectSnapTargets,
+  snapClipStart,
+  planRippleDelete,
+  planRippleTrim,
   usToPixels,
   type CommandContext,
 } from "@director/ui-kit";
@@ -27,9 +37,14 @@ import {
   sequenceDurationUs,
   timeToFrameIndex,
   frameToStartTimeUs,
+  sampleClipTransition,
+  resolveAudioFades,
+  audioEnvelopeGain,
+  audioEnvelopeCurve,
   type PlaybackState,
 } from "@director/playback-controller";
 import {
+  browserPresetUnsupportedReason,
   planExport,
   planVideoFrames,
   startExport,
@@ -44,6 +59,9 @@ import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import {
   PRESETS,
   PRESET_LABELS,
+  presetTokens,
+  counterpartSeeds,
+  seedsAreDark,
   deriveTheme,
   applyThemeTokens,
   loadCustomThemes,
@@ -52,7 +70,28 @@ import {
   MAX_CUSTOM_THEMES,
   type ThemeTokens,
 } from "./theme.js";
+import { layoutTextLines } from "./text-overlay.js";
+import { SKINS, currentSkin, applySkin } from "./skin.js";
+import {
+  TRANSITION_DIRECTIONS,
+  TRANSITION_KINDS,
+  isAudioEffectType,
+} from "@director/project-schema";
+import { detectKind, isMediaFile } from "./media-types.js";
+import {
+  boomerangOrder,
+  clampGifFps,
+  flattenPartialAlpha,
+  createGifEncoder,
+  isGifEncoderLoaded,
+  loadGifEncoder,
+} from "./gif.js";
 import { RasterSession, canvasPointToImage } from "./raster.js";
+import {
+  clipLocalTimeUs,
+  composeCanvasLayerTransform,
+  resolveLayerAnimationTransform,
+} from "./layer-animation.js";
 import {
   stampBrush,
   cloneStamp,
@@ -71,10 +110,24 @@ import {
   rotateImage,
   shiftImage,
   cloneImage as cloneRasterImage,
+  pencilSketch,
+  oilPainting,
+  cartoonPosterize,
+  watercolor,
+  crosshatch,
+  halftone,
+  whiteBalance,
+  levels,
+  toneCurve,
+  vibrance,
   type Mask,
   type Point,
   type RasterImage,
 } from "@director/raster-tools";
+import {
+  biasSubjectMask,
+  bloomHighlights,
+} from "./portrait-blur.js";
 import {
   segmentForeground,
   configureOnnxRuntime,
@@ -87,19 +140,47 @@ import {
 import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
 import ortMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 import type {
+  AnimationEasing,
+  AnimationProperty,
   EffectInstance,
   EffectType,
   MediaAsset,
   Sequence,
   TimelineClip,
   Track,
+  Transition,
+  TransitionDirection,
+  TransitionKind,
+  TransitionSide,
 } from "@director/project-schema";
+import {
+  adjacentKeyframeTime,
+  animationValueAtTime,
+  clipLocalTimeForPlayhead,
+  exactKeyframeAtTime,
+  keyframePositionPercent,
+  uniqueKeyframeTimes,
+} from "./keyframe-ui.js";
+import {
+  ANIMATION_PRESETS,
+  materializeAnimationPreset,
+  type AnimationPresetId,
+} from "./animation-presets.js";
+import {
+  VECTOR_SHAPE_PRESETS,
+  createVectorShapeSource,
+  type VectorShapePreset,
+} from "./vector-shape.js";
 
 // ==========================================================================
 // Effect catalogue — drives the inspector sliders and the preview filters.
 // Ranges/defaults mirror @director/project-schema effect params.
 // ==========================================================================
-type ParamKind = "range" | "toggle" | "color";
+/** `seconds` is a range slider over a duration the model stores as a canonical
+ * microsecond string — the slider is in seconds because that is what a fade is
+ * spoken about in, and the conversion happens once, here, rather than in every
+ * caller. */
+type ParamKind = "range" | "toggle" | "color" | "text" | "seconds";
 interface ParamSpec {
   name: string;
   label: string;
@@ -114,6 +195,9 @@ interface EffectSpec {
   label: string;
   modes: Array<"video" | "photo">;
   params: ParamSpec[];
+  /** Audio effects are applied by the mixer and belong to the Audio section of
+   * the inspector, not to the visual effects palette. */
+  surface?: "audio";
 }
 
 const range = (
@@ -124,6 +208,16 @@ const range = (
   step: number,
   def: number,
 ): ParamSpec => ({ name, label, kind: "range", min, max, step, def });
+
+/** A duration slider in seconds whose stored value is a microsecond string. */
+const seconds = (
+  name: string,
+  label: string,
+  min: number,
+  max: number,
+  step: number,
+  def: string,
+): ParamSpec => ({ name, label, kind: "seconds", min, max, step, def });
 
 const EFFECTS: EffectSpec[] = [
   {
@@ -149,6 +243,41 @@ const EFFECTS: EffectSpec[] = [
     label: "Exposure",
     modes: ["video", "photo"],
     params: [range("amount", "Stops", -2, 2, 0.1, 0)],
+  },
+  {
+    type: "color.white_balance",
+    label: "White Balance",
+    modes: ["video", "photo"],
+    params: [
+      range("temperature", "Warmth", -1, 1, 0.05, 0),
+      range("tint", "Tint", -1, 1, 0.05, 0),
+    ],
+  },
+  {
+    type: "color.levels",
+    label: "Levels",
+    modes: ["video", "photo"],
+    params: [
+      range("blackPoint", "Blacks", 0, 1, 0.01, 0),
+      range("whitePoint", "Whites", 0, 1, 0.01, 1),
+      range("gamma", "Gamma", 0.1, 4, 0.05, 1),
+    ],
+  },
+  {
+    type: "color.tone_curve",
+    label: "Tone Curve",
+    modes: ["video", "photo"],
+    params: [
+      range("shadows", "Shadows", -1, 1, 0.05, 0),
+      range("midtones", "Midtones", -1, 1, 0.05, 0),
+      range("highlights", "Highlights", -1, 1, 0.05, 0),
+    ],
+  },
+  {
+    type: "color.vibrance",
+    label: "Vibrance",
+    modes: ["video", "photo"],
+    params: [range("amount", "Amount", -1, 1, 0.05, 0)],
   },
   {
     type: "color.hue_rotate",
@@ -270,6 +399,71 @@ const EFFECTS: EffectSpec[] = [
     ],
   },
   {
+    type: "art.pencil_sketch",
+    label: "Pencil Sketch",
+    modes: ["photo", "video"],
+    params: [
+      range("strength", "Strength", 0, 1, 0.05, 1),
+      range("grain", "Paper grain", 0, 1, 0.05, 0.25),
+    ],
+  },
+  {
+    type: "art.oil_painting",
+    label: "Oil Painting",
+    modes: ["photo", "video"],
+    params: [range("radiusPx", "Brush", 1, 8, 1, 4)],
+  },
+  {
+    type: "art.cartoon",
+    label: "Cartoon",
+    modes: ["photo", "video"],
+    params: [
+      range("levels", "Colours", 2, 16, 1, 5),
+      range("edgeStrength", "Ink", 0, 1, 0.05, 0.8),
+    ],
+  },
+  {
+    type: "art.watercolor",
+    label: "Watercolour",
+    modes: ["photo", "video"],
+    params: [
+      range("poolRadiusPx", "Pooling", 1, 8, 1, 3),
+      range("edgeStrength", "Dried edge", 0, 1, 0.05, 0.7),
+      range("grain", "Paper", 0, 1, 0.05, 0.3),
+    ],
+  },
+  {
+    type: "art.crosshatch",
+    label: "Crosshatch",
+    modes: ["photo", "video"],
+    params: [
+      range("spacingPx", "Line spacing", 2, 24, 1, 5),
+      range("darkness", "Ink", 0, 1, 0.05, 1),
+    ],
+  },
+  {
+    type: "art.halftone",
+    label: "Halftone",
+    modes: ["photo", "video"],
+    params: [
+      range("cellPx", "Dot size", 2, 24, 1, 6),
+      range("angleDegrees", "Screen angle", 0, 90, 5, 45),
+    ],
+  },
+  {
+    type: "fx.text",
+    label: "Text",
+    modes: ["photo", "video"],
+    params: [
+      { name: "text", label: "Caption", kind: "text", def: "" },
+      range("fontSizeRatio", "Size", 0.02, 0.3, 0.005, 0.08),
+      { name: "colorHex", label: "Fill", kind: "color", def: "#ffffff" },
+      { name: "outlineHex", label: "Outline", kind: "color", def: "#000000" },
+      range("x", "Across", 0, 1, 0.01, 0.5),
+      range("y", "Down", 0, 1, 0.01, 0.85),
+    ],
+  },
+  {
     type: "fx.remove_background",
     label: "Remove Background",
     modes: ["photo", "video"],
@@ -285,10 +479,51 @@ const EFFECTS: EffectSpec[] = [
       range("softness", "Softness", 0, 1, 0.02, 0.1),
     ],
   },
+  {
+    type: "audio.fade",
+    label: "Fade In / Out",
+    modes: ["video", "photo"],
+    surface: "audio",
+    params: [
+      seconds("fadeInUs", "Fade in (s)", 0, 10, 0.1, "0"),
+      seconds("fadeOutUs", "Fade out (s)", 0, 10, 0.1, "0"),
+    ],
+  },
+  {
+    type: "audio.eq",
+    label: "EQ",
+    modes: ["video", "photo"],
+    surface: "audio",
+    params: [
+      range("lowGainDb", "Low (dB)", -24, 24, 0.5, 0),
+      range("midGainDb", "Mid (dB)", -24, 24, 0.5, 0),
+      range("highGainDb", "High (dB)", -24, 24, 0.5, 0),
+    ],
+  },
+  {
+    type: "audio.compressor",
+    label: "Compressor",
+    modes: ["video", "photo"],
+    surface: "audio",
+    params: [
+      range("thresholdDb", "Threshold (dB)", -60, 0, 1, -24),
+      range("ratio", "Ratio", 1, 20, 0.5, 4),
+      range("attackMs", "Attack (ms)", 0, 1000, 1, 10),
+      range("releaseMs", "Release (ms)", 0, 1000, 5, 250),
+      range("makeupGainDb", "Makeup (dB)", -24, 24, 0.5, 0),
+    ],
+  },
 ];
 
 const effectSpec = (type: string): EffectSpec | undefined =>
   EFFECTS.find((e) => e.type === type);
+
+/** Visual effects, i.e. everything the palette and the renderer deal with. */
+const visualEffects = (): EffectSpec[] =>
+  EFFECTS.filter((spec) => spec.surface !== "audio");
+
+const audioEffects = (): EffectSpec[] =>
+  EFFECTS.filter((spec) => spec.surface === "audio");
 
 function defaultParams(
   spec: EffectSpec,
@@ -309,10 +544,86 @@ const ACTOR = { type: "user", id: "user-1" } as const;
 const FRAME_RATE = { numerator: 30, denominator: 1 };
 
 const session = new EditorSession();
-let mode: "video" | "photo" = "photo";
+/** GIF is a third output mode, not a third editor: it shares the timeline and
+ * the effect stack with video, and differs only in how frames leave the app. */
+type EditorMode = "video" | "photo" | "animation" | "gif";
+const MODE_ORDER: readonly EditorMode[] = [
+  "photo",
+  "video",
+  "animation",
+  "gif",
+];
+/** Wheel geometry and gesture thresholds — see the .mode-wheel CSS block. */
+const MODE_WHEEL_STEP_DEG = 60;
+const MODE_WHEEL_SCROLL_PX = 40;
+const MODE_WHEEL_DRAG_PX = 22;
+let mode: EditorMode = "photo";
 let selectedClipId: string | null = null;
+/** Extra clips picked with Shift/Cmd-click. `selectedClipId` stays the clip the
+ * Inspector is editing; these are the others the next timeline action covers. */
+const selectedClipIds = new Set<string>();
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
+
+interface AnimationControlSpec {
+  property: AnimationProperty;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  format: (value: number) => string;
+}
+
+const ANIMATION_CONTROLS: readonly AnimationControlSpec[] = [
+  {
+    property: "transform.position_x",
+    label: "Position X",
+    min: -2,
+    max: 2,
+    step: 0.01,
+    format: (value) => `${Math.round(value * 100)}%`,
+  },
+  {
+    property: "transform.position_y",
+    label: "Position Y",
+    min: -2,
+    max: 2,
+    step: 0.01,
+    format: (value) => `${Math.round(value * 100)}%`,
+  },
+  {
+    property: "transform.scale",
+    label: "Scale",
+    min: 0.1,
+    max: 4,
+    step: 0.01,
+    format: (value) => `${value.toFixed(2)}×`,
+  },
+  {
+    property: "transform.rotation",
+    label: "Rotation",
+    min: -360,
+    max: 360,
+    step: 1,
+    format: (value) => `${Math.round(value)}°`,
+  },
+  {
+    property: "transform.opacity",
+    label: "Opacity",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (value) => `${Math.round(value * 100)}%`,
+  },
+];
+
+const ANIMATION_EASINGS: readonly AnimationEasing[] = [
+  "linear",
+  "hold",
+  "ease-in",
+  "ease-out",
+  "ease-in-out",
+];
 const mediaCache = new Map<string, HTMLImageElement | HTMLVideoElement>();
 // Display-only friendly names per asset id (original filename at import, or a
 // generated label for edited exports). Not part of the deterministic project.
@@ -326,10 +637,29 @@ const removedAssets = new Set<string>();
 // media element is routed once through gain→pan→destination so the timeline
 // is actually audible while playing, with each clip's gain/pan applied. --
 let audioCtx: AudioContext | null = null;
+/**
+ * One fixed chain per media element: EQ shelves and peak, then a compressor,
+ * then gain and pan.
+ *
+ * The nodes always exist and sit at neutral settings when the clip carries no
+ * audio effects. `createMediaElementSource` may only run once per element, so
+ * rebuilding the graph whenever an effect is added or removed is not an option
+ * — the alternative to a fixed chain is a graph that cannot be edited.
+ */
 interface AudioRoute {
+  low: BiquadFilterNode;
+  mid: BiquadFilterNode;
+  high: BiquadFilterNode;
+  compressor: DynamicsCompressorNode;
   gain: GainNode;
   pan: StereoPannerNode;
 }
+
+/** Band corners shared by live monitoring and the export mixdown. */
+const EQ_LOW_HZ = 250;
+const EQ_MID_HZ = 1000;
+const EQ_MID_Q = 0.8;
+const EQ_HIGH_HZ = 4000;
 const audioRoutes = new Map<HTMLMediaElement, AudioRoute>();
 
 // Cached normalized waveform peaks (0..1) per audio asset id, for the
@@ -419,6 +749,7 @@ const playBtn = $<HTMLButtonElement>("btn-play");
 const fileInput = $<HTMLInputElement>("file-input");
 const paletteEl = $<HTMLDivElement>("effects-palette");
 const looksRow = $<HTMLDivElement>("looks-row");
+const vectorShapesEl = $<HTMLDivElement>("vector-shapes");
 
 // ==========================================================================
 // Helpers
@@ -573,11 +904,7 @@ function seed(): void {
 // ==========================================================================
 async function importFile(file: File): Promise<void> {
   const url = URL.createObjectURL(file);
-  const kind: MediaAsset["kind"] = file.type.startsWith("video/")
-    ? "video"
-    : file.type.startsWith("audio/")
-      ? "audio"
-      : "image";
+  const kind = detectKind(file);
 
   let width = 1920;
   let height = 1080;
@@ -586,26 +913,51 @@ async function importFile(file: File): Promise<void> {
   if (kind === "image") {
     const img = new Image();
     img.src = url;
-    await img.decode().catch(() => undefined);
-    width = img.naturalWidth || width;
-    height = img.naturalHeight || height;
+    const decoded = await img
+      .decode()
+      .then(() => true)
+      .catch(() => false);
+    // Registering an undecodable file would put a permanently blank clip on
+    // the timeline and silently export black frames — say so instead.
+    if (!decoded || !img.naturalWidth) {
+      URL.revokeObjectURL(url);
+      toast(`Could not decode ${file.name} — unsupported image format.`, true);
+      return;
+    }
+    width = img.naturalWidth;
+    height = img.naturalHeight;
     mediaCache.set(url, img);
   } else {
     const el = document.createElement(kind === "video" ? "video" : "audio") as
-      HTMLVideoElement | HTMLAudioElement;
+      | HTMLVideoElement
+      | HTMLAudioElement;
     el.src = url;
     el.muted = true;
-    el.preload = "metadata";
-    await new Promise<void>((resolve) => {
-      el.onloadedmetadata = () => resolve();
-      el.onerror = () => resolve();
+    // Video needs actual frame data to paint the first preview, not just the
+    // metadata header; audio only ever needs the duration up front.
+    el.preload = kind === "video" ? "auto" : "metadata";
+    const loaded = await new Promise<boolean>((resolve) => {
+      el.onloadedmetadata = () => resolve(true);
+      el.onerror = () => resolve(false);
     });
-    durationUs = String(
-      Math.max(1, Math.round((el.duration || 5) * 1_000_000)),
-    );
+    if (!loaded) {
+      URL.revokeObjectURL(url);
+      toast(
+        `Could not decode ${file.name} — this browser cannot play that ${kind} format.`,
+        true,
+      );
+      return;
+    }
+    // Streams written without a duration header report Infinity; the clip
+    // still works, it just cannot be sized from metadata.
+    const seconds = Number.isFinite(el.duration) && el.duration > 0
+      ? el.duration
+      : 5;
+    durationUs = String(Math.max(1, Math.round(seconds * 1_000_000)));
     if (el instanceof HTMLVideoElement) {
       width = el.videoWidth || width;
       height = el.videoHeight || height;
+      attachOffscreen(el);
     }
     mediaCache.set(url, el as HTMLVideoElement);
   }
@@ -640,9 +992,76 @@ async function importFile(file: File): Promise<void> {
 }
 
 async function importFiles(files: FileList | File[]): Promise<void> {
-  for (const file of Array.from(files)) {
-    if (/^(image|video|audio)\//.test(file.type)) await importFile(file);
+  const media = Array.from(files).filter(isMediaFile);
+  const skipped = Array.from(files).length - media.length;
+  for (const file of media) {
+    await importFile(file);
   }
+  if (skipped > 0) {
+    toast(
+      `Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ${skipped === 1 ? "is" : "are"} not image, video or audio.`,
+      true,
+    );
+  }
+}
+
+/** Add a persistent generated SVG as a normal timeline clip. It deliberately
+ * enters through asset.register + timeline.add_clip, so the cartoon uses the
+ * same selection, keyframe, transition, preview and export paths as media. */
+/** Fill chosen in the Cartoon Clips panel, or null to keep each preset's own
+ * colour. Null rather than a default hex so an untouched picker does not
+ * quietly flatten a gold star and a white speech bubble to the same swatch —
+ * the shape presets carry legibility choices, not just decoration. */
+let vectorFillOverride: string | null = null;
+
+async function addVectorShape(preset: VectorShapePreset): Promise<void> {
+  const source = createVectorShapeSource({
+    kind: preset.id,
+    fillHex: vectorFillOverride ?? preset.fillHex,
+    strokeHex: preset.strokeHex,
+    width: 1024,
+    height: 1024,
+  });
+  const image = new Image();
+  image.src = source.dataUri;
+  const decoded = await image
+    .decode()
+    .then(() => true)
+    .catch(() => false);
+  if (!decoded) {
+    toast(`Could not create the ${preset.label} cartoon clip.`, true);
+    return;
+  }
+
+  const bytes = new TextEncoder().encode(source.svg);
+  const checksum = await sha256Hex(bytes.slice().buffer);
+  const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  const durationUs = "5000000";
+  assetNames.set(assetId, `${preset.label} cartoon`);
+  mediaCache.set(source.dataUri, image);
+
+  const registered = commit(
+    buildRegisterAsset(nextCtx(), {
+      asset: {
+        id: assetId,
+        projectId: PROJECT_ID,
+        kind: "generated",
+        originalUri: source.dataUri,
+        checksum,
+        metadata: {
+          fileSizeBytes: String(source.byteLength),
+          durationUs,
+          width: 1024,
+          height: 1024,
+          frameRate: FRAME_RATE,
+        },
+        createdAt: new Date().toISOString(),
+      },
+    }),
+  );
+  if (!registered) return;
+  addAssetToTimeline(assetId, "generated", durationUs);
+  toast(`${preset.label} cartoon added — animate it in the Inspector`);
 }
 
 function addAssetToTimeline(
@@ -727,7 +1146,16 @@ function drawPreview(): void {
   // Paint highest track index last (on top): resolve order is track order.
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
-    if (loc) drawLayer(cctx, loc.clip, layer.sourceTimeUs, cw, ch);
+    if (loc) {
+      drawLayer(
+        cctx,
+        loc.clip,
+        layer.sourceTimeUs,
+        clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
+        cw,
+        ch,
+      );
+    }
   }
 }
 
@@ -761,10 +1189,43 @@ function resolveCropRect(
  * `ctx`. Used for both the live preview canvas and offscreen export
  * rendering, so effects are guaranteed identical between what you see and
  * what you export. */
+/** Videos with a seek in flight. One pending redraw per element is enough —
+ * the redraw reads whatever the latest requested time is. */
+const seekingVideos = new WeakSet<HTMLVideoElement>();
+
+/**
+ * Schedules a preview redraw for when `video` has a frame to give.
+ *
+ * Two cases need it: a seek that has not decoded yet, and a freshly imported
+ * clip sitting at time 0 that has never decoded anything at all. The second is
+ * not a seek — the element is already at the requested time — so `seeked`
+ * alone would never fire; `loadeddata` covers it.
+ *
+ * `requestVideoFrameCallback` is the precise signal where available (it fires
+ * when a frame is ready to present). The redraw cannot loop: by the time it
+ * runs the element is within tolerance of the target and has data, so
+ * drawLayer does not schedule again.
+ */
+function redrawWhenFrameReady(video: HTMLVideoElement): void {
+  if (seekingVideos.has(video)) return;
+  seekingVideos.add(video);
+  const settle = (): void => {
+    if (!seekingVideos.has(video)) return;
+    seekingVideos.delete(video);
+    drawPreview();
+  };
+  if (typeof video.requestVideoFrameCallback === "function") {
+    video.requestVideoFrameCallback(() => settle());
+  }
+  video.addEventListener("seeked", settle, { once: true });
+  video.addEventListener("loadeddata", settle, { once: true });
+}
+
 function drawLayer(
   ctx: CanvasRenderingContext2D,
   clip: TimelineClip,
   sourceTimeUs: string,
+  localTimeUs: string,
   cw: number,
   ch: number,
 ): void {
@@ -783,8 +1244,18 @@ function drawLayer(
     mh = media.videoHeight || mh;
     if (playback.playing === false) {
       const target = Number(sourceTimeUs) / 1_000_000;
-      if (Math.abs(media.currentTime - target) > 0.05)
+      if (Math.abs(media.currentTime - target) > 0.05) {
         media.currentTime = target;
+        // Decoding is asynchronous: the frame for `target` is not available to
+        // the drawImage below, which would paint the previous one and leave it
+        // there. Redraw once the frame actually lands.
+        redrawWhenFrameReady(media);
+      } else if (media.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        // Already at the right time but nothing decoded yet — a clip that was
+        // just imported and sits at 0. Without this the preview stays empty
+        // until the playhead is moved.
+        redrawWhenFrameReady(media);
+      }
     }
   }
 
@@ -811,29 +1282,108 @@ function drawLayer(
   const dx = (cw - dw) / 2;
   const dy = (ch - dh) / 2;
 
-  const { filter, alpha, rotateDeg, flipX, flipY } = previewTransform(clip);
+  const staticTransform = previewTransform(clip);
+  const animation = resolveLayerAnimationTransform(clip, localTimeUs);
+  const transform = composeCanvasLayerTransform(
+    staticTransform,
+    animation,
+    cw,
+    ch,
+  );
 
   // Background removal (color key) needs per-pixel work, so it runs on an
   // offscreen canvas whose result is drawn in place of the raw media.
   const bgFx = clip.effects.find(
     (e) => e.enabled && e.type === "fx.remove_background",
   );
-  const drawable: CanvasImageSource = bgFx
+  let drawable: CanvasImageSource = bgFx
     ? removeBackground(media, mw, mh, bgFx)
     : media;
 
+  // Identity of the pixels `drawable` currently holds, not just of the asset
+  // they came from. Every cache below keys off this: a stylized render of a
+  // keyed-out, graded frame is a different image from one of the raw media,
+  // and keying by asset alone would serve the stale one.
+  let sourceKey = asset.originalUri;
+  if (bgFx) sourceKey += `|bg:${JSON.stringify(bgFx.params)}`;
+
+  // Grading runs before stylization, which is the order a photographer works
+  // in: correct the exposure and colour of the photograph, then paint over the
+  // corrected result. Within the grade, the clip's own stack order decides.
+  const gradingFx = clip.effects.filter(
+    (e) => e.enabled && GRADING_TYPES.has(e.type),
+  );
+  if (gradingFx.length > 0) {
+    drawable = grade(sourceKey, drawable, mw, mh, gradingFx);
+    sourceKey += `|grade:${gradeSignature(gradingFx)}`;
+  }
+
+  // Painterly passes are whole-image pixel work — Kuwahara alone is O(r^2)
+  // per pixel — and drawLayer runs once per exported frame. The result depends
+  // only on the media and the parameters, never on the playhead, so it is
+  // computed once per (asset, effect) and reused.
+  const artFx = clip.effects.find(
+    (e) =>
+      e.enabled &&
+      e.type.startsWith("art."),
+  );
+  if (artFx) {
+    drawable = stylize(sourceKey, drawable, mw, mh, artFx);
+  }
+
+  // Portrait blur needs the subject mask, which costs a U²-Net inference —
+  // far too slow per frame. The mask is cached per asset and requested once;
+  // until it lands the clip draws unblurred rather than blurring the subject
+  // along with everything else, which is what the old implementation did.
+  const portraitFx = clip.effects.find(
+    (e) => e.enabled && e.type === "photo.portrait_blur",
+  );
+  if (portraitFx) {
+    const mask = portraitMaskFor(asset.originalUri, drawable, mw, mh);
+    if (mask) {
+      drawable = compositePortraitBlur(drawable, mw, mh, mask, portraitFx);
+    }
+  }
+
+  // Transitions are a timed opacity ramp on one end of the clip. What the ramp
+  // reads as is decided by whatever is underneath: nothing -> a fade against
+  // the background, a lower track -> a cross-track crossfade, the neighbouring
+  // clip kept alive by a bounded overlap -> a same-track crossfade.
+  const transition = sampleClipTransition(clip, localTimeUs);
+
   ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.filter = filter || "none";
+  // A dip ramps against an explicit colour rather than against whatever
+  // happens to be behind it, so the colour is laid down under the clip first
+  // and the ramp then reveals or hides the media over it. Painted in the
+  // clip's own destination rect, untransformed: a dip should not scale or spin
+  // with an animated clip, and should not cover other tracks.
+  if (transition.dipColorHex !== undefined) {
+    ctx.globalAlpha = 1;
+    ctx.filter = "none";
+    ctx.fillStyle = transition.dipColorHex;
+    ctx.fillRect(dx, dy, dw, dh);
+  }
+  ctx.globalAlpha = transform.alpha * transition.opacity;
+  ctx.filter = staticTransform.filter || "none";
   const ccx = dx + dw / 2;
   const ccy = dy + dh / 2;
-  ctx.translate(ccx, ccy);
-  if (rotateDeg) ctx.rotate((rotateDeg * Math.PI) / 180);
-  if (flipX || flipY) ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+  // A slide contributes a normalized offset on the same convention as
+  // transform.position_x/y, so it scales with the output exactly as animation
+  // does and preview/GIF/MP4 stay in agreement.
+  ctx.translate(
+    ccx + transform.offsetXPx + transition.offsetX * cw,
+    ccy + transform.offsetYPx + transition.offsetY * ch,
+  );
+  if (transform.rotationDegrees) {
+    ctx.rotate((transform.rotationDegrees * Math.PI) / 180);
+  }
+  ctx.scale(transform.scaleX, transform.scaleY);
   ctx.drawImage(drawable, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
+  // Overlays belong to the clip and therefore receive the same animation, but
+  // retain their previous behavior of not passing through the media filter.
+  ctx.filter = "none";
+  drawOverlays(ctx, clip, -dw / 2, -dh / 2, dw, dh);
   ctx.restore();
-
-  drawOverlays(ctx, clip, dx, dy, dw, dh);
 }
 
 function previewTransform(clip: TimelineClip): {
@@ -913,6 +1463,7 @@ function drawOverlays(
   dw: number,
   dh: number,
 ): void {
+  const inheritedAlpha = ctx.globalAlpha;
   for (const fx of clip.effects) {
     if (!fx.enabled) continue;
     if (fx.type === "color.vignette") {
@@ -937,7 +1488,7 @@ function drawOverlays(
       const amount =
         fx.type === "color.tint" ? getParamNumber(fx, "amount", 0.2) : 0.3;
       ctx.save();
-      ctx.globalAlpha = amount;
+      ctx.globalAlpha = inheritedAlpha * amount;
       ctx.globalCompositeOperation = "overlay";
       ctx.fillStyle = color;
       ctx.fillRect(dx, dy, dw, dh);
@@ -945,7 +1496,8 @@ function drawOverlays(
     } else if (fx.type === "fx.retro_noise") {
       const spacing = getParamNumber(fx, "scanlineSpacing", 6);
       ctx.save();
-      ctx.globalAlpha = getParamNumber(fx, "noiseAmount", 0.25);
+      ctx.globalAlpha =
+        inheritedAlpha * getParamNumber(fx, "noiseAmount", 0.25);
       ctx.fillStyle = "#000";
       for (let y = dy; y < dy + dh; y += spacing) ctx.fillRect(dx, y, dw, 1);
       ctx.restore();
@@ -954,8 +1506,68 @@ function drawOverlays(
       ctx.strokeStyle = getParamString(fx, "borderColorHex", "#ffffff");
       ctx.lineWidth = w;
       ctx.strokeRect(dx + w / 2, dy + w / 2, dw - w, dh - w);
+    } else if (fx.type === "fx.text") {
+      drawTextOverlay(ctx, fx, dx, dy, dw, dh, inheritedAlpha);
     }
   }
+}
+
+/**
+ * Burn a caption into the frame.
+ *
+ * Every dimension is derived from the drawn rect rather than fixed in pixels:
+ * the font size is a ratio of height and the position is normalized, so the
+ * caption lands in the same place at preview resolution and at export
+ * resolution. That is the same convention transform.position_x/y uses, and it
+ * is what keeps preview, GIF and MP4 agreeing.
+ */
+function drawTextOverlay(
+  ctx: CanvasRenderingContext2D,
+  fx: EffectInstance,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+  inheritedAlpha: number,
+): void {
+  const text = getParamString(fx, "text", "");
+  if (text.trim() === "") return;
+
+  const fontSize = Math.max(1, getParamNumber(fx, "fontSizeRatio", 0.08) * dh);
+  const outlineWidth = Math.max(1, fontSize * 0.12);
+
+  ctx.save();
+  ctx.globalAlpha = inheritedAlpha;
+  ctx.font = `700 ${fontSize}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+
+  // Wrap inside 90% of the frame so descenders and the outline never touch the
+  // edge. Measurement comes from this very context, so the layout matches the
+  // font that will actually be drawn.
+  const lines = layoutTextLines(text, dw * 0.9, (line) =>
+    ctx.measureText(line).width,
+  );
+  const lineHeight = fontSize * 1.2;
+  const blockHeight = lineHeight * lines.length;
+  const centreX = dx + getParamNumber(fx, "x", 0.5) * dw;
+  // y positions the block's centre, so 0.5 is genuinely centred whatever the
+  // line count.
+  const startY =
+    dy + getParamNumber(fx, "y", 0.85) * dh - blockHeight / 2 + lineHeight / 2;
+
+  ctx.strokeStyle = getParamString(fx, "outlineHex", "#000000");
+  ctx.lineWidth = outlineWidth;
+  ctx.fillStyle = getParamString(fx, "colorHex", "#ffffff");
+  lines.forEach((line, index) => {
+    const y = startY + index * lineHeight;
+    // Outline first, fill over it: the reverse leaves the stroke eating into
+    // the glyph and thinning the text.
+    if (outlineWidth > 0) ctx.strokeText(line, centreX, y);
+    ctx.fillText(line, centreX, y);
+  });
+  ctx.restore();
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -983,6 +1595,267 @@ function cornerKey(
 
 /** Color-key background removal: pixels close to the key color become
  * transparent, with a soft edge. Deterministic; no ML model. */
+/**
+ * Subject masks for portrait blur, one per asset.
+ *
+ * Segmentation is a U²-Net inference — hundreds of milliseconds — so it cannot
+ * run inside drawLayer, which repaints on every seek and once per exported
+ * frame. The mask depends only on the source media, not on the playhead or the
+ * effect's parameters, so one result serves every frame of a still clip.
+ *
+ * A null entry means "asked for, still running": it stops a repainting preview
+ * from queueing an inference per frame.
+ */
+const portraitMaskCache = new Map<string, Mask | null>();
+
+function portraitMaskFor(
+  assetUri: string,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+): Mask | undefined {
+  const cached = portraitMaskCache.get(assetUri);
+  if (cached !== undefined) return cached ?? undefined;
+
+  portraitMaskCache.set(assetUri, null);
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const octx = off.getContext("2d", { willReadFrequently: true })!;
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
+
+  void segmentForeground({ width, height, data: image.data }, U2NETP_MODEL)
+    .then((mask) => {
+      portraitMaskCache.set(assetUri, mask);
+      drawPreview();
+      toast("Portrait subject detected — background blurred.");
+    })
+    .catch(() => {
+      // Leave the entry null so it is not retried on every repaint; the clip
+      // keeps drawing sharp rather than blurring the subject too.
+      toast("Could not detect a subject for portrait blur.", true);
+    });
+  return undefined;
+}
+
+/** Blurred background composited under the sharp, masked subject. */
+function compositePortraitBlur(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  mask: Mask,
+  fx: EffectInstance,
+): HTMLCanvasElement {
+  const radius = getParamNumber(fx, "blurRadiusPx", 15);
+  const bokeh = getParamNumber(fx, "bokehStrength", 0.4);
+  const subjectScale = getParamNumber(fx, "subjectScale", 1);
+
+  // Background: the whole frame blurred, with highlights bloomed so the result
+  // reads as defocus rather than a smudge.
+  const bg = document.createElement("canvas");
+  bg.width = width;
+  bg.height = height;
+  const bgCtx = bg.getContext("2d", { willReadFrequently: true })!;
+  bgCtx.filter = radius > 0 ? `blur(${radius}px)` : "none";
+  bgCtx.drawImage(source, 0, 0, width, height);
+  bgCtx.filter = "none";
+  if (bokeh > 0) {
+    const pixels = bgCtx.getImageData(0, 0, width, height);
+    bloomHighlights(pixels.data, bokeh);
+    bgCtx.putImageData(pixels, 0, 0);
+  }
+
+  // Subject: the sharp frame, keyed to the (optionally biased) mask. Feathering
+  // the alpha keeps the cut-out from looking like a sticker.
+  const biased = featherMask(biasSubjectMask(mask, subjectScale), 2);
+  const fg = document.createElement("canvas");
+  fg.width = width;
+  fg.height = height;
+  const fgCtx = fg.getContext("2d", { willReadFrequently: true })!;
+  fgCtx.drawImage(source, 0, 0, width, height);
+  const subject = fgCtx.getImageData(0, 0, width, height);
+  for (let i = 0, p = 0; i < subject.data.length; i += 4, p++) {
+    subject.data[i + 3] = Math.min(subject.data[i + 3]!, biased.data[p]!);
+  }
+  fgCtx.putImageData(subject, 0, 0);
+
+  bgCtx.drawImage(fg, 0, 0);
+  return bg;
+}
+
+/**
+ * Cached painterly renders, keyed by asset and by the exact parameters used.
+ *
+ * Including the parameters in the key is what makes the cache correct rather
+ * than merely fast: dragging a slider has to re-render, and a stale entry
+ * would silently show the previous setting.
+ */
+const artCache = new Map<string, HTMLCanvasElement>();
+
+function stylize(
+  sourceKey: string,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  fx: EffectInstance,
+): CanvasImageSource {
+  const key = `${sourceKey}|${fx.type}|${JSON.stringify(fx.params)}|${width}x${height}`;
+  const cached = artCache.get(key);
+  if (cached) return cached;
+
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const octx = off.getContext("2d", { willReadFrequently: true })!;
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
+  const raster = { width, height, data: image.data };
+
+  let result;
+  if (fx.type === "art.pencil_sketch") {
+    result = pencilSketch(
+      raster,
+      getParamNumber(fx, "strength", 1),
+      getParamNumber(fx, "grain", 0.25),
+    );
+  } else if (fx.type === "art.oil_painting") {
+    result = oilPainting(raster, getParamNumber(fx, "radiusPx", 4));
+  } else if (fx.type === "art.watercolor") {
+    result = watercolor(
+      raster,
+      getParamNumber(fx, "poolRadiusPx", 3),
+      getParamNumber(fx, "edgeStrength", 0.7),
+      getParamNumber(fx, "grain", 0.3),
+    );
+  } else if (fx.type === "art.crosshatch") {
+    result = crosshatch(
+      raster,
+      getParamNumber(fx, "spacingPx", 5),
+      getParamNumber(fx, "darkness", 1),
+    );
+  } else if (fx.type === "art.halftone") {
+    result = halftone(
+      raster,
+      getParamNumber(fx, "cellPx", 6),
+      getParamNumber(fx, "angleDegrees", 45),
+    );
+  } else {
+    result = cartoonPosterize(
+      raster,
+      getParamNumber(fx, "levels", 5),
+      getParamNumber(fx, "edgeStrength", 0.8),
+    );
+  }
+  // Write back through the ImageData we already read, rather than building a
+  // new one: its buffer is already the right shape for this context.
+  image.data.set(result.data);
+  octx.putImageData(image, 0, 0);
+
+  // Unbounded growth would be a leak across a long session; the cache exists
+  // for repeated frames of one export, not for the whole project history.
+  if (artCache.size > 12) {
+    const oldest = artCache.keys().next().value;
+    if (oldest !== undefined) artCache.delete(oldest);
+  }
+  artCache.set(key, off);
+  return off;
+}
+
+/** The grading effects, in the order the renderer must apply them: the clip's
+ * own stack order, so re-ordering the stack in the inspector re-orders the
+ * grade rather than being silently ignored. */
+const GRADING_TYPES: ReadonlySet<string> = new Set([
+  "color.white_balance",
+  "color.levels",
+  "color.tone_curve",
+  "color.vibrance",
+]);
+
+/**
+ * Colour grading passes, cached like the painterly ones.
+ *
+ * These are per-pixel work over the whole frame and drawLayer runs once per
+ * exported frame, but the result depends only on the media and the parameters,
+ * never on the playhead — so one render serves every frame of a still clip and
+ * a slider drag re-renders because the parameters are part of the key.
+ */
+const gradeCache = new Map<string, HTMLCanvasElement>();
+
+/** Everything about a grade that changes its pixels: the ordered list of
+ * passes and their exact parameters. Shared by the grade cache and by the
+ * caches downstream of it, which see graded pixels rather than raw ones. */
+function gradeSignature(gradingFx: EffectInstance[]): string {
+  return gradingFx
+    .map((fx) => `${fx.type}:${JSON.stringify(fx.params)}`)
+    .join("|");
+}
+
+function gradeImage(image: RasterImage, fx: EffectInstance): RasterImage {
+  if (fx.type === "color.white_balance") {
+    return whiteBalance(
+      image,
+      getParamNumber(fx, "temperature", 0),
+      getParamNumber(fx, "tint", 0),
+    );
+  }
+  if (fx.type === "color.levels") {
+    return levels(
+      image,
+      getParamNumber(fx, "blackPoint", 0),
+      getParamNumber(fx, "whitePoint", 1),
+      getParamNumber(fx, "gamma", 1),
+    );
+  }
+  if (fx.type === "color.tone_curve") {
+    return toneCurve(
+      image,
+      getParamNumber(fx, "shadows", 0),
+      getParamNumber(fx, "midtones", 0),
+      getParamNumber(fx, "highlights", 0),
+    );
+  }
+  // The effect's amount is −1…1; the shared adjustment speaks Lightroom's
+  // −100…100, so one scale converts between them in the single place it matters.
+  return vibrance(image, getParamNumber(fx, "amount", 0) * 100);
+}
+
+function grade(
+  sourceKey: string,
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  gradingFx: EffectInstance[],
+): CanvasImageSource {
+  if (gradingFx.length === 0) return source;
+
+  const key = `${sourceKey}|${width}x${height}|${gradeSignature(gradingFx)}`;
+  const cached = gradeCache.get(key);
+  if (cached) return cached;
+
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const octx = off.getContext("2d", { willReadFrequently: true })!;
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
+
+  let raster: RasterImage = { width, height, data: image.data };
+  for (const fx of gradingFx) raster = gradeImage(raster, fx);
+
+  image.data.set(raster.data);
+  octx.putImageData(image, 0, 0);
+
+  // Bounded like artCache: the cache exists for the repeated frames of one
+  // export and one slider drag, not for a whole session's history.
+  if (gradeCache.size > 12) {
+    const oldest = gradeCache.keys().next().value;
+    if (oldest !== undefined) gradeCache.delete(oldest);
+  }
+  gradeCache.set(key, off);
+  return off;
+}
+
 function removeBackground(
   media: CanvasImageSource,
   mw: number,
@@ -1131,7 +2004,9 @@ function renderTimeline(): void {
     for (const clip of track.clips) {
       const el = document.createElement("div");
       el.className = `clip${track.kind === "audio" ? " audio" : ""}${
-        clip.id === selectedClipId ? " selected" : ""
+        clip.id === selectedClipId || selectedClipIds.has(clip.id)
+          ? " selected"
+          : ""
       }`;
       el.style.left = `${usToPixels(clip.timelineStartUs, zoom)}px`;
       const clipWidth = Math.max(24, usToPixels(clip.timelineDurationUs, zoom));
@@ -1159,6 +2034,37 @@ function renderTimeline(): void {
       label.textContent = asset ? assetName(asset) : clip.id;
       el.appendChild(label);
 
+      for (const localTimeUs of uniqueKeyframeTimes(clip)) {
+        const count = (clip.animations ?? []).reduce(
+          (total, animation) =>
+            total +
+            animation.keyframes.filter(
+              (keyframe) => keyframe.timeUs === localTimeUs,
+            ).length,
+          0,
+        );
+        const marker = document.createElement("button");
+        marker.className = "clip-keyframe-marker";
+        marker.style.left = `clamp(5px, ${keyframePositionPercent(
+          localTimeUs,
+          clip.timelineDurationUs,
+        )}%, calc(100% - 5px))`;
+        marker.title = `${count} keyframe${count === 1 ? "" : "s"} at ${formatTime(localTimeUs)}`;
+        marker.setAttribute(
+          "aria-label",
+          `Go to ${count} keyframe${count === 1 ? "" : "s"} at ${formatTime(localTimeUs)}`,
+        );
+        marker.addEventListener("pointerdown", (event) =>
+          event.stopPropagation(),
+        );
+        marker.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectedClipId = clip.id;
+          seekToClipAnimationTime(clip, localTimeUs);
+        });
+        el.appendChild(marker);
+      }
+
       const remove = document.createElement("button");
       remove.className = "clip-remove";
       remove.textContent = "✕";
@@ -1170,6 +2076,20 @@ function renderTimeline(): void {
         deleteClip(clip.id);
       });
       el.appendChild(remove);
+
+      // Trim handles: the outer few pixels of each edge drag the in/out point
+      // instead of moving the clip, which is how every NLE behaves.
+      for (const side of ["left", "right"] as const) {
+        const handle = document.createElement("div");
+        handle.className = `clip-trim clip-trim-${side}`;
+        handle.title = `Trim ${side === "left" ? "start" : "end"} (hold Shift to ripple)`;
+        handle.setAttribute("aria-label", `Trim ${clip.id} ${side}`);
+        handle.addEventListener("pointerdown", (e) => {
+          e.stopPropagation();
+          startClipTrim(e, clip, track, side);
+        });
+        el.appendChild(handle);
+      }
 
       el.addEventListener("pointerdown", (e) => startClipDrag(e, clip, track));
       lane.appendChild(el);
@@ -1192,13 +2112,27 @@ function assetName(asset: MediaAsset): string {
   return `${asset.kind} clip`;
 }
 
-// Drag a clip horizontally to move it (dispatches timeline.move_clip).
+/** Snap tolerance in pixels, converted to time at the current zoom so the
+ * magnet feels the same whether the timeline is zoomed in or out. */
+const SNAP_TOLERANCE_PX = 8;
+
+function snapToleranceUs(): string {
+  return String(Math.round((SNAP_TOLERANCE_PX / zoom) * 1_000_000));
+}
+
+/** Drag a clip horizontally to move it (dispatches timeline.move_clip).
+ * The drop position snaps to clip edges, the playhead and the sequence start;
+ * hold Alt to place it exactly where the pointer is instead. */
 function startClipDrag(
   e: PointerEvent,
   clip: TimelineClip,
   track: Track,
 ): void {
   e.preventDefault();
+  if (e.shiftKey || e.metaKey || e.ctrlKey) {
+    toggleClipSelection(clip.id);
+    return;
+  }
   selectClip(clip.id);
   const startX = e.clientX;
   let moved = false;
@@ -1218,17 +2152,772 @@ function startClipDrag(
       deltaPixels: ev.clientX - startX,
       pixelsPerSecond: zoom,
     });
-    if (drag.commandType === "timeline.move_clip") {
-      commit(buildMoveClip(nextCtx(), drag.payload));
-    }
+    if (drag.commandType !== "timeline.move_clip") return;
+
+    const seq = activeSequence();
+    const snapped =
+      seq && !ev.altKey
+        ? snapClipStart(
+            drag.payload.timelineStartUs,
+            clip.timelineDurationUs,
+            collectSnapTargets(seq, [clip.id], playback.currentTimeUs),
+            snapToleranceUs(),
+          )
+        : { startUs: drag.payload.timelineStartUs, snappedTo: null };
+
+    commit(
+      buildMoveClip(nextCtx(), {
+        ...drag.payload,
+        timelineStartUs: snapped.startUs,
+      }),
+    );
   };
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
 }
 
+/**
+ * Drag a clip edge to trim it.
+ *
+ * Trimming the left edge changes the in-point, which shortens the clip from its
+ * head; the clip's timeline start is moved by the same amount in the same
+ * gesture so the remaining frames stay where they were on the timeline — two
+ * commands, one undo step.
+ *
+ * Holding Shift ripples: every later clip on the track shifts by the change in
+ * duration, so the cut after this one keeps its relationship to it.
+ */
+function startClipTrim(
+  e: PointerEvent,
+  clip: TimelineClip,
+  track: Track,
+  side: "left" | "right",
+): void {
+  e.preventDefault();
+  selectClip(clip.id);
+  const startX = e.clientX;
+  let moved = false;
+
+  const onMove = (ev: PointerEvent): void => {
+    if (Math.abs(ev.clientX - startX) > 3) moved = true;
+  };
+  const onUp = (ev: PointerEvent): void => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    if (!moved) return;
+
+    const drag = resolveClipDrag({
+      kind: side === "left" ? "trim-left" : "trim-right",
+      sequenceId: SEQUENCE_ID,
+      clip,
+      deltaPixels: ev.clientX - startX,
+      pixelsPerSecond: zoom,
+    });
+    if (drag.commandType !== "timeline.trim_clip") return;
+
+    const newDuration =
+      BigInt(drag.payload.sourceOutUs) - BigInt(drag.payload.sourceInUs);
+    const ripple = ev.shiftKey
+      ? planRippleTrim(track, clip.id, newDuration.toString())
+      : { clipId: clip.id, moves: [] };
+    const headShift =
+      side === "left"
+        ? BigInt(drag.payload.sourceInUs) - BigInt(clip.sourceInUs)
+        : 0n;
+
+    session.beginGesture();
+    if (commit(buildTrimClip(nextCtx(), drag.payload))) {
+      if (headShift !== 0n) {
+        const start = BigInt(clip.timelineStartUs) + headShift;
+        commit(
+          buildMoveClip(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            clipId: clip.id,
+            targetTrackId: track.id,
+            timelineStartUs: (start < 0n ? 0n : start).toString(),
+          }),
+        );
+      }
+      for (const move of ripple.moves) {
+        commit(
+          buildMoveClip(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            clipId: move.clipId,
+            targetTrackId: track.id,
+            timelineStartUs: move.timelineStartUs,
+          }),
+        );
+      }
+    }
+    session.endGesture();
+    updateUI();
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
+/** Add or remove a clip from the multi-selection (Shift/Cmd-click). */
+function toggleClipSelection(clipId: string): void {
+  if (selectedClipIds.has(clipId)) {
+    selectedClipIds.delete(clipId);
+  } else {
+    // The clip selected on its own is part of the selection being built.
+    if (selectedClipId && selectedClipId !== clipId) {
+      selectedClipIds.add(selectedClipId);
+    }
+    selectedClipIds.add(clipId);
+  }
+  selectedClipId = clipId;
+  updateUI();
+}
+
+/** Every clip the next timeline action applies to, in timeline order. */
+function selectionClipIds(): string[] {
+  const seq = activeSequence();
+  if (!seq) return selectedClipId ? [selectedClipId] : [];
+  const chosen = new Set(selectedClipIds);
+  if (selectedClipId) chosen.add(selectedClipId);
+  const ordered: string[] = [];
+  for (const track of seq.tracks) {
+    for (const clip of [...track.clips].sort(
+      (a, b) => Number(BigInt(a.timelineStartUs) - BigInt(b.timelineStartUs)),
+    )) {
+      if (chosen.has(clip.id)) ordered.push(clip.id);
+    }
+  }
+  return ordered;
+}
+
+/**
+ * Delete the selection, optionally closing the gaps behind it.
+ *
+ * A ripple delete is several commands — the delete plus a move per following
+ * clip — dispatched inside one gesture, so a single Undo puts the cut back.
+ */
+function deleteSelection(ripple: boolean): void {
+  const clipIds = selectionClipIds();
+  if (clipIds.length === 0) return;
+
+  session.beginGesture();
+  // Right to left: deleting an earlier clip first would move the later ones
+  // out from under the positions this plan was computed for.
+  for (const clipId of [...clipIds].reverse()) {
+    const loc = locateClip(clipId);
+    if (!loc) continue;
+    const plan = ripple
+      ? planRippleDelete(loc.track, clipId)
+      : { deleteClipId: clipId, moves: [] };
+    if (!commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId })))
+      continue;
+    for (const move of plan.moves) {
+      if (clipIds.includes(move.clipId)) continue; // about to be deleted too
+      commit(
+        buildMoveClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: move.clipId,
+          targetTrackId: loc.track.id,
+          timelineStartUs: move.timelineStartUs,
+        }),
+      );
+    }
+  }
+  session.endGesture();
+
+  selectedClipIds.clear();
+  selectedClipId = null;
+  updateUI();
+}
+
 // ==========================================================================
 // Inspector rendering
 // ==========================================================================
+
+function seekToClipAnimationTime(
+  clip: TimelineClip,
+  localTimeUs: string,
+): void {
+  const timelineTimeUs = (
+    BigInt(clip.timelineStartUs) + BigInt(localTimeUs)
+  ).toString();
+  playback = pause(seek(playback, timelineTimeUs));
+  syncTransport();
+  syncAudioMonitors();
+  drawPreview();
+  renderTimeline();
+  renderInspector();
+}
+
+function upsertAnimationKeyframe(
+  clip: TimelineClip,
+  property: AnimationProperty,
+  localTimeUs: string,
+  value: number,
+  easing: AnimationEasing,
+): void {
+  const track = clip.animations?.find((item) => item.property === property);
+  const exact = exactKeyframeAtTime(clip, property, localTimeUs);
+  if (track && exact) {
+    commit(
+      buildUpdateKeyframe(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        animationId: track.id,
+        keyframeId: exact.id,
+        timeUs: localTimeUs,
+        value,
+        easing,
+      }),
+    );
+    return;
+  }
+
+  commit(
+    buildAddKeyframe(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: clip.id,
+      animationId: track?.id ?? crypto.randomUUID(),
+      property,
+      keyframe: {
+        id: crypto.randomUUID(),
+        timeUs: localTimeUs,
+        value,
+        easing,
+      },
+    }),
+  );
+}
+
+function toggleAnimationKeyframe(
+  clip: TimelineClip,
+  spec: AnimationControlSpec,
+  localTimeUs: string,
+): void {
+  const track = clip.animations?.find(
+    (item) => item.property === spec.property,
+  );
+  const exact = exactKeyframeAtTime(clip, spec.property, localTimeUs);
+  if (track && exact) {
+    commit(
+      buildRemoveKeyframe(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        animationId: track.id,
+        keyframeId: exact.id,
+      }),
+    );
+    return;
+  }
+
+  upsertAnimationKeyframe(
+    clip,
+    spec.property,
+    localTimeUs,
+    animationValueAtTime(clip, spec.property, localTimeUs),
+    "ease-in-out",
+  );
+}
+
+function animationPropertyControl(
+  clip: TimelineClip,
+  spec: AnimationControlSpec,
+  localTimeUs: string,
+): HTMLElement {
+  const track = clip.animations?.find(
+    (item) => item.property === spec.property,
+  );
+  const exact = exactKeyframeAtTime(clip, spec.property, localTimeUs);
+  const value = animationValueAtTime(clip, spec.property, localTimeUs);
+  const wrap = document.createElement("div");
+  wrap.className = "animation-control";
+
+  const header = document.createElement("div");
+  header.className = "animation-control-header";
+  const inputId = `animation-${clip.id}-${spec.property.replaceAll(".", "-")}`;
+  const label = document.createElement("label");
+  label.htmlFor = inputId;
+  label.textContent = spec.label;
+  const valueLabel = document.createElement("span");
+  valueLabel.className = "animation-value";
+  valueLabel.textContent = spec.format(value);
+  const diamond = document.createElement("button");
+  diamond.type = "button";
+  diamond.className = `keyframe-diamond${exact ? " active" : ""}`;
+  diamond.textContent = exact ? "◆" : "◇";
+  diamond.title = exact ? "Remove keyframe here" : "Add keyframe here";
+  diamond.setAttribute("aria-label", diamond.title);
+  diamond.setAttribute("aria-pressed", String(exact !== undefined));
+  diamond.addEventListener("click", () =>
+    toggleAnimationKeyframe(clip, spec, localTimeUs),
+  );
+  header.append(label, valueLabel, diamond);
+
+  const input = document.createElement("input");
+  input.id = inputId;
+  input.type = "range";
+  input.min = String(spec.min);
+  input.max = String(spec.max);
+  input.step = String(spec.step);
+  input.value = String(value);
+  input.setAttribute("aria-label", `${spec.label} animation value`);
+  input.addEventListener("input", () => {
+    valueLabel.textContent = spec.format(Number(input.value));
+  });
+  input.addEventListener("change", () =>
+    upsertAnimationKeyframe(
+      clip,
+      spec.property,
+      localTimeUs,
+      Number(input.value),
+      exact?.easing ?? "ease-in-out",
+    ),
+  );
+
+  const footer = document.createElement("div");
+  footer.className = "animation-control-footer";
+  const count = document.createElement("span");
+  count.textContent = `${track?.keyframes.length ?? 0} keyframe${track?.keyframes.length === 1 ? "" : "s"}`;
+  const easing = document.createElement("select");
+  easing.className = "animation-easing";
+  easing.setAttribute("aria-label", `${spec.label} keyframe easing`);
+  easing.disabled = exact === undefined;
+  for (const optionValue of ANIMATION_EASINGS) {
+    const option = new Option(optionValue.replaceAll("-", " "), optionValue);
+    option.selected = optionValue === (exact?.easing ?? "ease-in-out");
+    easing.appendChild(option);
+  }
+  easing.title = exact
+    ? "Easing from this keyframe to the next"
+    : "Move onto or add a keyframe to edit easing";
+  easing.addEventListener("change", () => {
+    if (!exact) return;
+    upsertAnimationKeyframe(
+      clip,
+      spec.property,
+      localTimeUs,
+      exact.value,
+      easing.value as AnimationEasing,
+    );
+  });
+  footer.append(count, easing);
+  wrap.append(header, input, footer);
+  return wrap;
+}
+
+/**
+ * The speeds a Speed control offers.
+ *
+ * Discrete presets rather than a free slider, because the rate is a *reduced*
+ * rational — a slider would have to invent a denominator for every position and
+ * most of them would be refused by the schema.
+ */
+const SPEED_PRESETS: ReadonlyArray<{
+  label: string;
+  rate: { numerator: number; denominator: number };
+}> = [
+  { label: "0.25×", rate: { numerator: 1, denominator: 4 } },
+  { label: "0.5×", rate: { numerator: 1, denominator: 2 } },
+  { label: "0.75×", rate: { numerator: 3, denominator: 4 } },
+  { label: "1×", rate: { numerator: 1, denominator: 1 } },
+  { label: "1.5×", rate: { numerator: 3, denominator: 2 } },
+  { label: "2×", rate: { numerator: 2, denominator: 1 } },
+  { label: "4×", rate: { numerator: 4, denominator: 1 } },
+];
+
+const rateKey = (rate: { numerator: number; denominator: number }): string =>
+  `${rate.numerator}/${rate.denominator}`;
+
+/**
+ * Retiming.
+ *
+ * Slowing a clip lengthens it in place, which the reducer refuses if the next
+ * clip is in the way — so the change is issued as one gesture: retime, then
+ * ripple the clips after it. Speeding up ripples too, closing the gap the
+ * shorter clip would otherwise leave.
+ */
+function speedSection(clip: TimelineClip): HTMLElement {
+  const speed = section("Speed");
+  const control = document.createElement("div");
+  control.className = "control";
+  const label = document.createElement("label");
+  label.textContent = "Clip speed";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Clip speed");
+  for (const preset of SPEED_PRESETS) {
+    const option = new Option(preset.label, rateKey(preset.rate));
+    option.selected = rateKey(preset.rate) === rateKey(clip.playbackRate);
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => {
+    const preset = SPEED_PRESETS.find((p) => rateKey(p.rate) === select.value);
+    if (preset) setClipSpeed(clip, preset.rate);
+  });
+  control.append(label, select);
+  speed.appendChild(control);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "Retiming keeps the same frames and spreads them over more or less " +
+    "timeline. Audio is resampled with the picture, so a slowed clip drops in " +
+    "pitch — there is no pitch-preserving stretch yet.";
+  speed.appendChild(note);
+  return speed;
+}
+
+function setClipSpeed(
+  clip: TimelineClip,
+  rate: { numerator: number; denominator: number },
+): void {
+  const loc = locateClip(clip.id);
+  if (!loc) return;
+  const sourceSpan = BigInt(clip.sourceOutUs) - BigInt(clip.sourceInUs);
+  const newDuration =
+    (sourceSpan * BigInt(rate.denominator)) / BigInt(rate.numerator);
+  const ripple = planRippleTrim(loc.track, clip.id, newDuration.toString());
+
+  session.beginGesture();
+  // Lengthening: the clips after it have to move out of the way first, or the
+  // retime is refused as an overlap.
+  const movesFirst = newDuration > BigInt(clip.timelineDurationUs);
+  const applyMoves = (): void => {
+    for (const move of ripple.moves) {
+      commit(
+        buildMoveClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: move.clipId,
+          targetTrackId: loc.track.id,
+          timelineStartUs: move.timelineStartUs,
+        }),
+      );
+    }
+  };
+  if (movesFirst) applyMoves();
+  const retimed = commit(
+    buildSetClipSpeed(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: clip.id,
+      playbackRate: rate,
+    }),
+  );
+  if (retimed && !movesFirst) applyMoves();
+  session.endGesture();
+  updateUI();
+}
+
+function animationSection(clip: TimelineClip): HTMLElement {
+  const animation = section("Animation");
+  animation.classList.add("animation-section");
+  const localTimeUs = clipLocalTimeForPlayhead(clip, playback.currentTimeUs);
+  const times = uniqueKeyframeTimes(clip);
+  const previous = adjacentKeyframeTime(times, localTimeUs, -1);
+  const next = adjacentKeyframeTime(times, localTimeUs, 1);
+
+  const auto = document.createElement("div");
+  auto.className = "animation-auto";
+  const autoLabel = document.createElement("label");
+  const autoSelectId = `animation-auto-${clip.id}`;
+  autoLabel.htmlFor = autoSelectId;
+  autoLabel.textContent = "Auto motion";
+  const autoRow = document.createElement("div");
+  autoRow.className = "animation-auto-row";
+  const autoSelect = document.createElement("select");
+  autoSelect.id = autoSelectId;
+  autoSelect.setAttribute("aria-label", "Auto animation preset");
+  for (const preset of ANIMATION_PRESETS) {
+    autoSelect.appendChild(new Option(preset.label, preset.id));
+  }
+  const applyButton = document.createElement("button");
+  applyButton.type = "button";
+  applyButton.className = "mini primary";
+  applyButton.textContent = "Apply";
+  applyButton.title = "Replace clip animation with this preset";
+  const clearButton = document.createElement("button");
+  clearButton.type = "button";
+  clearButton.className = "mini";
+  clearButton.textContent = "Clear";
+  clearButton.title = "Remove all animation from this clip";
+  clearButton.disabled = (clip.animations?.length ?? 0) === 0;
+  const description = document.createElement("p");
+  description.className = "animation-auto-description";
+  const updateDescription = (): void => {
+    const selected = ANIMATION_PRESETS.find(
+      (preset) => preset.id === autoSelect.value,
+    );
+    description.textContent = `${selected?.description ?? ""} Applying replaces current animation.`;
+  };
+  autoSelect.addEventListener("change", updateDescription);
+  applyButton.addEventListener("click", () => {
+    const animations = materializeAnimationPreset(
+      autoSelect.value as AnimationPresetId,
+      clip.timelineDurationUs,
+      () => crypto.randomUUID(),
+    );
+    if (
+      commit(
+        buildUpdateClipAnimations(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          animations,
+        }),
+      )
+    ) {
+      seekToClipAnimationTime(clip, "0");
+      toast("Auto animation applied — Undo removes the whole preset");
+    }
+  });
+  clearButton.addEventListener("click", () => {
+    if (
+      commit(
+        buildUpdateClipAnimations(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          animations: [],
+        }),
+      )
+    ) {
+      toast("Clip animation cleared");
+    }
+  });
+  updateDescription();
+  autoRow.append(autoSelect, applyButton, clearButton);
+  auto.append(autoLabel, autoRow, description);
+  animation.appendChild(auto);
+
+  const navigation = document.createElement("div");
+  navigation.className = "animation-nav";
+  const previousButton = document.createElement("button");
+  previousButton.type = "button";
+  previousButton.className = "mini";
+  previousButton.textContent = "◀";
+  previousButton.title = "Previous keyframe";
+  previousButton.setAttribute("aria-label", previousButton.title);
+  previousButton.disabled = previous === undefined;
+  previousButton.addEventListener("click", () => {
+    if (previous !== undefined) seekToClipAnimationTime(clip, previous);
+  });
+  const time = document.createElement("span");
+  time.className = "animation-time";
+  time.textContent = `${formatTime(localTimeUs)} local`;
+  const nextButton = document.createElement("button");
+  nextButton.type = "button";
+  nextButton.className = "mini";
+  nextButton.textContent = "▶";
+  nextButton.title = "Next keyframe";
+  nextButton.setAttribute("aria-label", nextButton.title);
+  nextButton.disabled = next === undefined;
+  nextButton.addEventListener("click", () => {
+    if (next !== undefined) seekToClipAnimationTime(clip, next);
+  });
+  navigation.append(previousButton, time, nextButton);
+  animation.appendChild(navigation);
+
+  const help = document.createElement("p");
+  help.className = "animation-help";
+  help.textContent =
+    "◇ adds a keyframe at the playhead. Moving a slider also creates or updates one.";
+  animation.appendChild(help);
+  for (const spec of ANIMATION_CONTROLS) {
+    animation.appendChild(animationPropertyControl(clip, spec, localTimeUs));
+  }
+  return animation;
+}
+
+/** Default ramp for a newly added transition: long enough to read, short
+ * enough to fit inside any clip the UI lets you add. */
+const DEFAULT_TRANSITION_US = "500000";
+
+function commitTransition(
+  clip: TimelineClip,
+  side: TransitionSide,
+  transition: Transition | null,
+): void {
+  commit(
+    buildSetClipTransition(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: clip.id,
+      side,
+      transition,
+    }),
+  );
+}
+
+/** One end's controls: kind, duration, easing, and a colour when dipping. */
+function transitionEndControl(
+  clip: TimelineClip,
+  side: TransitionSide,
+): HTMLElement {
+  const current = side === "in" ? clip.transitionIn : clip.transitionOut;
+  const wrap = document.createElement("div");
+  wrap.className = "transition-end";
+
+  const header = document.createElement("div");
+  header.className = "transition-end-header";
+  const label = document.createElement("span");
+  label.textContent = side === "in" ? "In" : "Out";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = current ? "mini" : "mini primary";
+  toggle.textContent = current ? "Remove" : "Add";
+  toggle.title =
+    current === undefined
+      ? `Add a ${side === "in" ? "an incoming" : "an outgoing"} transition`
+      : "Remove this transition";
+  toggle.addEventListener("click", () => {
+    if (current !== undefined) {
+      commitTransition(clip, side, null);
+      return;
+    }
+    // Never propose a ramp that cannot fit: the reducer would reject it.
+    const other =
+      side === "in" ? clip.transitionOut?.durationUs : clip.transitionIn?.durationUs;
+    const room = BigInt(clip.timelineDurationUs) - BigInt(other ?? "0");
+    const durationUs =
+      room < BigInt(DEFAULT_TRANSITION_US) ? room.toString() : DEFAULT_TRANSITION_US;
+    if (room <= 0n) {
+      toast("No room left on this clip for another transition.", true);
+      return;
+    }
+    commitTransition(clip, side, {
+      id: crypto.randomUUID(),
+      kind: "cross",
+      durationUs,
+      easing: "ease-in-out",
+    });
+  });
+  header.append(label, toggle);
+  wrap.appendChild(header);
+
+  if (current === undefined) return wrap;
+
+  const row = document.createElement("div");
+  row.className = "transition-row";
+
+  const KIND_LABELS: Record<TransitionKind, string> = {
+    cross: "Crossfade",
+    dip: "Dip to colour",
+    slide: "Slide",
+  };
+  const kind = document.createElement("select");
+  kind.setAttribute("aria-label", `${side} transition kind`);
+  for (const value of TRANSITION_KINDS) {
+    kind.appendChild(new Option(KIND_LABELS[value], value));
+  }
+  kind.value = current.kind;
+  kind.addEventListener("change", () => {
+    const nextKind = kind.value as TransitionKind;
+    commitTransition(clip, side, {
+      id: current.id,
+      kind: nextKind,
+      durationUs: current.durationUs,
+      easing: current.easing,
+      // The schema pairs each extra field with exactly one kind, so carry over
+      // only the one that belongs to the kind being switched to.
+      ...(nextKind === "dip"
+        ? { colorHex: current.colorHex ?? "#000000" }
+        : {}),
+      ...(nextKind === "slide"
+        ? { direction: current.direction ?? "left" }
+        : {}),
+    });
+  });
+
+  const duration = document.createElement("input");
+  duration.type = "range";
+  duration.min = "50";
+  duration.max = String(
+    Math.max(
+      50,
+      Math.floor(
+        Number(
+          BigInt(clip.timelineDurationUs) -
+            BigInt(
+              (side === "in" ? clip.transitionOut : clip.transitionIn)
+                ?.durationUs ?? "0",
+            ),
+        ) / 1000,
+      ),
+    ),
+  );
+  duration.step = "10";
+  duration.value = String(Math.round(Number(current.durationUs) / 1000));
+  duration.setAttribute("aria-label", `${side} transition duration`);
+  const durationLabel = document.createElement("span");
+  durationLabel.className = "transition-duration";
+  durationLabel.textContent = `${duration.value} ms`;
+  duration.addEventListener("input", () => {
+    durationLabel.textContent = `${duration.value} ms`;
+  });
+  duration.addEventListener("change", () => {
+    commitTransition(clip, side, {
+      ...current,
+      durationUs: String(Number(duration.value) * 1000),
+    });
+  });
+
+  const easing = document.createElement("select");
+  easing.setAttribute("aria-label", `${side} transition easing`);
+  for (const value of ANIMATION_EASINGS) {
+    easing.appendChild(new Option(value, value));
+  }
+  easing.value = current.easing;
+  easing.addEventListener("change", () => {
+    commitTransition(clip, side, {
+      ...current,
+      easing: easing.value as AnimationEasing,
+    });
+  });
+
+  row.append(kind, duration, durationLabel, easing);
+
+  if (current.kind === "dip") {
+    const colour = document.createElement("input");
+    colour.type = "color";
+    colour.value = current.colorHex ?? "#000000";
+    colour.setAttribute("aria-label", `${side} dip colour`);
+    colour.addEventListener("change", () => {
+      commitTransition(clip, side, { ...current, colorHex: colour.value });
+    });
+    row.appendChild(colour);
+  }
+
+  if (current.kind === "slide") {
+    const direction = document.createElement("select");
+    direction.setAttribute("aria-label", `${side} slide direction`);
+    for (const value of TRANSITION_DIRECTIONS) {
+      direction.appendChild(new Option(value, value));
+    }
+    direction.value = current.direction ?? "left";
+    direction.title =
+      side === "in"
+        ? "Edge the clip enters from"
+        : "Edge the clip exits toward";
+    direction.addEventListener("change", () => {
+      commitTransition(clip, side, {
+        ...current,
+        direction: direction.value as TransitionDirection,
+      });
+    });
+    row.appendChild(direction);
+  }
+
+  wrap.appendChild(row);
+  return wrap;
+}
+
+function transitionSection(clip: TimelineClip): HTMLElement {
+  const el = section("Transitions");
+  el.classList.add("transition-section");
+  el.appendChild(transitionEndControl(clip, "in"));
+  el.appendChild(transitionEndControl(clip, "out"));
+
+  const help = document.createElement("p");
+  help.className = "animation-help";
+  help.textContent =
+    "A crossfade blends with whatever is underneath — a lower track, or the previous clip once you slide this one back over it. A dip ramps against its own colour.";
+  el.appendChild(help);
+  return el;
+}
+
 function renderInspector(): void {
   if (rasterSession) {
     renderRasterPanel();
@@ -1275,50 +2964,26 @@ function renderInspector(): void {
     inspectorEl.appendChild(editFrameBtn);
   }
 
-  // --- Effects ---
+  if (asset && asset.kind !== "audio") {
+    inspectorEl.appendChild(animationSection(clip));
+    inspectorEl.appendChild(transitionSection(clip));
+  }
+
+  inspectorEl.appendChild(speedSection(clip));
+
+  // --- Effects (visual only; audio effects live in the Audio section) ---
   const fxSection = section("Effects");
-  for (const fx of clip.effects) {
-    const spec = effectSpec(fx.type);
-    const header = document.createElement("div");
-    header.className = "effect-row";
-    const name = document.createElement("span");
-    name.className = "fx-name";
-    name.textContent = spec?.label ?? fx.type;
-    const remove = document.createElement("button");
-    remove.className = "mini";
-    remove.textContent = "Remove";
-    remove.addEventListener("click", () =>
-      commit(
-        buildRemoveEffect(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
-          clipId: clip.id,
-          effectId: fx.id,
-        }),
-      ),
-    );
-    header.append(name, remove);
-    fxSection.appendChild(header);
-
-    if (spec) {
-      for (const p of spec.params) {
-        fxSection.appendChild(paramControl(clip.id, fx, spec, p));
-      }
-    }
-  }
-
-  const addWrap = document.createElement("div");
-  addWrap.className = "control";
-  const select = document.createElement("select");
-  const placeholder = new Option("＋ Add effect…", "");
-  select.appendChild(placeholder);
-  for (const spec of EFFECTS.filter((s) => s.modes.includes(mode))) {
-    select.appendChild(new Option(spec.label, spec.type));
-  }
-  select.addEventListener("change", () => {
-    if (select.value) addEffectByType(select.value as EffectType);
-  });
-  addWrap.appendChild(select);
-  fxSection.appendChild(addWrap);
+  appendEffectRows(
+    fxSection,
+    clip,
+    clip.effects.filter((fx) => !isAudioEffectType(fx.type)),
+  );
+  fxSection.appendChild(
+    addEffectSelect(
+      "＋ Add effect…",
+      visualEffects().filter((s) => s.modes.includes(effectMode())),
+    ),
+  );
   inspectorEl.appendChild(fxSection);
 
   // --- Audio (only for clips that actually carry audio) ---
@@ -1358,7 +3023,73 @@ function renderInspector(): void {
         ),
     ),
   );
+  // Fades, EQ and the compressor are effects like any other — validated,
+  // undoable, reorderable — they just belong beside gain and pan rather than
+  // beside blur.
+  appendEffectRows(
+    audioSection,
+    clip,
+    clip.effects.filter((fx) => isAudioEffectType(fx.type)),
+  );
+  audioSection.appendChild(
+    addEffectSelect("＋ Add audio effect…", audioEffects()),
+  );
   inspectorEl.appendChild(audioSection);
+}
+
+/** One header + parameter block per effect, with a Remove button. */
+function appendEffectRows(
+  container: HTMLElement,
+  clip: TimelineClip,
+  effects: readonly EffectInstance[],
+): void {
+  for (const fx of effects) {
+    const spec = effectSpec(fx.type);
+    const header = document.createElement("div");
+    header.className = "effect-row";
+    const name = document.createElement("span");
+    name.className = "fx-name";
+    name.textContent = spec?.label ?? fx.type;
+    const remove = document.createElement("button");
+    remove.className = "mini";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () =>
+      commit(
+        buildRemoveEffect(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          effectId: fx.id,
+        }),
+      ),
+    );
+    header.append(name, remove);
+    container.appendChild(header);
+
+    if (spec) {
+      for (const p of spec.params) {
+        container.appendChild(paramControl(clip.id, fx, spec, p));
+      }
+    }
+  }
+}
+
+function addEffectSelect(
+  placeholderLabel: string,
+  specs: readonly EffectSpec[],
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "control";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", placeholderLabel.replace("＋ ", ""));
+  select.appendChild(new Option(placeholderLabel, ""));
+  for (const spec of specs) {
+    select.appendChild(new Option(spec.label, spec.type));
+  }
+  select.addEventListener("change", () => {
+    if (select.value) addEffectByType(select.value as EffectType);
+  });
+  wrap.appendChild(select);
+  return wrap;
 }
 
 function section(title: string): HTMLDivElement {
@@ -1413,6 +3144,38 @@ function paramControl(
     wrap.append(label, input);
     return wrap;
   }
+  if (p.kind === "text") {
+    const wrap = document.createElement("div");
+    wrap.className = "control control-text";
+    const label = document.createElement("label");
+    const inputId = `fx-text-${fx.id}`;
+    label.htmlFor = inputId;
+    label.textContent = p.label;
+    const input = document.createElement("textarea");
+    input.id = inputId;
+    input.rows = 2;
+    input.value = getParamString(fx, p.name, String(p.def));
+    input.placeholder = "Type a caption…";
+    // Commit on change, not on input: every keystroke would be its own
+    // command, burying the operation log and making one undo per character.
+    input.addEventListener("change", () => update(input.value));
+    wrap.append(label, input);
+    return wrap;
+  }
+  if (p.kind === "seconds") {
+    // Slider in seconds, stored as canonical microseconds: rounded to whole
+    // microseconds so the value the command carries is exactly what the
+    // schema accepts, with no float residue.
+    const storedUs = getParamString(fx, p.name, String(p.def));
+    return sliderControl(
+      p.label,
+      p.min ?? 0,
+      p.max ?? 10,
+      p.step ?? 0.1,
+      Number(storedUs) / 1_000_000,
+      (value) => update(String(Math.round(value * 1_000_000))),
+    );
+  }
   return sliderControl(
     p.label,
     p.min ?? 0,
@@ -1441,6 +3204,9 @@ function sliderControl(
   lab.append(name, val);
   const input = document.createElement("input");
   input.type = "range";
+  // The visible text sits in a sibling span, so the slider itself would
+  // otherwise reach assistive tech (and a test runner) with no name at all.
+  input.setAttribute("aria-label", label);
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
@@ -1495,7 +3261,9 @@ function addEffectByType(type: EffectType): void {
 
 function renderEffectsPalette(): void {
   paletteEl.innerHTML = "";
-  for (const spec of EFFECTS.filter((s) => s.modes.includes(mode))) {
+  for (const spec of visualEffects().filter((s) =>
+    s.modes.includes(effectMode()),
+  )) {
     const chip = document.createElement("button");
     chip.className = "fx-chip";
     chip.textContent = spec.label;
@@ -1601,6 +3369,59 @@ function renderLooks(): void {
   }
 }
 
+function renderVectorShapes(): void {
+  vectorShapesEl.innerHTML = "";
+
+  const fillRow = document.createElement("div");
+  fillRow.className = "vector-fill-row";
+  const fillLabel = document.createElement("label");
+  fillLabel.htmlFor = "vector-fill";
+  fillLabel.textContent = "Fill";
+  const fill = document.createElement("input");
+  fill.type = "color";
+  fill.id = "vector-fill";
+  fill.value = vectorFillOverride ?? VECTOR_SHAPE_PRESETS[0]!.fillHex;
+  fill.title = "Colour for the next cartoon clip";
+  fill.addEventListener("input", () => {
+    vectorFillOverride = fill.value;
+    renderVectorShapes();
+  });
+  fillRow.append(fillLabel, fill);
+  if (vectorFillOverride !== null) {
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "mini";
+    reset.textContent = "Preset colours";
+    reset.title = "Go back to each shape's own colour";
+    reset.addEventListener("click", () => {
+      vectorFillOverride = null;
+      renderVectorShapes();
+    });
+    fillRow.appendChild(reset);
+  }
+  vectorShapesEl.appendChild(fillRow);
+
+  for (const preset of VECTOR_SHAPE_PRESETS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "vector-shape-chip";
+    button.title = `Add an animatable ${preset.label} cartoon clip`;
+    button.setAttribute("aria-label", button.title);
+    const symbol = document.createElement("span");
+    symbol.className = "vector-shape-symbol";
+    symbol.textContent = preset.symbol;
+    symbol.style.setProperty(
+      "--shape-fill",
+      vectorFillOverride ?? preset.fillHex,
+    );
+    const label = document.createElement("span");
+    label.textContent = preset.label;
+    button.append(symbol, label);
+    button.addEventListener("click", () => void addVectorShape(preset));
+    vectorShapesEl.appendChild(button);
+  }
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
   mediaListEl.classList.toggle("grid", galleryGrid);
@@ -1615,7 +3436,11 @@ function renderMedia(): void {
     });
     const thumb = document.createElement("div");
     thumb.className = "media-thumb";
-    if (asset.kind === "image" || asset.kind === "video") {
+    if (
+      asset.kind === "image" ||
+      asset.kind === "video" ||
+      asset.kind === "generated"
+    ) {
       thumb.style.backgroundImage = `url("${asset.originalUri}")`;
     } else {
       thumb.classList.add("audio");
@@ -1707,14 +3532,74 @@ function audioRouteFor(el: HTMLMediaElement): AudioRoute {
   if (!route) {
     const ctx = audioCtx!;
     const source = ctx.createMediaElementSource(el);
-    const gain = ctx.createGain();
-    const pan = ctx.createStereoPanner();
-    source.connect(gain).connect(pan).connect(ctx.destination);
+    const chain = buildAudioChain(ctx);
+    source.connect(chain.low);
+    chain.pan.connect(ctx.destination);
     el.muted = false;
-    route = { gain, pan };
+    route = chain;
     audioRoutes.set(el, route);
   }
   return route;
+}
+
+/** The shared EQ → compressor → gain → pan chain, built neutral. Used for both
+ * live monitoring and the offline export mixdown, so a clip that was monitored
+ * one way cannot export another. */
+function buildAudioChain(ctx: BaseAudioContext): AudioRoute {
+  const low = ctx.createBiquadFilter();
+  low.type = "lowshelf";
+  low.frequency.value = EQ_LOW_HZ;
+  const mid = ctx.createBiquadFilter();
+  mid.type = "peaking";
+  mid.frequency.value = EQ_MID_HZ;
+  mid.Q.value = EQ_MID_Q;
+  const high = ctx.createBiquadFilter();
+  high.type = "highshelf";
+  high.frequency.value = EQ_HIGH_HZ;
+  const compressor = ctx.createDynamicsCompressor();
+  const gain = ctx.createGain();
+  const pan = ctx.createStereoPanner();
+
+  low.connect(mid).connect(high).connect(compressor).connect(gain).connect(pan);
+  applyAudioEffectsToChain({ low, mid, high, compressor, gain, pan }, []);
+  return { low, mid, high, compressor, gain, pan };
+}
+
+/** Point the chain's EQ and compressor at a clip's audio effect stack.
+ * Absent effects reset to neutral rather than keeping the previous clip's
+ * settings, which is what makes one cached chain safe to reuse. */
+function applyAudioEffectsToChain(
+  route: AudioRoute,
+  effects: readonly EffectInstance[],
+): void {
+  const eq = effects.find((fx) => fx.enabled && fx.type === "audio.eq");
+  route.low.gain.value = eq ? getParamNumber(eq, "lowGainDb", 0) : 0;
+  route.mid.gain.value = eq ? getParamNumber(eq, "midGainDb", 0) : 0;
+  route.high.gain.value = eq ? getParamNumber(eq, "highGainDb", 0) : 0;
+
+  const comp = effects.find(
+    (fx) => fx.enabled && fx.type === "audio.compressor",
+  );
+  // Ratio 1:1 with a 0 dB threshold is a compressor doing nothing, which is how
+  // the chain stays transparent for clips that never asked for one.
+  route.compressor.threshold.value = comp
+    ? getParamNumber(comp, "thresholdDb", -24)
+    : 0;
+  route.compressor.ratio.value = comp ? getParamNumber(comp, "ratio", 4) : 1;
+  route.compressor.attack.value = comp
+    ? getParamNumber(comp, "attackMs", 10) / 1000
+    : 0.003;
+  route.compressor.release.value = comp
+    ? getParamNumber(comp, "releaseMs", 250) / 1000
+    : 0.25;
+}
+
+/** Makeup gain in dB from a clip's compressor, 0 when there is none. */
+function makeupGainDb(effects: readonly EffectInstance[]): number {
+  const comp = effects.find(
+    (fx) => fx.enabled && fx.type === "audio.compressor",
+  );
+  return comp ? getParamNumber(comp, "makeupGainDb", 0) : 0;
 }
 
 /** Drive live media playback to match the transport: every audio/video clip
@@ -1738,8 +3623,26 @@ function syncAudioMonitors(): void {
     if (!loc) continue;
 
     const route = audioRouteFor(el);
-    route.gain.gain.value = dbToGain(loc.clip.audioGainDb);
+    const audioFx = loc.clip.effects.filter((fx) => isAudioEffectType(fx.type));
+    applyAudioEffectsToChain(route, audioFx);
+    // Fades — authored, or implied by an overlap with a neighbour on the same
+    // track — are sampled at the playhead. The export mixdown ramps the same
+    // envelope sample-accurately; both read `audioEnvelopeGain`, so a fade
+    // heard here is the fade that lands in the file.
+    const envelope = audioEnvelopeGain(
+      clipLocalTimeUs(playback.currentTimeUs, loc.clip.timelineStartUs),
+      loc.clip.timelineDurationUs,
+      resolveAudioFades(loc.clip, loc.track.clips),
+    );
+    route.gain.gain.value =
+      dbToGain(loc.clip.audioGainDb + makeupGainDb(audioFx)) * envelope;
     route.pan.pan.value = Math.max(-1, Math.min(1, loc.clip.audioPan));
+
+    // A retimed clip plays its source faster or slower; the element's own rate
+    // does the resampling, so monitoring matches the exported mixdown (which
+    // resamples the decoded buffer the same way, pitch and all).
+    el.playbackRate =
+      loc.clip.playbackRate.numerator / loc.clip.playbackRate.denominator;
 
     // Resync the element clock only when it has drifted (or just started /
     // was seeked); small drift is left alone so playback stays smooth.
@@ -1782,6 +3685,7 @@ function stepFrame(delta: number): void {
   syncTransport();
   drawPreview();
   renderTimeline();
+  renderInspector();
 }
 
 // ==========================================================================
@@ -1791,32 +3695,170 @@ function updateUI(): void {
   versionBadge.textContent = `v${session.getVersion()}`;
   syncPlaybackDuration();
   renderMedia();
+  renderVectorShapes();
   renderEffectsPalette();
   renderLooks();
   renderHistory();
   renderTimeline();
   renderInspector();
+  renderGifPanel();
   syncTransport();
   drawPreview();
 }
 
-function setMode(next: "video" | "photo"): void {
+/** Effects are declared for "video" or "photo"; GIF is fed by the same
+ * timeline as video, so it offers the same effect set. */
+/** Which of the two effect sets a mode uses. Animation clips are generated
+ * stills rather than footage, so they take the photo set — the same one that
+ * carries Text, Border and Tint, which is what a caption or a cartoon wants. */
+function effectMode(): "video" | "photo" {
+  return mode === "photo" || mode === "animation" ? "photo" : "video";
+}
+
+const MODE_EMPTY_HINT: Record<EditorMode, string> = {
+  photo: "Import a photo to start editing.",
+  video: "Import media, then add it to the timeline to preview.",
+  animation:
+    "Add a cartoon clip below, then animate it with keyframes or Auto Motion.",
+  gif: "Import a video or photos, add them to the timeline, then export a GIF.",
+};
+
+/** Rotates the drum so `mode` faces the viewer and fades the others by how far
+ * they have turned away. Angles are absolute (not wrapped), so the wheel never
+ * spins the long way round to reach a neighbour. */
+function renderModeWheel(): void {
+  const activeIndex = MODE_ORDER.indexOf(mode);
+  $("mode-wheel-drum").style.setProperty(
+    "--angle",
+    `${-activeIndex * MODE_WHEEL_STEP_DEG}deg`,
+  );
+  MODE_ORDER.forEach((id, index) => {
+    const item = $(`mode-${id}`);
+    const selected = index === activeIndex;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-checked", String(selected));
+    // Roving tabindex: the group is one tab stop, arrows move within it.
+    item.tabIndex = selected ? 0 : -1;
+    item.style.setProperty("--distance", String(Math.abs(index - activeIndex)));
+  });
+}
+
+function setMode(next: EditorMode): void {
   mode = next;
-  $("mode-video").classList.toggle("active", mode === "video");
-  $("mode-photo").classList.toggle("active", mode === "photo");
   document.body.dataset["mode"] = mode;
+  renderModeWheel();
   // Photo mode edits a single still image — the scrub timeline and transport
   // (play/seek/timecode) only make sense once there's a video to play through.
+  // GIF is built from the timeline, so it keeps both.
   $("app").classList.toggle("mode-photo", mode === "photo");
+  // Animation builds motion out of generated clips, so the raster (pixel)
+  // tools are noise there — but the timeline and transport are essential,
+  // which is why it does not share photo mode's chrome.
+  $("app").classList.toggle("mode-animation", mode === "animation");
   // Mode-appropriate empty-state guidance (the timeline is hidden in photo
   // mode, so "add it to the timeline" would be confusing there).
-  stageEmpty.textContent =
-    mode === "photo"
-      ? "Import a photo to start editing."
-      : "Import media, then add it to the timeline to preview.";
+  stageEmpty.textContent = MODE_EMPTY_HINT[mode];
+  $("btn-export").textContent = mode === "gif" ? "⤓ Export GIF" : "⤓ Export";
+  $("gif-section").classList.toggle("hidden", mode !== "gif");
+  // Selecting GIF is the signal to fetch the encoder — by the time settings
+  // are dialled in, the export can start immediately.
+  if (mode === "gif") void warmGifEncoder();
+  renderGifPanel();
   renderInspector();
   renderEffectsPalette();
   renderLooks();
+}
+
+/** Steps the wheel by `delta` positions, clamped at both ends (the drum is a
+ * finite list, not an endless loop — wrapping from GIF back to Photo would
+ * read as the wheel jumping backwards). */
+function stepMode(delta: number): void {
+  const next = MODE_ORDER[
+    Math.min(
+      MODE_ORDER.length - 1,
+      Math.max(0, MODE_ORDER.indexOf(mode) + delta),
+    )
+  ] as EditorMode;
+  if (next !== mode) setMode(next);
+}
+
+function bindModeWheel(): void {
+  const wheel = $("mode-wheel");
+  let dragFrom: number | null = null;
+  // Distance of the drag that is finishing, so the click it also produces is
+  // not read as a second, contradictory step.
+  let draggedDistance = 0;
+
+  for (const id of MODE_ORDER) {
+    $(`mode-${id}`).addEventListener("click", () => setMode(id));
+  }
+
+  // A neighbour's sliver is a rotated 3D face — clicking it usually lands on
+  // the drum behind it rather than the face. Treat a click anywhere in the
+  // housing as "turn towards the half that was clicked", which is how a
+  // physical wheel behaves anyway.
+  wheel.addEventListener("click", (e) => {
+    if (draggedDistance > MODE_WHEEL_DRAG_PX) return;
+    if ((e.target as HTMLElement).closest(".mode-wheel-item")) return;
+    const box = wheel.getBoundingClientRect();
+    stepMode(e.clientY < box.top + box.height / 2 ? -1 : 1);
+  });
+
+  // Trackpads emit a stream of small deltas; accumulate so one physical flick
+  // is one step rather than three.
+  let scrolled = 0;
+  wheel.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      scrolled += e.deltaY;
+      while (Math.abs(scrolled) >= MODE_WHEEL_SCROLL_PX) {
+        stepMode(Math.sign(scrolled));
+        scrolled -= Math.sign(scrolled) * MODE_WHEEL_SCROLL_PX;
+      }
+    },
+    { passive: false },
+  );
+
+  wheel.addEventListener("pointerdown", (e) => {
+    dragFrom = e.clientY;
+    draggedDistance = 0;
+    wheel.setPointerCapture(e.pointerId);
+  });
+  wheel.addEventListener("pointermove", (e) => {
+    if (dragFrom === null) return;
+    const travelled = e.clientY - dragFrom;
+    draggedDistance = Math.max(draggedDistance, Math.abs(travelled));
+    if (Math.abs(travelled) < MODE_WHEEL_DRAG_PX) return;
+    // Dragging down brings the previous mode into view, like a physical drum.
+    stepMode(-Math.sign(travelled));
+    dragFrom = e.clientY;
+  });
+  const endDrag = (e: PointerEvent): void => {
+    if (dragFrom === null) return;
+    dragFrom = null;
+    if (wheel.hasPointerCapture(e.pointerId)) {
+      wheel.releasePointerCapture(e.pointerId);
+    }
+  };
+  wheel.addEventListener("pointerup", endDrag);
+  wheel.addEventListener("pointercancel", endDrag);
+
+  wheel.addEventListener("keydown", (e) => {
+    const byKey: Record<string, () => void> = {
+      ArrowDown: () => stepMode(1),
+      ArrowRight: () => stepMode(1),
+      ArrowUp: () => stepMode(-1),
+      ArrowLeft: () => stepMode(-1),
+      Home: () => setMode(MODE_ORDER[0]!),
+      End: () => setMode(MODE_ORDER[MODE_ORDER.length - 1]!),
+    };
+    const action = byKey[e.key];
+    if (!action) return;
+    e.preventDefault();
+    action();
+    $(`mode-${mode}`).focus();
+  });
 }
 
 // ==========================================================================
@@ -1847,21 +3889,39 @@ function setThemeSelection(selection: string): void {
   localStorage.setItem(THEME_SELECTION_KEY, selection);
 }
 
-function resolveSelectionTokens(selection: string): ThemeTokens | null {
+/** Tokens for the current selection *in the given mode*. Presets ship a
+ * palette per mode; a custom theme is flipped into the mode it was not
+ * authored for. Both matter because these land as inline vars on <html>, which
+ * outrank the [data-theme] rules — resolving without the mode is what makes
+ * the dark/light switch look dead once a palette is picked. */
+function resolveSelectionTokens(
+  selection: string,
+  mode: "dark" | "light",
+): ThemeTokens | null {
   if (selection === "default") return null;
-  if (selection in PRESETS) return PRESETS[selection] ?? null;
+  if (selection in PRESETS) return presetTokens(selection, mode);
   if (selection.startsWith("custom:")) {
     const name = selection.slice("custom:".length);
     const entry = loadCustomThemes().find((c) => c.name === name);
     if (!entry) return null;
-    return deriveTheme(
-      entry.seeds.bg,
-      entry.seeds.panel,
-      entry.seeds.text,
-      entry.seeds.accent,
-    );
+    const authored = entry.seeds;
+    const s =
+      seedsAreDark(authored) === (mode === "dark")
+        ? authored
+        : counterpartSeeds(authored);
+    return deriveTheme(s.bg, s.panel, s.text, s.accent);
   }
   return null;
+}
+
+/** Re-apply the selected palette for whatever mode is currently resolved. */
+function refreshThemeTokens(): void {
+  applyThemeTokens(
+    resolveSelectionTokens(
+      currentThemeSelection(),
+      resolveTheme(currentThemePreference()),
+    ),
+  );
 }
 
 function applyTheme(pref: ThemePreference): void {
@@ -1872,12 +3932,37 @@ function applyTheme(pref: ThemePreference): void {
   for (const id of ["theme-dark", "theme-light", "theme-system"] as const) {
     $(id).classList.toggle("active", id === `theme-${pref}`);
   }
+  refreshThemeTokens();
+  renderThemePanel();
 }
 
 function applyThemeSelection(selection: string): void {
   setThemeSelection(selection);
-  applyThemeTokens(resolveSelectionTokens(selection));
+  refreshThemeTokens();
   renderThemePanel();
+}
+
+/** UI style (skin) swatches — orthogonal to the color theme below them. */
+function renderSkinPanel(): void {
+  const active = currentSkin();
+  const grid = $<HTMLDivElement>("skin-grid");
+  grid.innerHTML = "";
+  for (const skin of SKINS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `skin-swatch${skin.id === active ? " active" : ""}`;
+    btn.style.background = skin.preview;
+    btn.title = skin.blurb;
+    const label = document.createElement("span");
+    label.className = "skin-swatch-label";
+    label.textContent = skin.label;
+    btn.appendChild(label);
+    btn.addEventListener("click", () => {
+      applySkin(skin.id);
+      renderSkinPanel();
+    });
+    grid.appendChild(btn);
+  }
 }
 
 function renderThemePanel(): void {
@@ -1894,11 +3979,14 @@ function renderThemePanel(): void {
   defaultSwatch.addEventListener("click", () => applyThemeSelection("default"));
   grid.appendChild(defaultSwatch);
 
-  for (const [key, tokens] of Object.entries(PRESETS)) {
+  // Swatches preview the palette in the mode the editor is actually in.
+  const mode = resolveTheme(currentThemePreference());
+  for (const [key, preset] of Object.entries(PRESETS)) {
+    const seeds = preset[mode];
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `theme-swatch${selection === key ? " active" : ""}`;
-    btn.style.background = `linear-gradient(135deg, ${tokens.bg}, ${tokens.accent})`;
+    btn.style.background = `linear-gradient(135deg, ${seeds.bg}, ${seeds.accent})`;
     btn.title = PRESET_LABELS[key] ?? key;
     btn.innerHTML = `<span class="theme-swatch-label">${PRESET_LABELS[key] ?? key}</span>`;
     btn.addEventListener("click", () => applyThemeSelection(key));
@@ -1935,8 +4023,12 @@ function renderThemePanel(): void {
 }
 
 function initTheme(): void {
+  // applyTheme also lands the selected palette for the resolved mode.
   applyTheme(currentThemePreference());
-  applyThemeTokens(resolveSelectionTokens(currentThemeSelection()));
+  // Re-apply the persisted skin: index.html sets it pre-paint without
+  // validating, so this is where an unknown id falls back to "default".
+  applySkin(currentSkin());
+  renderSkinPanel();
   renderThemePanel();
   // If the user is following the system theme, react to OS changes live.
   systemThemeQuery.addEventListener("change", () => {
@@ -1999,7 +4091,7 @@ function bindThemePicker(): void {
   }
   cancelBtn.addEventListener("click", () => {
     form.classList.add("hidden");
-    applyThemeTokens(resolveSelectionTokens(currentThemeSelection()));
+    refreshThemeTokens();
   });
   form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -2114,12 +4206,105 @@ async function quickAiRemoveBackground(clipId: string): Promise<void> {
 /** Wait until the video element has actually seeked to `targetSeconds` before
  * reading pixels — `currentTime` assignment is async, so capturing
  * immediately could grab the previous frame. */
-function seekVideoFrame(video: HTMLVideoElement, targetSeconds: number): Promise<void> {
-  if (Math.abs(video.currentTime - targetSeconds) < 0.02) return Promise.resolve();
+/**
+ * Put a decode-only video element in the document, invisibly.
+ *
+ * A detached `<video>` is never composited, and a browser does not present
+ * frames for something it is not compositing. Everything that reports a seek
+ * as finished — `seeked`, `currentTime`, `requestVideoFrameCallback` — then
+ * describes the seek rather than the picture, and `drawImage` keeps copying
+ * whichever frame was last presented. Exports read the element exactly once,
+ * so they get that stale frame with no repaint to correct it.
+ *
+ * `display: none` and `visibility: hidden` suppress compositing just as being
+ * detached does, so the element has to stay technically rendered: one pixel,
+ * fully transparent, out of the layout and ignoring input.
+ */
+function attachOffscreen(video: HTMLVideoElement): void {
+  video.playsInline = true;
+  Object.assign(video.style, {
+    position: "fixed",
+    left: "0",
+    top: "0",
+    width: "1px",
+    height: "1px",
+    opacity: "0",
+    pointerEvents: "none",
+    zIndex: "-1",
+  });
+  video.setAttribute("aria-hidden", "true");
+  document.body.appendChild(video);
+}
+
+/** Safety net for the frame wait. With the element composited this normally
+ * resolves within a frame or two; the cap only stops a browser that declines
+ * to present from hanging an export. */
+const FRAME_PRESENT_TIMEOUT_MS = 300;
+
+/**
+ * Seek `video` and resolve once the target frame can actually be drawn.
+ *
+ * The tempting checks are all wrong on their own. `currentTime` reports the
+ * *requested* position, so it reads as the target the instant a seek is issued
+ * — and drawLayer issues one on every preview repaint, so an export arriving
+ * moments later sees the right number over the wrong picture. `seeked` says
+ * the seek finished, not that the frame was presented. Measured mid-export:
+ * `currentTime` 4, `seeking` true, `readyState` 1 — no frame data at all,
+ * while the old early-return returned in 0ms and drawImage copied the frame
+ * from before the seek.
+ *
+ * `requestVideoFrameCallback` reports the frame that was actually presented,
+ * and its `mediaTime` says which one, so that is what this waits for.
+ */
+function seekVideoFrame(
+  video: HTMLVideoElement,
+  targetSeconds: number,
+): Promise<void> {
+  const atTarget = Math.abs(video.currentTime - targetSeconds) < 0.02;
+  // Nothing pending and a decoded frame already up: it is on screen now.
+  if (
+    atTarget &&
+    !video.seeking &&
+    video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  ) {
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const awaitPresentedFrame = (): void => {
+      if (typeof video.requestVideoFrameCallback !== "function") {
+        finish();
+        return;
+      }
+      const onFrame = (_now: number, metadata: { mediaTime: number }): void => {
+        if (settled) return;
+        // Frames already in flight can arrive first; keep waiting for the one
+        // whose own timestamp is the frame that was asked for.
+        if (Math.abs(metadata.mediaTime - targetSeconds) < 0.05) {
+          finish();
+          return;
+        }
+        video.requestVideoFrameCallback(onFrame);
+      };
+      video.requestVideoFrameCallback(onFrame);
+      setTimeout(finish, FRAME_PRESENT_TIMEOUT_MS);
+    };
+
+    if (atTarget) {
+      // A seek to this same time is already in flight — started by drawLayer's
+      // fire-and-forget preview seek. Re-assigning currentTime here would be a
+      // no-op that never fires `seeked`, so just wait for the picture.
+      awaitPresentedFrame();
+      return;
+    }
     const onSeeked = (): void => {
       video.removeEventListener("seeked", onSeeked);
-      resolve();
+      awaitPresentedFrame();
     };
     video.addEventListener("seeked", onSeeked);
     video.currentTime = targetSeconds;
@@ -3041,8 +5226,8 @@ async function applyRasterEdit(): Promise<void> {
 // Events
 // ==========================================================================
 function bindEvents(): void {
-  $("mode-video").addEventListener("click", () => setMode("video"));
-  $("mode-photo").addEventListener("click", () => setMode("photo"));
+  bindModeWheel();
+  bindGifPanel();
 
   // Photo mode hides the timeline (nothing to scrub for a still image), so
   // drag-and-drop needs a target there too — the stage itself.
@@ -3074,8 +5259,8 @@ function bindEvents(): void {
 
   $("btn-import").addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
-    const file = fileInput.files?.[0];
-    if (file) void importFile(file);
+    const files = fileInput.files;
+    if (files && files.length > 0) void importFiles(files);
     fileInput.value = "";
   });
 
@@ -3114,6 +5299,7 @@ function bindEvents(): void {
     playback = playback.playing ? pause(playback) : play(playback);
     syncTransport();
     syncAudioMonitors();
+    if (!playback.playing) renderInspector();
   });
   $("btn-start").addEventListener("click", () => {
     playback = seek(playback, "0");
@@ -3121,6 +5307,7 @@ function bindEvents(): void {
     syncAudioMonitors();
     drawPreview();
     renderTimeline();
+    renderInspector();
   });
   $("btn-prev").addEventListener("click", () => stepFrame(-1));
   $("btn-next").addEventListener("click", () => stepFrame(1));
@@ -3135,6 +5322,7 @@ function bindEvents(): void {
     syncAudioMonitors();
     drawPreview();
     renderTimeline();
+    renderInspector();
   });
 
   $("zoom").addEventListener("input", (e) => {
@@ -3159,9 +5347,8 @@ function bindEvents(): void {
     );
   });
 
-  $("btn-delete").addEventListener("click", () => {
-    if (selectedClipId) deleteClip(selectedClipId);
-  });
+  $("btn-delete").addEventListener("click", () => deleteSelection(false));
+  $("btn-ripple-delete").addEventListener("click", () => deleteSelection(true));
 
   $("btn-split").addEventListener("click", splitSelectedClip);
   $("btn-export").addEventListener("click", doExport);
@@ -3195,13 +5382,8 @@ function bindEvents(): void {
       (e.code === "Delete" || e.code === "Backspace") &&
       selectedClipId
     ) {
-      commit(
-        buildDeleteClip(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
-          clipId: selectedClipId,
-        }),
-      );
-      selectedClipId = null;
+      // Shift+Delete ripples: the gap closes behind the deleted clips.
+      deleteSelection(e.shiftKey);
     } else if (e.code === "Space") {
       e.preventDefault();
       if (!playback.playing) ensureAudioContextResumed();
@@ -3299,8 +5481,14 @@ function downloadBlob(blob: Blob, filename: string): void {
 
 /** Renders the current visual layer(s) at full native resolution — same
  * effects as the live preview, baked in — onto a fresh offscreen canvas.
- * Returns null if there's nothing visible to export. */
-function renderExportFrame(): HTMLCanvasElement | null {
+ * Returns null if there's nothing visible to export.
+ *
+ * Async because a video layer has to be seeked and decoded before it can be
+ * drawn. drawLayer's own seek is fire-and-forget — it schedules a redraw for
+ * the preview, which repaints continuously — and it is skipped entirely while
+ * the transport is playing. Neither is any use to a one-shot export, so this
+ * awaits the frame the way the GIF and MP4 loops already do. */
+async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   const seq = activeSequence();
   const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
   const visual = layers.filter((l) => {
@@ -3334,7 +5522,22 @@ function renderExportFrame(): HTMLCanvasElement | null {
   const octx = out.getContext("2d")!;
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
-    if (loc) drawLayer(octx, loc.clip, layer.sourceTimeUs, out.width, out.height);
+    if (!loc) continue;
+    const layerAsset = findAsset(loc.clip.assetId);
+    const layerMedia = layerAsset
+      ? mediaCache.get(layerAsset.originalUri)
+      : undefined;
+    if (layerMedia instanceof HTMLVideoElement) {
+      await seekVideoFrame(layerMedia, Number(layer.sourceTimeUs) / 1_000_000);
+    }
+    drawLayer(
+      octx,
+      loc.clip,
+      layer.sourceTimeUs,
+      clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
+      out.width,
+      out.height,
+    );
   }
   return out;
 }
@@ -3342,8 +5545,15 @@ function renderExportFrame(): HTMLCanvasElement | null {
 /** Real, working image export: renders the current frame (effects baked in)
  * at full native resolution and downloads it as a PNG. No plan, no fake job —
  * a real file. */
-function exportPhotoImage(): void {
-  const canvasEl = renderExportFrame();
+async function exportPhotoImage(): Promise<void> {
+  // Pause first: a still is "the frame at the playhead", and letting the
+  // transport keep advancing during the seek means exporting a frame the
+  // playhead has already left.
+  if (playback.playing) {
+    playback = pause(playback);
+    syncTransport();
+  }
+  const canvasEl = await renderExportFrame();
   if (!canvasEl) {
     toast("Nothing to export.", true);
     return;
@@ -3397,18 +5607,52 @@ async function renderAndEncodeAudio(
     if (!buffer) continue;
     const source = offline.createBufferSource();
     source.buffer = buffer;
-    const gain = offline.createGain();
-    gain.gain.value = 10 ** (clip.gainDb / 20);
-    const panner = offline.createStereoPanner();
-    panner.pan.value = Math.max(-1, Math.min(1, clip.pan));
-    source.connect(gain).connect(panner).connect(offline.destination);
+    // Same chain as live monitoring, driven by the same effect stack.
+    const chain = buildAudioChain(offline);
+    applyAudioEffectsToChain(chain, clip.effects);
+    chain.gain.gain.value = 10 ** ((clip.gainDb + makeupGainDb(clip.effects)) / 20);
+    chain.pan.pan.value = Math.max(-1, Math.min(1, clip.pan));
+    source.connect(chain.low);
+    chain.pan.connect(offline.destination);
+
+    // A retimed clip resamples its source, pitch and all — the same varispeed
+    // the live monitor applies via HTMLMediaElement.playbackRate. Pitch-
+    // preserving time-stretch is a different device and is not implemented.
+    source.playbackRate.value =
+      clip.playbackRate.numerator / clip.playbackRate.denominator;
 
     const startSec = Number(clip.timelineStartUs) / 1_000_000;
     const offsetSec = Number(clip.sourceInUs) / 1_000_000;
-    const clipDurationSec =
+    const sourceSpanSec =
       (Number(clip.sourceOutUs) - Number(clip.sourceInUs)) / 1_000_000;
-    if (clipDurationSec <= 0) continue;
-    source.start(startSec, offsetSec, clipDurationSec);
+    // How long the clip occupies the timeline, which is the source span divided
+    // by the rate — `start(when, offset, duration)` takes the *source* duration,
+    // so it gets the span, while the fade curve spans the timeline duration.
+    const clipDurationSec = Number(clip.timelineDurationUs) / 1_000_000;
+    if (sourceSpanSec <= 0 || clipDurationSec <= 0) continue;
+
+    // Fades ride on top of the clip's static gain as a value curve over the
+    // clip's own span — sample-accurate, and computed by the same function the
+    // monitor polls, so the export cannot fade somewhere else.
+    if (clip.fades.fadeInUs !== "0" || clip.fades.fadeOutUs !== "0") {
+      const curvePoints = Math.max(
+        2,
+        Math.min(4096, Math.ceil(clipDurationSec * 200)),
+      );
+      const shape = audioEnvelopeCurve(
+        clip.timelineDurationUs,
+        clip.fades,
+        curvePoints,
+      );
+      const staticGain = chain.gain.gain.value;
+      const curve = new Float32Array(shape.length);
+      for (let i = 0; i < shape.length; i++) curve[i] = shape[i]! * staticGain;
+      chain.gain.gain.setValueCurveAtTime(curve, startSec, clipDurationSec);
+    }
+
+    // The third argument is measured in source time, so it is the untimed span
+    // — the rate above decides how much timeline that covers.
+    source.start(startSec, offsetSec, sourceSpanSec);
   }
 
   const rendered = await offline.startRendering();
@@ -3490,6 +5734,15 @@ async function runVideoExport(
   const project = session.getProject();
   if (!project) return { status: "empty" };
 
+  // The preset schema mirrors the Rust engine and accepts the full codec
+  // matrix; this path is WebCodecs into an MP4 muxer with H.264 hardcoded.
+  // Without this check an unsupported preset was accepted and then encoded as
+  // H.264/MP4 anyway — a wrong file rather than an error.
+  const unsupported = browserPresetUnsupportedReason(preset);
+  if (unsupported !== null) {
+    return { status: "failed", message: unsupported };
+  }
+
   const result = planExport(project, SEQUENCE_ID, preset);
   if (!result.ok) {
     return { status: "failed", message: result.error.message };
@@ -3560,7 +5813,14 @@ async function runVideoExport(
           if (media instanceof HTMLVideoElement) {
             await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
           }
-          drawLayer(offCtx, loc.clip, layer.sourceTimeUs, offCanvas.width, offCanvas.height);
+          drawLayer(
+            offCtx,
+            loc.clip,
+            layer.sourceTimeUs,
+            clipLocalTimeUs(req.timelineTimeUs, layer.timelineStartUs),
+            offCanvas.width,
+            offCanvas.height,
+          );
         }
 
         const ptsUs = Number(req.timelineTimeUs);
@@ -3736,9 +5996,244 @@ async function startExportFromModal(): Promise<void> {
   closeExportModal();
 }
 
+// ==========================================================================
+// GIF output — the third mode's export path
+// ==========================================================================
+
+interface GifSettings {
+  fps: number;
+  width: number;
+  colors: number;
+  loop: boolean;
+  boomerang: boolean;
+}
+
+let gifSettings: GifSettings = {
+  fps: 12,
+  width: 480,
+  colors: 256,
+  loop: true,
+  boomerang: false,
+};
+
+/** A GIF holds every frame in memory as a palettized buffer, and viewers choke
+ * long before this — better a clear cap than a tab that runs out of memory. */
+const GIF_MAX_FRAMES = 300;
+/** Yield to the event loop this often so the UI stays responsive mid-render. */
+const GIF_YIELD_EVERY = 4;
+
+type GifEncoderStatus = "idle" | "loading" | "ready" | "failed";
+let gifEncoderStatus: GifEncoderStatus = "idle";
+let gifExportInFlight = false;
+
+/** Fetches the encoder on entering GIF mode so the first export does not wait
+ * on the network. Re-entrant: a second call while loading is a no-op, and a
+ * previous failure is retried. */
+async function warmGifEncoder(): Promise<void> {
+  if (gifEncoderStatus === "loading" || gifEncoderStatus === "ready") return;
+  gifEncoderStatus = "loading";
+  renderGifPanel();
+  try {
+    await loadGifEncoder();
+    gifEncoderStatus = "ready";
+  } catch {
+    gifEncoderStatus = "failed";
+  }
+  renderGifPanel();
+}
+
+function gifStatusText(): string {
+  switch (gifEncoderStatus) {
+    case "ready":
+      return "✓ GIF encoder ready (gifenc, loaded on demand)";
+    case "failed":
+      return "✕ GIF encoder failed to load — check your connection and reselect GIF.";
+    default:
+      return "Loading GIF encoder…";
+  }
+}
+
+/** Output size: the source frame's aspect at the chosen width. */
+function gifOutputSize(seq: Sequence): { width: number; height: number } | null {
+  const visual = resolveAtTime(seq, "0").filter((l) => {
+    const a = findAsset(l.assetId);
+    return a && a.kind !== "audio";
+  });
+  const top = visual[0];
+  if (!top) return null;
+  const loc = locateClip(top.clipId);
+  const asset = loc ? findAsset(loc.clip.assetId) : undefined;
+  if (!loc || !asset) return null;
+  const media = mediaCache.get(asset.originalUri);
+  let mw = asset.metadata.width ?? 1920;
+  let mh = asset.metadata.height ?? 1080;
+  if (media instanceof HTMLImageElement) {
+    mw = media.naturalWidth || mw;
+    mh = media.naturalHeight || mh;
+  } else if (media instanceof HTMLVideoElement) {
+    mw = media.videoWidth || mw;
+    mh = media.videoHeight || mh;
+  }
+  const { sw, sh } = resolveCropRect(loc.clip, mw, mh);
+  const width = Math.max(2, Math.round(gifSettings.width));
+  return { width, height: Math.max(2, Math.round((width * sh) / sw)) };
+}
+
+/** Frames the current timeline yields at the chosen rate, before boomerang. */
+function gifFrameCount(seq: Sequence): number {
+  const durationUs = Number(sequenceDurationUs(seq));
+  const fps = clampGifFps(gifSettings.fps);
+  const frames = Math.floor((durationUs / 1_000_000) * fps);
+  return Math.max(1, Math.min(GIF_MAX_FRAMES, frames));
+}
+
+function renderGifPanel(): void {
+  const status = $<HTMLDivElement>("gif-status");
+  status.textContent = gifStatusText();
+  status.className = `gif-status${gifEncoderStatus === "ready" ? " ready" : ""}${
+    gifEncoderStatus === "failed" ? " failed" : ""
+  }`;
+
+  $("gif-fps-value").textContent = `${clampGifFps(gifSettings.fps)} fps`;
+  $("gif-width-value").textContent = `${gifSettings.width} px`;
+
+  const seq = activeSequence();
+  const summary = $<HTMLDivElement>("gif-summary");
+  const size = seq ? gifOutputSize(seq) : null;
+  if (!seq || !size) {
+    summary.textContent = "Add a clip to the timeline to build a GIF.";
+  } else {
+    const frames = gifFrameCount(seq);
+    const played = boomerangOrder(frames, gifSettings.boomerang).length;
+    const seconds = (played / clampGifFps(gifSettings.fps)).toFixed(1);
+    summary.textContent = `${played} frames · ${size.width}×${size.height} · ${seconds}s · ${
+      gifSettings.loop ? "loops" : "plays once"
+    }`;
+  }
+
+  $<HTMLButtonElement>("btn-gif-export").disabled =
+    gifExportInFlight || gifEncoderStatus === "failed";
+}
+
+/** Renders the timeline at the GIF's own frame rate and encodes it. Reuses the
+ * same layer/draw path as video export, so effects, crops and z-order are
+ * identical to what the preview shows. */
+async function runGifExport(): Promise<void> {
+  if (gifExportInFlight) return;
+  const seq = activeSequence();
+  if (!seq || sequenceDurationUs(seq) === "0") {
+    toast("Add a clip to the timeline first.", true);
+    return;
+  }
+  const size = gifOutputSize(seq);
+  if (!size) {
+    toast("Nothing visual on the timeline to turn into a GIF.", true);
+    return;
+  }
+
+  gifExportInFlight = true;
+  renderGifPanel();
+  const status = $<HTMLDivElement>("gif-status");
+  const fps = clampGifFps(gifSettings.fps);
+  const frameCount = gifFrameCount(seq);
+
+  try {
+    const sink = await createGifEncoder({
+      fps,
+      loop: gifSettings.loop,
+      boomerang: gifSettings.boomerang,
+      maxColors: gifSettings.colors,
+    });
+    gifEncoderStatus = "ready";
+
+    const off = document.createElement("canvas");
+    off.width = size.width;
+    off.height = size.height;
+    const offCtx = off.getContext("2d", { willReadFrequently: true })!;
+
+    for (let i = 0; i < frameCount; i++) {
+      const timeUs = frameToStartTimeUs(i, { numerator: fps, denominator: 1 });
+      const visual = resolveAtTime(seq, timeUs).filter((l) => {
+        const a = findAsset(l.assetId);
+        return a && a.kind !== "audio";
+      });
+      offCtx.clearRect(0, 0, off.width, off.height);
+      for (const layer of [...visual].reverse()) {
+        const loc = locateClip(layer.clipId);
+        if (!loc) continue;
+        const asset = findAsset(loc.clip.assetId);
+        const media = asset ? mediaCache.get(asset.originalUri) : undefined;
+        if (media instanceof HTMLVideoElement) {
+          await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
+        }
+        drawLayer(
+          offCtx,
+          loc.clip,
+          layer.sourceTimeUs,
+          clipLocalTimeUs(timeUs, layer.timelineStartUs),
+          off.width,
+          off.height,
+        );
+      }
+      // GIF has 1-bit alpha: without this a clip animated with
+      // transform.opacity exports at full strength and the fade is lost.
+      const frame = offCtx.getImageData(0, 0, off.width, off.height);
+      flattenPartialAlpha(frame.data);
+      sink.addFrame(frame);
+
+      if (i % GIF_YIELD_EVERY === 0) {
+        status.textContent = `Rendering frame ${i + 1} of ${frameCount}…`;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    status.textContent = "Encoding GIF…";
+    await new Promise((r) => setTimeout(r, 0));
+    const blob = sink.finish();
+    downloadBlob(blob, "export.gif");
+    const kb = Math.round(blob.size / 1024);
+    toast(`Exported ${size.width}×${size.height} GIF · ${kb} KB.`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isGifEncoderLoaded()) gifEncoderStatus = "failed";
+    toast(`GIF export failed: ${message}`, true);
+  } finally {
+    gifExportInFlight = false;
+    renderGifPanel();
+  }
+}
+
+function bindGifPanel(): void {
+  const fps = $<HTMLInputElement>("gif-fps");
+  const width = $<HTMLInputElement>("gif-width");
+  const colors = $<HTMLSelectElement>("gif-colors");
+  const loop = $<HTMLInputElement>("gif-loop");
+  const boomerang = $<HTMLInputElement>("gif-boomerang");
+
+  const update = (patch: Partial<GifSettings>): void => {
+    gifSettings = { ...gifSettings, ...patch };
+    renderGifPanel();
+  };
+
+  fps.addEventListener("input", () => update({ fps: Number(fps.value) }));
+  width.addEventListener("input", () => update({ width: Number(width.value) }));
+  colors.addEventListener("change", () =>
+    update({ colors: Number(colors.value) }),
+  );
+  loop.addEventListener("change", () => update({ loop: loop.checked }));
+  boomerang.addEventListener("change", () =>
+    update({ boomerang: boomerang.checked }),
+  );
+  $("btn-gif-export").addEventListener("click", () => void runGifExport());
+}
+
 function doExport(): void {
   if (mode === "photo") {
-    exportPhotoImage();
+    void exportPhotoImage();
+    return;
+  }
+  if (mode === "gif") {
+    void runGifExport();
     return;
   }
   openExportModal();

@@ -27,6 +27,7 @@ export {
 } from "./paint.js";
 
 export {
+  boxBlurRgb,
   unsharpMask,
   diffusionFill,
   colorKeyAlpha,
@@ -41,6 +42,22 @@ export {
   shiftImage,
 } from "./transform.js";
 
+export {
+  grainAt,
+  pencilSketch,
+  oilPainting,
+  cartoonPosterize,
+  watercolor,
+  crosshatch,
+  halftone,
+} from "./artistic.js";
+
+export { whiteBalance, levels, toneCurve } from "./grade.js";
+
+// Lightroom-modelled adjustments. `vibrance` lives here rather than in
+// `grade.ts` because both modules had one and this is the mask-aware version;
+// the grading effect calls it with its −1…1 amount scaled to Lightroom's
+// −100…100 convention.
 export {
   type HslAdjustment,
   type HslBand,

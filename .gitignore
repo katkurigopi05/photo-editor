@@ -22,3 +22,12 @@ example_photos/
 
 # generated knowledge-graph output (graphify), regenerate with /graphify
 graphify-out/
+
+# Projects the MCP server writes into (see .mcp.json --root)
+director-projects/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+.playwright/

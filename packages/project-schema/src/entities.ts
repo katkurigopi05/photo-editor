@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { animationTracksSchema } from "./animations.js";
+import { transitionSchema } from "./transitions.js";
 import { effectInstanceSchema } from "./effects.js";
 import {
   audioGainDbSchema,
@@ -10,7 +12,7 @@ import {
   nonNegativeSafeIntSchema,
   positiveSafeIntSchema,
   rationalSchema,
-  unitPlaybackRateSchema,
+  clipPlaybackRateSchema,
 } from "./primitives.js";
 
 export const assetKindSchema = z.enum(["image", "video", "audio", "generated"]);
@@ -53,11 +55,22 @@ export const timelineClipSchema = z
     timelineDurationUs: microsecondStringSchema,
     sourceInUs: microsecondStringSchema,
     sourceOutUs: microsecondStringSchema,
-    playbackRate: unitPlaybackRateSchema,
+    playbackRate: clipPlaybackRateSchema,
     audioGainDb: audioGainDbSchema,
     audioPan: audioPanSchema,
     effects: z.array(effectInstanceSchema),
+    // Optional preserves byte-equivalent parsing of schema-v1 projects. New
+    // animation commands will materialize the array only when first used.
+    animations: animationTracksSchema.optional(),
+    // Same reasoning as `animations`: absent on every pre-transition project.
+    transitionIn: transitionSchema.optional(),
+    transitionOut: transitionSchema.optional(),
   })
+  // Intentionally a plain object schema, not a superRefine: command-schema
+  // derives payloads from this with `.omit()`, which only exists on ZodObject.
+  // The cross-field rule that both ramps must fit inside the clip is enforced
+  // by the reducer via `transitionsFitClip`, alongside OVERLAP and the other
+  // cross-field invariants.
   .strict();
 export type TimelineClip = z.infer<typeof timelineClipSchema>;
 
