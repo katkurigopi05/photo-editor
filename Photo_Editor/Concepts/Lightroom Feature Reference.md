@@ -109,3 +109,16 @@ Priorities 2 and 4 are built, and priority 1 is half built:
 Still open: AI masks, per-channel tone curve with control points,
 [[Concepts/Local Catalog]], optics and perspective. See
 `docs/phases/lightroom-panels.md`.
+
+## Masking is now project state (2026-08-06)
+
+Priority 1 is complete for everything but brush painting: a clip carries masks,
+an effect references one by id, and both are ordinary validated commands with
+exact inverses. Contributions are linear/radial/brush/luminance-range/colour-
+range with add, subtract and intersect, stored as normalized geometry so a
+region covers the same part of the picture at any output size.
+
+Masking applies to *every* visual effect, including the ones drawn through the
+canvas filter string — a masked instance is rerouted through the pixel pass.
+Remaining: a brush painting interaction, and AI masks as a contribution kind
+backed by [[Packages/bg-segmentation]]. See `docs/phases/masks.md`.

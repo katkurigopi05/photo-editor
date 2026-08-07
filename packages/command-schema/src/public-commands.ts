@@ -17,6 +17,8 @@ import {
   timelineClipSchema,
   trackSchema,
   clipPlaybackRateSchema,
+  clipMaskSchema,
+  maskContributionSchema,
 } from "@director/project-schema";
 import { envelopeBaseShape } from "./envelope.js";
 
@@ -284,6 +286,69 @@ export const setClipAudioPanCommandSchema = command(
   setClipAudioPanPayloadSchema,
 );
 
+// --- timeline masks ---------------------------------------------------------
+
+/** Add a mask to a clip. Masks are geometry, not pixels, so the whole mask
+ * travels in the command and replays exactly. */
+export const addMaskPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    mask: clipMaskSchema,
+  })
+  .strict();
+
+export const addMaskCommandSchema = command(
+  "timeline.add_mask",
+  addMaskPayloadSchema,
+);
+
+/** Replace a mask's contribution stack. Editing a gradient's endpoints or
+ * adding a subtract contribution is this command, not a remove-and-re-add,
+ * so effects keep pointing at the same mask through the edit. */
+export const updateMaskPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    maskId: z.string().min(1),
+    contributions: z.array(maskContributionSchema).min(1),
+    name: z.string().max(80).optional(),
+  })
+  .strict();
+
+export const updateMaskCommandSchema = command(
+  "timeline.update_mask",
+  updateMaskPayloadSchema,
+);
+
+export const removeMaskPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    maskId: z.string().min(1),
+  })
+  .strict();
+
+export const removeMaskCommandSchema = command(
+  "timeline.remove_mask",
+  removeMaskPayloadSchema,
+);
+
+/** Point an effect at a mask, or clear the reference with `null`. */
+export const setEffectMaskPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    effectId: z.string().min(1),
+    maskId: z.string().min(1).nullable(),
+  })
+  .strict();
+
+export const setEffectMaskCommandSchema = command(
+  "timeline.set_effect_mask",
+  setEffectMaskPayloadSchema,
+);
+
 // --- timeline.set_clip_speed ------------------------------------------------
 
 /** Retime a clip. The reducer recomputes `timelineDurationUs` from the source
@@ -399,6 +464,10 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   setClipAudioGainCommandSchema,
   setClipAudioPanCommandSchema,
   setClipSpeedCommandSchema,
+  addMaskCommandSchema,
+  updateMaskCommandSchema,
+  removeMaskCommandSchema,
+  setEffectMaskCommandSchema,
   addKeyframeCommandSchema,
   updateKeyframeCommandSchema,
   removeKeyframeCommandSchema,
@@ -431,6 +500,10 @@ export type SetClipAudioPanCommand = z.infer<
   typeof setClipAudioPanCommandSchema
 >;
 export type SetClipSpeedCommand = z.infer<typeof setClipSpeedCommandSchema>;
+export type AddMaskCommand = z.infer<typeof addMaskCommandSchema>;
+export type UpdateMaskCommand = z.infer<typeof updateMaskCommandSchema>;
+export type RemoveMaskCommand = z.infer<typeof removeMaskCommandSchema>;
+export type SetEffectMaskCommand = z.infer<typeof setEffectMaskCommandSchema>;
 export type AddKeyframeCommand = z.infer<typeof addKeyframeCommandSchema>;
 export type UpdateKeyframeCommand = z.infer<typeof updateKeyframeCommandSchema>;
 export type RemoveKeyframeCommand = z.infer<typeof removeKeyframeCommandSchema>;
@@ -460,6 +533,10 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.set_clip_audio_gain",
   "timeline.set_clip_audio_pan",
   "timeline.set_clip_speed",
+  "timeline.add_mask",
+  "timeline.update_mask",
+  "timeline.remove_mask",
+  "timeline.set_effect_mask",
   "timeline.add_keyframe",
   "timeline.update_keyframe",
   "timeline.remove_keyframe",
