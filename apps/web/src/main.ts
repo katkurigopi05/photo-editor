@@ -59,7 +59,11 @@ import {
   type ExportPreset,
   type ExportPlan,
 } from "@director/export-engine";
-import { Muxer, ArrayBufferTarget } from "mp4-muxer";
+import {
+  Muxer,
+  ArrayBufferTarget,
+  FileSystemWritableFileStreamTarget,
+} from "mp4-muxer";
 import {
   PRESETS,
   PRESET_LABELS,
@@ -76,6 +80,20 @@ import {
 } from "./theme.js";
 import { layoutTextLines } from "./text-overlay.js";
 import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
+import {
+  buildExportPreset,
+  h264CodecString,
+  AUDIO_BITRATE_CHOICES,
+  BITRATE_CHOICES,
+  FRAME_RATE_CHOICES,
+  RESOLUTION_CHOICES,
+  type ExportFields,
+} from "./export-preset.js";
+import {
+  createExportSink,
+  pickExportFile,
+  streamingExportSupported,
+} from "./export-sink.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
 import {
   TRANSITION_DIRECTIONS,
@@ -6059,8 +6077,7 @@ function bindEvents(): void {
       closeExportModal();
     }
   });
-  $("export-resolution").addEventListener("change", updateExportSummary);
-  $("export-quality").addEventListener("change", updateExportSummary);
+  initExportOptions();
 
   window.addEventListener("keydown", (e) => {
     if (e.target !== document.body) return;
@@ -6270,7 +6287,10 @@ let videoExportAbort: { cancelled: boolean } | null = null;
 async function renderAndEncodeAudio(
   plan: ExportPlan,
   preset: ExportPreset,
-  muxer: Muxer<ArrayBufferTarget>,
+  // Whichever target the sink chose. The muxer's `Target` base class is not
+  // exported, and the mixdown only ever calls `addAudioChunk`, which every
+  // target supports — so the parameter names just that capability.
+  muxer: { addAudioChunk: Muxer<ArrayBufferTarget>["addAudioChunk"] },
 ): Promise<void> {
   if (plan.audioClips.length === 0) return;
 
@@ -6361,7 +6381,7 @@ async function renderAndEncodeAudio(
     codec: "opus",
     sampleRate: preset.audioSampleRate,
     numberOfChannels: channels,
-    bitrate: 128_000,
+    bitrate: (preset.audioBitrateKbps ?? 128) * 1000,
   });
 
   const FRAME_SIZE = 4800; // 100ms at 48kHz — arbitrary, just a chunking size
@@ -6421,6 +6441,7 @@ type ExportProgress = (phase: string, done: number, total: number) => void;
  * flipped by the caller (a Cancel button) to stop between frames. */
 async function runVideoExport(
   preset: ExportPreset,
+  outputFile: FileSystemFileHandle | null,
   onProgress: ExportProgress,
   abort: { cancelled: boolean },
 ): Promise<VideoExportResult> {
@@ -6451,11 +6472,23 @@ async function runVideoExport(
     // to this function's try/catch. Record it and check explicitly instead.
     let encodeError: Error | null = null;
 
-    const target = new ArrayBufferTarget();
+    // Where the file goes. Streaming writes straight to disk, so length is
+    // bounded by the drive rather than by how much of an MP4 fits in a tab.
+    const sink = await createExportSink("export.mp4", {
+      StreamTargetCtor: FileSystemWritableFileStreamTarget,
+      BufferTargetCtor: ArrayBufferTarget,
+      download: downloadBlob,
+      // Already chosen, at the click, while the page still had the user
+      // activation the picker demands.
+      pickFile: async () => outputFile,
+    });
+
+    const withAudio =
+      preset.audioCodec !== "none" && plan.audioClips.length > 0;
     const muxer = new Muxer({
-      target,
+      target: sink.target as ConstructorParameters<typeof Muxer>[0]["target"],
       video: { codec: "avc", width: preset.width, height: preset.height, frameRate: fps },
-      ...(plan.audioClips.length > 0
+      ...(withAudio
         ? {
             audio: {
               codec: "opus" as const,
@@ -6464,7 +6497,10 @@ async function runVideoExport(
             },
           }
         : {}),
-      fastStart: "in-memory",
+      // `in-memory` buys a seekable header by holding the whole file, which is
+      // exactly what streaming exists to avoid. Streamed files put their index
+      // at the end — every player handles that for a local file.
+      fastStart: sink.kind === "stream" ? false : "in-memory",
     });
     const videoEncoder = new VideoEncoder({
       output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
@@ -6472,15 +6508,25 @@ async function runVideoExport(
         encodeError = err instanceof Error ? err : new Error(String(err));
       },
     });
-    videoEncoder.configure({
-      // Baseline profile, level 4.0 (0x28) — level 3.1 (0x1f) caps the coded
-      // area at 921,600px, too small for 1920x1080 (2,073,600px).
-      codec: "avc1.420028",
+    // The level is derived from the picture, not hardcoded: a level too low for
+    // the frame fails inside WebCodecs with an opaque message, and a level
+    // needlessly high narrows the set of decoders that will play the file.
+    const codec = h264CodecString(preset.width, preset.height, fps);
+    const config: VideoEncoderConfig = {
+      codec,
       width: preset.width,
       height: preset.height,
       bitrate: preset.videoBitrateKbps * 1000,
       framerate: fps,
-    });
+    };
+    const support = await VideoEncoder.isConfigSupported(config);
+    if (!support.supported) {
+      return {
+        status: "failed",
+        message: `This browser cannot encode ${preset.width}x${preset.height} at ${Math.round(fps)}fps (${codec}). Try a smaller resolution or frame rate.`,
+      };
+    }
+    videoEncoder.configure(config);
 
     const offCanvas = document.createElement("canvas");
     offCanvas.width = preset.width;
@@ -6544,15 +6590,14 @@ async function runVideoExport(
     await videoEncoder.flush();
     videoEncoder.close();
 
-    if (plan.audioClips.length > 0) {
+    if (withAudio) {
       onProgress("Mixing audio…", plan.framesTotal, plan.framesTotal);
       await renderAndEncodeAudio(plan, preset, muxer);
     }
     onProgress("Finalizing…", plan.framesTotal, plan.framesTotal);
     muxer.finalize();
-
-    const blob = new Blob([target.buffer], { type: "video/mp4" });
-    downloadBlob(blob, "export.mp4");
+    // Closes the file, or downloads the buffer — whichever sink was chosen.
+    await sink.finish();
     return {
       status: "done",
       framesTotal: plan.framesTotal,
@@ -6575,24 +6620,67 @@ async function runVideoExport(
 
 let exportInFlight = false;
 
-function readExportPreset(): ExportPreset {
-  const [w, h] = $<HTMLSelectElement>("export-resolution")
-    .value.split("x")
-    .map(Number);
-  const bitrate = Number($<HTMLSelectElement>("export-quality").value);
+/** What the dialog currently says, before any validation. */
+function readExportFields(): ExportFields {
   return {
-    width: w ?? 1280,
-    height: h ?? 720,
-    frameRate: FRAME_RATE,
-    videoCodec: "h264",
-    container: "mp4",
-    videoBitrateKbps: bitrate,
-    // Opus, not AAC: it's what we actually encode with (royalty-free, reliably
-    // software-encoded in every Chromium build; AAC support in WebCodecs is
-    // inconsistent/hardware-dependent).
-    audioCodec: "opus",
-    audioSampleRate: 48000,
+    resolution: $<HTMLSelectElement>("export-resolution").value,
+    customWidth: $<HTMLInputElement>("export-width").value,
+    customHeight: $<HTMLInputElement>("export-height").value,
+    frameRate: $<HTMLSelectElement>("export-fps").value,
+    bitrateKbps:
+      $<HTMLSelectElement>("export-quality").value === "custom"
+        ? $<HTMLInputElement>("export-bitrate").value
+        : $<HTMLSelectElement>("export-quality").value,
+    audioCodec: $<HTMLSelectElement>("export-audio-codec").value,
+    audioBitrateKbps: $<HTMLSelectElement>("export-audio-bitrate").value,
   };
+}
+
+/** Fill the dialog's selects and wire the two "Custom…" reveals. */
+function initExportOptions(): void {
+  const fill = (id: string, choices: readonly { value: string; label: string }[], selected: string): void => {
+    const select = $<HTMLSelectElement>(id);
+    select.innerHTML = "";
+    for (const choice of choices) {
+      const option = new Option(choice.label, choice.value);
+      option.selected = choice.value === selected;
+      select.appendChild(option);
+    }
+  };
+  fill("export-resolution", RESOLUTION_CHOICES, "1920x1080");
+  fill("export-fps", FRAME_RATE_CHOICES, "30");
+  fill("export-quality", BITRATE_CHOICES, "8000");
+  fill("export-audio-bitrate", AUDIO_BITRATE_CHOICES, "128");
+
+  const syncVisibility = (): void => {
+    $("export-custom-size").classList.toggle(
+      "hidden",
+      $<HTMLSelectElement>("export-resolution").value !== "custom",
+    );
+    $("export-custom-bitrate").classList.toggle(
+      "hidden",
+      $<HTMLSelectElement>("export-quality").value !== "custom",
+    );
+    $("export-audio-bitrate-field").classList.toggle(
+      "hidden",
+      $<HTMLSelectElement>("export-audio-codec").value === "none",
+    );
+  };
+  for (const id of [
+    "export-resolution",
+    "export-quality",
+    "export-audio-codec",
+    "export-fps",
+  ]) {
+    $(id).addEventListener("change", () => {
+      syncVisibility();
+      updateExportSummary();
+    });
+  }
+  for (const id of ["export-width", "export-height", "export-bitrate"]) {
+    $(id).addEventListener("input", updateExportSummary);
+  }
+  syncVisibility();
 }
 
 /** Refresh the "N frames · MM:SS" line under the options from the current
@@ -6604,13 +6692,28 @@ function updateExportSummary(): void {
     summary.textContent = "";
     return;
   }
-  const result = planExport(project, SEQUENCE_ID, readExportPreset());
+  const fields = buildExportPreset(readExportFields());
+  const startBtn = $<HTMLButtonElement>("btn-export-start");
+  if (!fields.ok) {
+    // Refuse in the dialog, where the field is, rather than at Start.
+    summary.textContent = fields.error;
+    startBtn.disabled = true;
+    return;
+  }
+  startBtn.disabled = false;
+
+  const result = planExport(project, SEQUENCE_ID, fields.preset);
+  const where = streamingExportSupported()
+    ? "written straight to the file you choose"
+    : "held in memory until it downloads";
   summary.textContent = result.ok
     ? `${result.plan.framesTotal} frames · ${formatTime(result.plan.durationUs)}${
-        result.plan.audioClips.length > 0
-          ? ` · ${result.plan.audioClips.length} audio clip(s)`
-          : " · silent"
-      }`
+        fields.preset.audioCodec === "none"
+          ? " · no audio"
+          : result.plan.audioClips.length > 0
+            ? ` · ${result.plan.audioClips.length} audio clip(s)`
+            : " · silent"
+      } · ${where}`
     : result.error.message;
 }
 
@@ -6659,8 +6762,21 @@ async function startExportFromModal(): Promise<void> {
     countEl.textContent = `${done} / ${total} frames`;
   };
 
-  const preset = readExportPreset();
-  const result = await runVideoExport(preset, onProgress, abort);
+  const built = buildExportPreset(readExportFields());
+  if (!built.ok) {
+    toast(built.error, true);
+    exportInFlight = false;
+    videoExportAbort = null;
+    return;
+  }
+  // Before anything slow: the picker needs the activation from this click.
+  const outputFile = await pickExportFile("export.mp4");
+  const result = await runVideoExport(
+    built.preset,
+    outputFile,
+    onProgress,
+    abort,
+  );
 
   exportInFlight = false;
   videoExportAbort = null;
@@ -6672,7 +6788,7 @@ async function startExportFromModal(): Promise<void> {
           ? `${result.audioClips} audio clip(s) mixed in`
           : "silent, no audio clips";
       toast(
-        `Exported ${result.framesTotal} frames, ${formatTime(result.durationUs)} (H.264/Opus/MP4, ${audioNote}).`,
+        `Exported ${result.framesTotal} frames, ${formatTime(result.durationUs)} (H.264/MP4, ${audioNote}).`,
       );
       break;
     }

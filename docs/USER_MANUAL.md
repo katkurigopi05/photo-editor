@@ -189,7 +189,11 @@ Features:
   high in dB), and Compressor (threshold, ratio, attack, release, makeup).
 - Overlapping two clips on the same audio track crossfades them automatically
   at equal power, so the overlap does not dip or clip.
-- H.264 MP4 export with compatible audio mixed into the result.
+- H.264 MP4 export with resolution up to 4K (or a custom size), frame rates
+  from 24 to 60 including 29.97 and 59.94, video bitrate up to 40 Mbps or a
+  custom value, and audio that can be switched off or set from 96 to 256 kbps.
+- Where the browser allows it, the file is written straight to the location you
+  choose, so export length is limited by disk space rather than by memory.
 
 Example — make a stylized short video:
 
@@ -203,10 +207,31 @@ Example — make a stylized short video:
 7. Under Speed, pick a clip speed between 0.25× and 4×.
 8. Under Audio, add Fade In / Out, EQ, or Compressor to the selected clip.
    Slide two audio clips over each other for an automatic crossfade.
-9. Export at 1080p, 720p, or 480p with High, Medium, or Low quality.
+9. Export: choose a resolution (4K, 1440p, 1080p, 720p, 480p, or Custom), a
+   frame rate, a bitrate, and audio settings, then start. Chromium asks where
+   to save and writes the file as it encodes.
 
 MP4 export requires `VideoEncoder`, `AudioEncoder`, and `VideoFrame`. Use a
 recent Chromium browser in a permitted local or secure context.
+
+Export settings:
+
+| Setting | Choices |
+| --- | --- |
+| Resolution | 4K UHD, 1440p, 1080p, 720p, 480p, or Custom width and height |
+| Frame rate | 24, 25, 29.97, 30, 50, 59.94, 60 |
+| Quality | 40, 20, 12, 8, 4 Mbps, or a custom kbps value |
+| Audio | Opus at 96–256 kbps, or no audio |
+
+A custom width or height is rounded up to the next even number, because H.264
+cannot encode odd dimensions. Settings the browser cannot encode — an extreme
+size or frame rate — are refused in the dialog with the reason, before the
+export starts.
+
+Browsers that support the File System Access API (Chromium) ask where to save
+and write the file while encoding, so a long export is limited by disk space.
+Elsewhere the file is assembled in memory and then downloaded, which limits how
+long an export can be.
 
 ## 5. Animation mode
 
@@ -310,6 +335,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-07:** Export gained 4K/1440p and custom resolutions, selectable
+  frame rates including 29.97 and 59.94, custom bitrates, audio bitrate and
+  no-audio options, and streams to disk where the browser supports it.
 - **2026-08-07:** Effects and Looks now apply to every selected clip, as one
   Undo step. Audio effects skip selected clips that carry no audio.
 - **2026-08-06:** Added masks as project state — Radial, Linear, Luminance
