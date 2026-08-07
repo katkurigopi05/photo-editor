@@ -19,6 +19,9 @@ import {
 export const assetKindSchema = z.enum(["image", "video", "audio", "generated"]);
 export type AssetKind = z.infer<typeof assetKindSchema>;
 
+export const assetRatingSchema = z.enum(["favorite", "rejected"]);
+export type AssetRating = z.infer<typeof assetRatingSchema>;
+
 export const trackKindSchema = z.enum(["video", "audio"]);
 export type TrackKind = z.infer<typeof trackKindSchema>;
 
@@ -41,6 +44,9 @@ export const mediaAssetSchema = z
     originalUri: z.string().min(1),
     checksum: checksumSchema,
     metadata: mediaAssetMetadataSchema,
+    // Optional so projects created before media ratings continue to parse to
+    // byte-equivalent state. Clearing a rating removes this member.
+    rating: assetRatingSchema.optional(),
     createdAt: isoInstantSchema,
   })
   .strict();

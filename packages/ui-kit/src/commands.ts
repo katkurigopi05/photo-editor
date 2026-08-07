@@ -4,6 +4,7 @@ import type {
   AddKeyframeCommand,
   AddTrackCommand,
   AssetRegisterCommand,
+  SetAssetRatingCommand,
   CreateSequenceCommand,
   DeleteClipCommand,
   MoveClipCommand,
@@ -64,6 +65,11 @@ export const buildRegisterAsset = (
   ctx: CommandContext,
   payload: AssetRegisterCommand["payload"],
 ): AssetRegisterCommand => envelope(ctx, "asset.register", payload);
+
+export const buildSetAssetRating = (
+  ctx: CommandContext,
+  payload: SetAssetRatingCommand["payload"],
+): SetAssetRatingCommand => envelope(ctx, "asset.set_rating", payload);
 
 export const buildCreateSequence = (
   ctx: CommandContext,

@@ -9,6 +9,7 @@ export {
   type CommandContext,
   buildCreateProject,
   buildRegisterAsset,
+  buildSetAssetRating,
   buildCreateSequence,
   buildAddTrack,
   buildAddClip,

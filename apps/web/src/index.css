@@ -622,6 +622,69 @@ body {
   border: 0;
 }
 
+.media-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+.media-search,
+.media-filter {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+}
+.media-empty {
+  margin: 6px 2px;
+  font-size: 12px;
+  color: var(--faint);
+}
+.media-empty.hidden {
+  display: none;
+}
+/* Ratings sit on the thumbnail, visible on hover or once set — a bin of
+   permanently visible buttons reads as clutter rather than as state. */
+.media-rating {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: flex;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.media-item:hover .media-rating,
+.media-item:focus-within .media-rating,
+.media-rating:has([aria-pressed="true"]) {
+  opacity: 1;
+}
+.media-rating button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.media-rating button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.media-item.rejected .media-thumb,
+.media-item.rejected .media-meta {
+  opacity: 0.45;
+}
+
 /* ---- workspace ---- */
 #workspace {
   display: grid;
@@ -795,6 +858,8 @@ body {
   border-color: var(--accent);
 }
 .media-item {
+  /* The rating buttons are positioned against this. */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;

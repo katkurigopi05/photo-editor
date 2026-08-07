@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   audioGainDbSchema,
   audioPanSchema,
+  assetRatingSchema,
   animationKeyframeSchema,
   animationPropertySchema,
   animationTracksSchema,
@@ -64,6 +65,21 @@ export const assetRegisterPayloadSchema = z
 export const assetRegisterCommandSchema = command(
   "asset.register",
   assetRegisterPayloadSchema,
+);
+
+// --- asset.set_rating -------------------------------------------------------
+
+export const setAssetRatingPayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    // null means "restore the ordinary unrated state", not a third rating.
+    rating: assetRatingSchema.nullable(),
+  })
+  .strict();
+
+export const setAssetRatingCommandSchema = command(
+  "asset.set_rating",
+  setAssetRatingPayloadSchema,
 );
 
 // --- timeline.create_sequence ----------------------------------------------
@@ -450,6 +466,7 @@ export const setClipTransitionCommandSchema = command(
 export const projectCommandSchema = z.discriminatedUnion("commandType", [
   projectCreateCommandSchema,
   assetRegisterCommandSchema,
+  setAssetRatingCommandSchema,
   createSequenceCommandSchema,
   addTrackCommandSchema,
   addClipCommandSchema,
@@ -478,6 +495,7 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
 export type ProjectCommand = z.infer<typeof projectCommandSchema>;
 export type ProjectCreateCommand = z.infer<typeof projectCreateCommandSchema>;
 export type AssetRegisterCommand = z.infer<typeof assetRegisterCommandSchema>;
+export type SetAssetRatingCommand = z.infer<typeof setAssetRatingCommandSchema>;
 export type CreateSequenceCommand = z.infer<typeof createSequenceCommandSchema>;
 export type AddTrackCommand = z.infer<typeof addTrackCommandSchema>;
 export type AddClipCommand = z.infer<typeof addClipCommandSchema>;
@@ -519,6 +537,7 @@ export type PublicCommandType = ProjectCommand["commandType"];
 export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "project.create",
   "asset.register",
+  "asset.set_rating",
   "timeline.create_sequence",
   "timeline.add_track",
   "timeline.add_clip",

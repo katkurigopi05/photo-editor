@@ -5,6 +5,7 @@ import {
   transitionsFitClip,
   type AnimationKeyframe,
   type AnimationTrack,
+  type AssetRating,
   type ClipMask,
   type EffectInstance,
   type MediaAsset,
@@ -205,6 +206,8 @@ export function applyForward(
       return createProject(project, command);
     case "asset.register":
       return registerAsset(project, command);
+    case "asset.set_rating":
+      return setAssetRating(project, command);
     case "timeline.create_sequence":
       return createSequence(project, command);
     case "timeline.add_track":
@@ -348,6 +351,61 @@ function registerAsset(
     inverse: {
       commandType: "internal.remove_asset",
       payload: { assetId: asset.id, restoreUpdatedAt: prevUpdatedAt },
+    },
+  };
+}
+
+function withAssetRating(
+  asset: MediaAsset,
+  rating: AssetRating | null,
+): MediaAsset {
+  if (rating === null) {
+    const { rating: _removed, ...unrated } = asset;
+    return unrated as MediaAsset;
+  }
+  return { ...asset, rating };
+}
+
+function setAssetRating(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "asset.set_rating" }>,
+): ForwardResult {
+  const pre = requireLiveProject(projectOrNull, command.baseVersion);
+  if (!pre.ok) return pre;
+  const project = pre.project;
+  const { assetId, rating } = command.payload;
+  const asset = findAsset(project, assetId);
+  if (asset === undefined) {
+    return {
+      ok: false,
+      error: makeError("ASSET_NOT_FOUND", `asset ${assetId} not found`, [
+        "payload",
+        "assetId",
+      ]),
+    };
+  }
+
+  const previous = asset.rating ?? null;
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: {
+      ...project,
+      assets: project.assets.map((candidate) =>
+        candidate.id === assetId
+          ? withAssetRating(candidate, rating)
+          : candidate,
+      ),
+      updatedAt: command.createdAt,
+      currentVersion: project.currentVersion + 1,
+    },
+    inverse: {
+      commandType: "internal.set_asset_rating",
+      payload: {
+        assetId,
+        rating: previous,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
     },
   };
 }
@@ -2319,6 +2377,24 @@ export function applyInverse(
       return {
         ...p,
         assets: p.assets.filter((a) => a.id !== inverse.payload.assetId),
+        updatedAt: inverse.payload.restoreUpdatedAt,
+      };
+    }
+    case "internal.set_asset_rating": {
+      const p = requireProject(project);
+      const asset = findAsset(p, inverse.payload.assetId);
+      if (asset === undefined) {
+        throw new Error(
+          `inverse rating references missing asset ${inverse.payload.assetId}`,
+        );
+      }
+      return {
+        ...p,
+        assets: p.assets.map((candidate) =>
+          candidate.id === inverse.payload.assetId
+            ? withAssetRating(candidate, inverse.payload.rating)
+            : candidate,
+        ),
         updatedAt: inverse.payload.restoreUpdatedAt,
       };
     }

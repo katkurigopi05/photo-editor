@@ -13,6 +13,7 @@ import {
   buildRemoveEffect,
   buildSetClipAudioGain,
   buildSetClipAudioPan,
+  buildSetAssetRating,
   buildSetClipSpeed,
   buildAddMask,
   buildUpdateMask,
@@ -687,6 +688,10 @@ let selectedClipId: string | null = null;
 /** Extra clips picked with Shift/Cmd-click. `selectedClipId` stays the clip the
  * Inspector is editing; these are the others the next timeline action covers. */
 const selectedClipIds = new Set<string>();
+/** Media-bin culling state. Neither is project state: they decide what the bin
+ * shows, not what the project contains, so they never enter the command log. */
+let mediaSearch = "";
+let mediaFilter: "all" | "favorites" | "rejected" | "unrated" = "all";
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
 
@@ -862,6 +867,7 @@ const cctx = canvas.getContext("2d")!;
 const stageEl = $<HTMLDivElement>("stage");
 const stageEmpty = $<HTMLDivElement>("stage-empty");
 const mediaListEl = $<HTMLDivElement>("media-list");
+const mediaEmptyEl = $<HTMLParagraphElement>("media-empty");
 let galleryGrid = false; // media bin: grid (gallery) vs list view
 const historyEl = $<HTMLDivElement>("history-list");
 const inspectorEl = $<HTMLDivElement>("inspector");
@@ -4234,13 +4240,63 @@ function renderVectorShapes(): void {
   }
 }
 
+/** Does this asset survive the current search text and rating filter? */
+function matchesMediaFilters(asset: MediaAsset): boolean {
+  const query = mediaSearch.trim().toLowerCase();
+  if (query && !assetName(asset).toLowerCase().includes(query)) return false;
+  if (mediaFilter === "favorites") return asset.rating === "favorite";
+  if (mediaFilter === "rejected") return asset.rating === "rejected";
+  if (mediaFilter === "unrated") return asset.rating === undefined;
+  return true;
+}
+
+/** One rating button. `aria-pressed` carries the state, so the control reads
+ * correctly to a screen reader and to a test without a class-name convention. */
+function ratingButton(
+  asset: MediaAsset,
+  rating: "favorite" | "rejected",
+  glyph: string,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  const label = rating === "favorite" ? "Favorite" : "Reject";
+  button.type = "button";
+  button.textContent = glyph;
+  button.title = `${label} ${assetName(asset)}`;
+  button.setAttribute("aria-label", `${label} ${assetName(asset)}`);
+  button.setAttribute("aria-pressed", String(asset.rating === rating));
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    // Clicking the rating it already has clears it: one control, two states,
+    // and no separate "unrate" button to find.
+    commit(
+      buildSetAssetRating(nextCtx(), {
+        assetId: asset.id,
+        rating: asset.rating === rating ? null : rating,
+      }),
+    );
+  });
+  return button;
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
   mediaListEl.classList.toggle("grid", galleryGrid);
-  for (const asset of session.getProject()?.assets ?? []) {
-    if (removedAssets.has(asset.id)) continue;
+  const visible = (session.getProject()?.assets ?? []).filter(
+    (asset) => !removedAssets.has(asset.id) && matchesMediaFilters(asset),
+  );
+  const anyMedia = (session.getProject()?.assets ?? []).some(
+    (asset) => !removedAssets.has(asset.id),
+  );
+  // Two different empties: nothing imported yet, and nothing matching — saying
+  // "no media" while three clips sit behind a filter would look like data loss.
+  mediaEmptyEl.classList.toggle("hidden", visible.length > 0);
+  mediaEmptyEl.textContent = anyMedia
+    ? "No media matches this search or filter."
+    : "No media imported yet.";
+
+  for (const asset of visible) {
     const el = document.createElement("div");
-    el.className = "media-item";
+    el.className = `media-item${asset.rating === "rejected" ? " rejected" : ""}`;
     // The registered digest, exposed so a test can compare it with the file on
     // disk — the one property of streamed hashing that has to stay true.
     el.dataset.checksum = asset.checksum;
@@ -4282,7 +4338,13 @@ function renderMedia(): void {
       e.stopPropagation();
       removeAsset(asset.id);
     });
-    el.append(thumb, meta, add, remove);
+    const rating = document.createElement("div");
+    rating.className = "media-rating";
+    rating.append(
+      ratingButton(asset, "favorite", "★"),
+      ratingButton(asset, "rejected", "✕"),
+    );
+    el.append(thumb, meta, add, remove, rating);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
@@ -6182,6 +6244,18 @@ function bindEvents(): void {
     }
   });
   initExportOptions();
+
+  // Culling controls. Both are view state, so they re-render the bin without
+  // touching the project or the command log.
+  $("media-search").addEventListener("input", () => {
+    mediaSearch = $<HTMLInputElement>("media-search").value;
+    renderMedia();
+  });
+  $("media-filter").addEventListener("change", () => {
+    mediaFilter = $<HTMLSelectElement>("media-filter")
+      .value as typeof mediaFilter;
+    renderMedia();
+  });
 
   window.addEventListener("keydown", (e) => {
     if (e.target !== document.body) return;

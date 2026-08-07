@@ -61,6 +61,9 @@ when the system asks for reduced motion.
 ### Shared tools
 
 - Import supports images, video, and audio that the current browser can decode.
+- Mark media as Favorite (★) or Rejected (✕) in the bin, search it by name, and
+  filter to All, Favorites, Rejected, or Unrated. Ratings are project state and
+  undo like any other edit; the original file is never touched.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
@@ -346,6 +349,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-07:** The media bin gained Favorite/Rejected ratings, name search,
+  and a rating filter.
 - **2026-08-07:** Large files now import by streaming rather than by loading the
   whole file into memory, with progress shown for files above 64 MB.
 - **2026-08-07:** The workspace now reflows on narrow windows instead of

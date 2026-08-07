@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   audioGainDbSchema,
   audioPanSchema,
+  assetRatingSchema,
   animationTracksSchema,
   transitionSchema,
   transitionSideSchema,
@@ -47,6 +48,18 @@ export const removeAssetInverseSchema = internal(
   z
     .object({
       assetId: z.string().min(1),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
+/** `null` restores an asset that had no rating member. */
+export const setAssetRatingInverseSchema = internal(
+  "internal.set_asset_rating",
+  z
+    .object({
+      assetId: z.string().min(1),
+      rating: assetRatingSchema.nullable(),
       restoreUpdatedAt: isoInstantSchema,
     })
     .strict(),
@@ -288,6 +301,7 @@ export const setClipTransitionInverseSchema = internal(
 export const internalCommandSchema = z.discriminatedUnion("commandType", [
   removeProjectInverseSchema,
   removeAssetInverseSchema,
+  setAssetRatingInverseSchema,
   removeSequenceInverseSchema,
   removeTrackInverseSchema,
   removeClipInverseSchema,

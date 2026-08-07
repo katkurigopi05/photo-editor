@@ -14,6 +14,7 @@ import {
   reorderEffectsPayloadSchema,
   setClipAudioGainPayloadSchema,
   setClipAudioPanPayloadSchema,
+  setAssetRatingPayloadSchema,
   setClipSpeedPayloadSchema,
   addMaskPayloadSchema,
   updateMaskPayloadSchema,
@@ -84,6 +85,16 @@ const COMMAND_TOOLS: CommandTool[] = [
     title: "Add track",
     description: "Add a video or audio track to a sequence.",
     schema: addTrackPayloadSchema,
+  },
+  {
+    name: "set_asset_rating",
+    commandType: "asset.set_rating",
+    title: "Rate an imported asset",
+    description:
+      "Mark an asset as 'favorite' or 'rejected', or pass null to clear the " +
+      "rating. Ratings organise the media bin and never touch the original " +
+      "file or any clip already on the timeline.",
+    schema: setAssetRatingPayloadSchema,
   },
   {
     name: "add_clip",

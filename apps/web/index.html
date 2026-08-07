@@ -189,6 +189,24 @@
             </button>
           </div>
           <button id="btn-import" class="import-btn">＋ Import media…</button>
+          <!-- Culling controls: find media by name and narrow the bin by
+               rating, the way a browser-first editor expects. Neither touches
+               the project — they decide what this list shows. -->
+          <div class="media-tools">
+            <input
+              id="media-search"
+              type="search"
+              class="media-search"
+              placeholder="Search media"
+              aria-label="Search media"
+            />
+            <select id="media-filter" class="media-filter" aria-label="Media filter">
+              <option value="all" selected>All media</option>
+              <option value="favorites">Favorites</option>
+              <option value="rejected">Rejected</option>
+              <option value="unrated">Unrated</option>
+            </select>
+          </div>
           <!-- `multiple` so a whole shoot can be brought in at once. The
                accept list stays broad: the extension fallback in main.ts
                classifies anything the OS reports without a MIME type. -->
@@ -200,6 +218,7 @@
             hidden
           />
           <div id="media-list" class="media-list"></div>
+          <p id="media-empty" class="media-empty hidden"></p>
           <div class="panel-title">Cartoon Clips</div>
           <div
             id="vector-shapes"

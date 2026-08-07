@@ -3,6 +3,7 @@ import {
   buildAddClip,
   buildAddKeyframe,
   buildRemoveKeyframe,
+  buildSetAssetRating,
   buildTrimClip,
   buildUpdateKeyframe,
   buildUpdateClipAnimations,
@@ -17,6 +18,18 @@ const ctx: CommandContext = {
 };
 
 describe("command builders (UI action -> command shape)", () => {
+  it("buildSetAssetRating produces the exact persistent rating command", () => {
+    const payload = { assetId: "asset-1", rating: "favorite" as const };
+    expect(buildSetAssetRating(ctx, payload)).toEqual({
+      id: ctx.id,
+      commandType: "asset.set_rating",
+      baseVersion: ctx.baseVersion,
+      actor: ctx.actor,
+      createdAt: ctx.createdAt,
+      payload,
+    });
+  });
+
   it("buildAddClip produces the exact envelope + payload", () => {
     const payload = {
       sequenceId: "sequence-1",
