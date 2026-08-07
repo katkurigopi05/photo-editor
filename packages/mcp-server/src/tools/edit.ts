@@ -15,6 +15,10 @@ import {
   setClipAudioGainPayloadSchema,
   setClipAudioPanPayloadSchema,
   setClipSpeedPayloadSchema,
+  addMaskPayloadSchema,
+  updateMaskPayloadSchema,
+  removeMaskPayloadSchema,
+  setEffectMaskPayloadSchema,
   setClipTransitionPayloadSchema,
   trimClipPayloadSchema,
   updateClipAnimationsPayloadSchema,
@@ -179,6 +183,46 @@ const COMMAND_TOOLS: CommandTool[] = [
       "timeline. Supported between 1/4 and 4. The source range is unchanged; " +
       "slowing a clip fails with OVERLAP if the clip after it is in the way.",
     schema: setClipSpeedPayloadSchema,
+  },
+  {
+    name: "add_mask",
+    commandType: "timeline.add_mask",
+    title: "Add a mask to a clip",
+    description:
+      "Add a mask: a named stack of contributions (linear or radial gradient, " +
+      "brush stroke, luminance range, colour range) combined with add, " +
+      "subtract or intersect. Coordinates are normalized 0-1 against the " +
+      "frame, so a mask means the same region at any output size. Effects " +
+      "reference a mask by id via set_effect_mask.",
+    schema: addMaskPayloadSchema,
+  },
+  {
+    name: "update_mask",
+    commandType: "timeline.update_mask",
+    title: "Replace a mask's contributions",
+    description:
+      "Replace a mask's contribution stack in place, keeping its id so any " +
+      "effect referencing it follows the edit.",
+    schema: updateMaskPayloadSchema,
+  },
+  {
+    name: "remove_mask",
+    commandType: "timeline.remove_mask",
+    title: "Remove a mask",
+    description:
+      "Delete a mask. Fails with MASK_IN_USE while an effect still references " +
+      "it; clear the reference with set_effect_mask first.",
+    schema: removeMaskPayloadSchema,
+  },
+  {
+    name: "set_effect_mask",
+    commandType: "timeline.set_effect_mask",
+    title: "Confine an effect to a mask",
+    description:
+      "Point an effect at one of the clip's masks, or pass null to make it " +
+      "global again. Masked effects apply only where the mask covers, " +
+      "blending by its coverage.",
+    schema: setEffectMaskPayloadSchema,
   },
   {
     name: "add_keyframe",

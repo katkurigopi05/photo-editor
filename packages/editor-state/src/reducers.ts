@@ -5,6 +5,7 @@ import {
   transitionsFitClip,
   type AnimationKeyframe,
   type AnimationTrack,
+  type ClipMask,
   type EffectInstance,
   type MediaAsset,
   type Project,
@@ -17,6 +18,7 @@ import {
 import type {
   InternalProjectCommand,
   ProjectCommand,
+  ProjectOperation,
 } from "@director/command-schema";
 import { makeError } from "./errors.js";
 import type { CommandError } from "./types.js";
@@ -229,6 +231,14 @@ export function applyForward(
       return setClipAudioGain(project, command);
     case "timeline.set_clip_speed":
       return setClipSpeed(project, command);
+    case "timeline.add_mask":
+      return addMask(project, command);
+    case "timeline.update_mask":
+      return updateMask(project, command);
+    case "timeline.remove_mask":
+      return removeMask(project, command);
+    case "timeline.set_effect_mask":
+      return setEffectMask(project, command);
     case "timeline.set_clip_audio_pan":
       return setClipAudioPan(project, command);
     case "timeline.add_keyframe":
@@ -1997,6 +2007,257 @@ function setClipSpeed(
   };
 }
 
+// --- masks ------------------------------------------------------------------
+//
+// Every mask command's inverse restores the clip's whole mask list. The list is
+// small geometry, so carrying it entire buys exact undo — including the
+// difference between "no masks" and "an empty list", which canonical JSON
+// treats as different projects — without a reconstruction rule per command.
+
+function withMasks(clip: TimelineClip, masks: ClipMask[] | null): TimelineClip {
+  if (masks === null || masks.length === 0) {
+    const { masks: _dropped, ...rest } = clip;
+    return rest as TimelineClip;
+  }
+  return { ...clip, masks };
+}
+
+function maskInverse(
+  sequenceId: string,
+  clipId: string,
+  clip: TimelineClip,
+  restoreUpdatedAt: string,
+): ProjectOperation["inverse"] {
+  return {
+    commandType: "internal.set_clip_masks",
+    payload: {
+      sequenceId,
+      clipId,
+      masks: clip.masks ? structuredClone(clip.masks) : null,
+      restoreUpdatedAt,
+    },
+  };
+}
+
+function addMask(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.add_mask" }>,
+): ForwardResult {
+  const { sequenceId, clipId, mask } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  if ((clip.masks ?? []).some((existing) => existing.id === mask.id)) {
+    return {
+      ok: false,
+      error: makeError("DUPLICATE_ID", `mask ${mask.id} already exists`, [
+        "payload",
+        "mask",
+        "id",
+      ]),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const next = withMasks(clip, [...(clip.masks ?? []), structuredClone(mask)]);
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      next,
+      command.createdAt,
+    ),
+    inverse: maskInverse(sequenceId, clipId, clip, prevUpdatedAt),
+  };
+}
+
+function updateMask(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.update_mask" }>,
+): ForwardResult {
+  const { sequenceId, clipId, maskId, contributions, name } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  const existing = (clip.masks ?? []).find((m) => m.id === maskId);
+  if (existing === undefined) {
+    return {
+      ok: false,
+      error: makeError("MASK_NOT_FOUND", `mask ${maskId} not found`, [
+        "payload",
+        "maskId",
+      ]),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const updated: ClipMask = {
+    ...existing,
+    ...(name === undefined ? {} : { name }),
+    contributions: structuredClone(contributions),
+  };
+  const next = withMasks(
+    clip,
+    (clip.masks ?? []).map((m) => (m.id === maskId ? updated : m)),
+  );
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      next,
+      command.createdAt,
+    ),
+    inverse: maskInverse(sequenceId, clipId, clip, prevUpdatedAt),
+  };
+}
+
+function removeMask(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.remove_mask" }>,
+): ForwardResult {
+  const { sequenceId, clipId, maskId } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  if (!(clip.masks ?? []).some((m) => m.id === maskId)) {
+    return {
+      ok: false,
+      error: makeError("MASK_NOT_FOUND", `mask ${maskId} not found`, [
+        "payload",
+        "maskId",
+      ]),
+    };
+  }
+
+  // Deleting a mask an effect points at would leave a dangling reference that
+  // renders as "not masked" — the adjustment would silently go global.
+  const user = clip.effects.find((effect) => effect.maskId === maskId);
+  if (user !== undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "MASK_IN_USE",
+        `mask ${maskId} is still used by effect ${user.id}`,
+        ["payload", "maskId"],
+        { effectId: user.id },
+      ),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const next = withMasks(
+    clip,
+    (clip.masks ?? []).filter((m) => m.id !== maskId),
+  );
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      next,
+      command.createdAt,
+    ),
+    inverse: maskInverse(sequenceId, clipId, clip, prevUpdatedAt),
+  };
+}
+
+function setEffectMask(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.set_effect_mask" }>,
+): ForwardResult {
+  const { sequenceId, clipId, effectId, maskId } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  const effect = clip.effects.find((e) => e.id === effectId);
+  if (effect === undefined) {
+    return {
+      ok: false,
+      error: makeError("EFFECT_NOT_FOUND", `effect ${effectId} not found`, [
+        "payload",
+        "effectId",
+      ]),
+    };
+  }
+  if (maskId !== null && !(clip.masks ?? []).some((m) => m.id === maskId)) {
+    return {
+      ok: false,
+      error: makeError("MASK_NOT_FOUND", `mask ${maskId} not found`, [
+        "payload",
+        "maskId",
+      ]),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const prevMaskId = effect.maskId ?? null;
+  const nextEffects = clip.effects.map((e) => {
+    if (e.id !== effectId) return e;
+    if (maskId === null) {
+      const { maskId: _cleared, ...rest } = e;
+      return rest as typeof e;
+    }
+    return { ...e, maskId };
+  });
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      { ...clip, effects: nextEffects },
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_effect_mask",
+      payload: {
+        sequenceId,
+        clipId,
+        effectId,
+        maskId: prevMaskId,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
 // --- shared validation ------------------------------------------------------
 
 function validateSourceRange(
@@ -2264,6 +2525,32 @@ export function applyInverse(
         ...clip,
         playbackRate,
         timelineDurationUs,
+      }));
+    }
+    case "internal.set_clip_masks": {
+      const { sequenceId, clipId, masks, restoreUpdatedAt } = inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) =>
+        masks === null
+          ? ((): TimelineClip => {
+              const { masks: _dropped, ...rest } = clip;
+              return rest as TimelineClip;
+            })()
+          : { ...clip, masks: structuredClone(masks) },
+      );
+    }
+    case "internal.set_effect_mask": {
+      const { sequenceId, clipId, effectId, maskId, restoreUpdatedAt } =
+        inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => ({
+        ...clip,
+        effects: clip.effects.map((effect) => {
+          if (effect.id !== effectId) return effect;
+          if (maskId === null) {
+            const { maskId: _cleared, ...rest } = effect;
+            return rest as typeof effect;
+          }
+          return { ...effect, maskId };
+        }),
       }));
     }
     case "internal.set_clip_animations": {

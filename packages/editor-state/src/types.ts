@@ -27,6 +27,8 @@ export type CommandErrorCode =
   | "OUT_OF_BOUNDS"
   | "OVERLAP"
   | "EFFECT_NOT_FOUND"
+  | "MASK_NOT_FOUND"
+  | "MASK_IN_USE"
   | "ANIMATION_TRACK_NOT_FOUND"
   | "KEYFRAME_NOT_FOUND"
   | "TRANSITION_TOO_LONG"

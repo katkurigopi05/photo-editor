@@ -14,6 +14,10 @@ import {
   buildSetClipAudioGain,
   buildSetClipAudioPan,
   buildSetClipSpeed,
+  buildAddMask,
+  buildUpdateMask,
+  buildRemoveMask,
+  buildSetEffectMask,
   buildAddKeyframe,
   buildUpdateKeyframe,
   buildRemoveKeyframe,
@@ -71,6 +75,7 @@ import {
   type ThemeTokens,
 } from "./theme.js";
 import { layoutTextLines } from "./text-overlay.js";
+import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
 import {
   TRANSITION_DIRECTIONS,
@@ -126,6 +131,14 @@ import {
   blacks as adjustBlacks,
   colorMixer,
   colorGrading,
+  mapPixels,
+  saturation,
+  luma,
+  rgbToHsl,
+  hslToRgb,
+  boxBlurRgb,
+  contrast as adjustContrast,
+  exposure as adjustExposure,
   clarity,
   texture,
   dehaze,
@@ -153,6 +166,8 @@ import ortMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 import type {
   AnimationEasing,
   AnimationProperty,
+  ClipMask,
+  MaskContribution,
   EffectInstance,
   EffectType,
   MediaAsset,
@@ -1397,12 +1412,11 @@ function drawLayer(
   // Grading runs before stylization, which is the order a photographer works
   // in: correct the exposure and colour of the photograph, then paint over the
   // corrected result. Within the grade, the clip's own stack order decides.
-  const gradingFx = clip.effects.filter(
-    (e) => e.enabled && GRADING_TYPES.has(e.type),
-  );
+  const gradingFx = clip.effects.filter((e) => e.enabled && runsAsPixels(e));
   if (gradingFx.length > 0) {
-    drawable = grade(sourceKey, drawable, mw, mh, gradingFx);
-    sourceKey += `|grade:${gradeSignature(gradingFx)}`;
+    const masks = clip.masks ?? [];
+    drawable = grade(sourceKey, drawable, mw, mh, gradingFx, masks);
+    sourceKey += `|grade:${gradeSignature(gradingFx)}|${maskSignature(masks, gradingFx)}`;
   }
 
   // Painterly passes are whole-image pixel work — Kuwahara alone is O(r^2)
@@ -1488,6 +1502,9 @@ function previewTransform(clip: TimelineClip): {
 
   for (const fx of clip.effects) {
     if (!fx.enabled) continue;
+    // A masked instance was already applied as pixels; adding it to the filter
+    // string too would apply it twice, once globally.
+    if (runsAsPixels(fx)) continue;
     switch (fx.type) {
       case "color.brightness":
         parts.push(
@@ -1852,6 +1869,36 @@ function stylize(
 /** The grading effects, in the order the renderer must apply them: the clip's
  * own stack order, so re-ordering the stack in the inspector re-orders the
  * grade rather than being silently ignored. */
+/**
+ * Effects that normally ride the canvas filter string but have a pixel
+ * implementation to fall back on.
+ *
+ * A CSS filter applies to the whole layer and knows nothing about regions, so
+ * an effect drawn that way cannot be masked. Rather than refusing to mask
+ * these — the reference model is that *any* adjustment can be local — a masked
+ * instance is rerouted through the pixel pass, where a mask means something.
+ * Unmasked instances keep the cheaper filter path.
+ */
+const PIXEL_FALLBACK_TYPES: ReadonlySet<string> = new Set([
+  "color.brightness",
+  "color.contrast",
+  "color.saturate",
+  "color.exposure",
+  "color.grayscale",
+  "color.sepia",
+  "color.invert",
+  "color.hue_rotate",
+  "blur.gaussian",
+]);
+
+/** Whether this effect will be applied as pixels rather than as a filter. */
+function runsAsPixels(fx: EffectInstance): boolean {
+  return (
+    GRADING_TYPES.has(fx.type) ||
+    (fx.maskId !== undefined && PIXEL_FALLBACK_TYPES.has(fx.type))
+  );
+}
+
 const GRADING_TYPES: ReadonlySet<string> = new Set([
   "color.white_balance",
   "color.levels",
@@ -1883,7 +1930,88 @@ function gradeSignature(gradingFx: EffectInstance[]): string {
     .join("|");
 }
 
+/** Everything about the masks in play that changes the rendered pixels: only
+ * the masks actually referenced, so editing an unused one does not invalidate
+ * a cache entry. */
+function maskSignature(
+  masks: readonly ClipMask[],
+  gradingFx: readonly EffectInstance[],
+): string {
+  const used = new Set(
+    gradingFx.map((fx) => fx.maskId).filter((id): id is string => !!id),
+  );
+  if (used.size === 0) return "";
+  return masks
+    .filter((mask) => used.has(mask.id))
+    .map((mask) => `${mask.id}:${JSON.stringify(mask.contributions)}`)
+    .join("|");
+}
+
 function gradeImage(image: RasterImage, fx: EffectInstance): RasterImage {
+  // --- masked instances of the filter-based effects ---
+  if (fx.type === "color.brightness") {
+    const factor = 1 + getParamNumber(fx, "amount", 0);
+    return mapPixels(image, undefined, (r, g, b) => [
+      r * factor,
+      g * factor,
+      b * factor,
+    ]);
+  }
+  if (fx.type === "color.contrast") {
+    return adjustContrast(image, (getParamNumber(fx, "amount", 1) - 1) * 100);
+  }
+  if (fx.type === "color.saturate") {
+    return saturation(image, (getParamNumber(fx, "amount", 1) - 1) * 100);
+  }
+  if (fx.type === "color.exposure") {
+    return adjustExposure(image, getParamNumber(fx, "amount", 0));
+  }
+  if (fx.type === "color.grayscale") {
+    const amount = getParamNumber(fx, "amount", 1);
+    return mapPixels(image, undefined, (r, g, b) => {
+      const grey = luma(r, g, b);
+      return [
+        r + (grey - r) * amount,
+        g + (grey - g) * amount,
+        b + (grey - b) * amount,
+      ];
+    });
+  }
+  if (fx.type === "color.sepia") {
+    // The same matrix the CSS `sepia()` filter uses, so a masked instance and
+    // an unmasked one look alike.
+    const amount = getParamNumber(fx, "amount", 1);
+    return mapPixels(image, undefined, (r, g, b) => {
+      const sr = 0.393 * r + 0.769 * g + 0.189 * b;
+      const sg = 0.349 * r + 0.686 * g + 0.168 * b;
+      const sb = 0.272 * r + 0.534 * g + 0.131 * b;
+      return [
+        r + (sr - r) * amount,
+        g + (sg - g) * amount,
+        b + (sb - b) * amount,
+      ];
+    });
+  }
+  if (fx.type === "color.invert") {
+    const amount = getParamNumber(fx, "amount", 1);
+    return mapPixels(image, undefined, (r, g, b) => [
+      r + (255 - r - r) * amount,
+      g + (255 - g - g) * amount,
+      b + (255 - b - b) * amount,
+    ]);
+  }
+  if (fx.type === "color.hue_rotate") {
+    const degrees = getParamNumber(fx, "angleDegrees", 0);
+    return mapPixels(image, undefined, (r, g, b) => {
+      const [h, sat, l] = rgbToHsl(r, g, b);
+      return hslToRgb(h + degrees, sat, l);
+    });
+  }
+  if (fx.type === "blur.gaussian") {
+    return boxBlurRgb(image, getParamNumber(fx, "radiusPx", 0));
+  }
+
+
   if (fx.type === "color.white_balance") {
     return whiteBalance(
       image,
@@ -1970,10 +2098,11 @@ function grade(
   width: number,
   height: number,
   gradingFx: EffectInstance[],
+  masks: readonly ClipMask[],
 ): CanvasImageSource {
   if (gradingFx.length === 0) return source;
 
-  const key = `${sourceKey}|${width}x${height}|${gradeSignature(gradingFx)}`;
+  const key = `${sourceKey}|${width}x${height}|${gradeSignature(gradingFx)}|${maskSignature(masks, gradingFx)}`;
   const cached = gradeCache.get(key);
   if (cached) return cached;
 
@@ -1985,7 +2114,26 @@ function grade(
   const image = octx.getImageData(0, 0, width, height);
 
   let raster: RasterImage = { width, height, data: image.data };
-  for (const fx of gradingFx) raster = gradeImage(raster, fx);
+  // One rasterization per mask, however many effects reference it: turning
+  // geometry into coverage is the expensive half, and it does not depend on
+  // which adjustment is asking.
+  const rasterized = new Map<string, ReturnType<typeof rasterizeClipMask>>();
+  for (const fx of gradingFx) {
+    const adjusted = gradeImage(raster, fx);
+    const mask = fx.maskId
+      ? masks.find((candidate) => candidate.id === fx.maskId)
+      : undefined;
+    if (!mask) {
+      raster = adjusted;
+      continue;
+    }
+    let coverage = rasterized.get(mask.id);
+    if (!coverage) {
+      coverage = rasterizeClipMask(mask, raster);
+      rasterized.set(mask.id, coverage);
+    }
+    raster = blendThroughMask(raster, adjusted, coverage);
+  }
 
   image.data.set(raster.data);
   octx.putImageData(image, 0, 0);
@@ -3114,6 +3262,9 @@ function renderInspector(): void {
   }
 
   inspectorEl.appendChild(speedSection(clip));
+  if (asset && asset.kind !== "audio") {
+    inspectorEl.appendChild(masksSection(clip));
+  }
 
   // --- Effects (visual only; audio effects live in the Audio section) ---
   const fxSection = section("Effects");
@@ -3181,6 +3332,269 @@ function renderInspector(): void {
   inspectorEl.appendChild(audioSection);
 }
 
+/**
+ * The Masks section: the regions themselves, independent of any effect.
+ *
+ * A mask is created whole — one contribution, sensible defaults — and then
+ * adjusted, because the alternative is an empty mask the schema refuses. New
+ * masks land centred at a comfortable size rather than filling the frame, so
+ * the difference between masked and unmasked is visible the moment one is
+ * attached to an effect.
+ */
+const MASK_PRESETS: ReadonlyArray<{
+  label: string;
+  build: (id: string) => MaskContribution;
+}> = [
+  {
+    label: "Radial",
+    build: (id) => ({
+      id,
+      kind: "radial",
+      mode: "add",
+      centre: { x: 0.5, y: 0.5 },
+      radius: { x: 0.35, y: 0.35 },
+      feather: 0.5,
+      invert: false,
+    }),
+  },
+  {
+    label: "Linear",
+    build: (id) => ({
+      id,
+      kind: "linear",
+      mode: "add",
+      from: { x: 0, y: 0 },
+      to: { x: 0, y: 1 },
+    }),
+  },
+  {
+    label: "Luminance range",
+    build: (id) => ({
+      id,
+      kind: "luminance_range",
+      mode: "add",
+      min: 0.5,
+      max: 1,
+      feather: 0.15,
+    }),
+  },
+  {
+    label: "Colour range",
+    build: (id) => ({
+      id,
+      kind: "color_range",
+      mode: "add",
+      colorHex: "#ff5a00",
+      tolerance: 0.25,
+      feather: 0.1,
+    }),
+  },
+];
+
+function masksSection(clip: TimelineClip): HTMLElement {
+  const section_ = section("Masks");
+  const masks = clip.masks ?? [];
+
+  for (const mask of masks) {
+    const header = document.createElement("div");
+    header.className = "effect-row";
+    const name = document.createElement("span");
+    name.className = "fx-name";
+    name.textContent = maskLabel(mask);
+    const remove = document.createElement("button");
+    remove.className = "mini";
+    remove.textContent = "Remove";
+    remove.title = "Delete this mask (detach it from any effect first)";
+    remove.addEventListener("click", () =>
+      commit(
+        buildRemoveMask(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          maskId: mask.id,
+        }),
+      ),
+    );
+    header.append(name, remove);
+    section_.appendChild(header);
+
+    for (const control of maskControls(clip, mask)) {
+      section_.appendChild(control);
+    }
+  }
+
+  const addWrap = document.createElement("div");
+  addWrap.className = "control";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Add mask");
+  select.appendChild(new Option("＋ Add mask…", ""));
+  for (const preset of MASK_PRESETS) {
+    select.appendChild(new Option(preset.label, preset.label));
+  }
+  select.addEventListener("change", () => {
+    const preset = MASK_PRESETS.find((m) => m.label === select.value);
+    if (!preset) return;
+    const maskId = `mask-${masks.length + 1}-${Date.now().toString(36)}`;
+    commit(
+      buildAddMask(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        mask: {
+          id: maskId,
+          name: preset.label,
+          contributions: [preset.build(`${maskId}-c1`)],
+        },
+      }),
+    );
+  });
+  addWrap.appendChild(select);
+  section_.appendChild(addWrap);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "A mask is a region, not an edit. Attach one to any effect with the " +
+    "effect's Mask control; several effects can share the same mask.";
+  section_.appendChild(note);
+  return section_;
+}
+
+/** Sliders for a mask's first contribution — enough to place and shape it. */
+function maskControls(clip: TimelineClip, mask: ClipMask): HTMLElement[] {
+  const contribution = mask.contributions[0];
+  if (!contribution) return [];
+
+  const push = (patch: Partial<MaskContribution>): void => {
+    commit(
+      buildUpdateMask(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        maskId: mask.id,
+        contributions: [
+          { ...contribution, ...patch } as MaskContribution,
+          ...mask.contributions.slice(1),
+        ],
+      }),
+    );
+  };
+  const slider = (
+    label: string,
+    min: number,
+    max: number,
+    step: number,
+    value: number,
+    onChange: (v: number) => void,
+  ): HTMLElement => sliderControl(`${label}`, min, max, step, value, onChange);
+
+  if (contribution.kind === "radial") {
+    return [
+      slider("Centre across", 0, 1, 0.01, contribution.centre.x, (v) =>
+        push({ centre: { ...contribution.centre, x: v } }),
+      ),
+      slider("Centre down", 0, 1, 0.01, contribution.centre.y, (v) =>
+        push({ centre: { ...contribution.centre, y: v } }),
+      ),
+      slider("Width", 0.02, 1, 0.01, contribution.radius.x, (v) =>
+        push({ radius: { ...contribution.radius, x: v } }),
+      ),
+      slider("Height", 0.02, 1, 0.01, contribution.radius.y, (v) =>
+        push({ radius: { ...contribution.radius, y: v } }),
+      ),
+      slider("Feather", 0, 1, 0.05, contribution.feather, (v) =>
+        push({ feather: v }),
+      ),
+      toggleControl("Invert", contribution.invert, (on) =>
+        push({ invert: on }),
+      ),
+    ];
+  }
+  if (contribution.kind === "linear") {
+    return [
+      slider("From across", 0, 1, 0.01, contribution.from.x, (v) =>
+        push({ from: { ...contribution.from, x: v } }),
+      ),
+      slider("From down", 0, 1, 0.01, contribution.from.y, (v) =>
+        push({ from: { ...contribution.from, y: v } }),
+      ),
+      slider("To across", 0, 1, 0.01, contribution.to.x, (v) =>
+        push({ to: { ...contribution.to, x: v } }),
+      ),
+      slider("To down", 0, 1, 0.01, contribution.to.y, (v) =>
+        push({ to: { ...contribution.to, y: v } }),
+      ),
+    ];
+  }
+  if (contribution.kind === "luminance_range") {
+    return [
+      slider("Darkest", 0, 1, 0.01, contribution.min, (v) =>
+        push({ min: Math.min(v, contribution.max - 0.01) }),
+      ),
+      slider("Brightest", 0, 1, 0.01, contribution.max, (v) =>
+        push({ max: Math.max(v, contribution.min + 0.01) }),
+      ),
+      slider("Feather", 0, 0.5, 0.01, contribution.feather, (v) =>
+        push({ feather: v }),
+      ),
+    ];
+  }
+  if (contribution.kind === "color_range") {
+    return [
+      colorControl("Colour", contribution.colorHex, (hex) =>
+        push({ colorHex: hex }),
+      ),
+      slider("Tolerance", 0, 1, 0.01, contribution.tolerance, (v) =>
+        push({ tolerance: v }),
+      ),
+      slider("Feather", 0, 0.5, 0.01, contribution.feather, (v) =>
+        push({ feather: v }),
+      ),
+    ];
+  }
+  // A brush stroke is authored by painting, not by sliders; only its shape
+  // controls make sense here.
+  return [
+    slider("Brush size", 0.01, 1, 0.01, contribution.radius, (v) =>
+      push({ radius: v }),
+    ),
+    slider("Feather", 0, 1, 0.05, contribution.feather, (v) =>
+      push({ feather: v }),
+    ),
+  ];
+}
+
+function toggleControl(
+  label: string,
+  value: boolean,
+  onChange: (on: boolean) => void,
+): HTMLElement {
+  const wrap = document.createElement("label");
+  wrap.className = "control";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = value;
+  box.setAttribute("aria-label", label);
+  box.addEventListener("change", () => onChange(box.checked));
+  wrap.append(` ${label} `, box);
+  return wrap;
+}
+
+function colorControl(
+  label: string,
+  value: string,
+  onChange: (hex: string) => void,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "control";
+  const text = document.createElement("label");
+  text.textContent = label;
+  const input = document.createElement("input");
+  input.type = "color";
+  input.value = value;
+  input.setAttribute("aria-label", label);
+  input.addEventListener("change", () => onChange(input.value));
+  wrap.append(text, input);
+  return wrap;
+}
+
 /** One header + parameter block per effect, with a Remove button. */
 function appendEffectRows(
   container: HTMLElement,
@@ -3214,8 +3628,46 @@ function appendEffectRows(
         container.appendChild(paramControl(clip.id, fx, spec, p));
       }
     }
+    // Masking is a property of the *reference*, not of the effect's params, so
+    // the picker sits with the effect while the region itself lives in Masks.
+    if (spec?.surface !== "audio" && (clip.masks ?? []).length > 0) {
+      container.appendChild(maskPicker(clip, fx));
+    }
   }
 }
+
+/** Which of the clip's masks confines this effect, if any. */
+function maskPicker(clip: TimelineClip, fx: EffectInstance): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "control";
+  const label = document.createElement("label");
+  label.textContent = "Mask";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", `${fx.type} mask`);
+  const none = new Option("Whole frame", "");
+  none.selected = fx.maskId === undefined;
+  select.appendChild(none);
+  for (const mask of clip.masks ?? []) {
+    const option = new Option(maskLabel(mask), mask.id);
+    option.selected = mask.id === fx.maskId;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () =>
+    commit(
+      buildSetEffectMask(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        effectId: fx.id,
+        maskId: select.value === "" ? null : select.value,
+      }),
+    ),
+  );
+  wrap.append(label, select);
+  return wrap;
+}
+
+const maskLabel = (mask: ClipMask): string =>
+  mask.name ?? `Mask (${mask.contributions.length})`;
 
 function addEffectSelect(
   placeholderLabel: string,

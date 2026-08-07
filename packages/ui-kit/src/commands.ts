@@ -15,6 +15,10 @@ import type {
   SetClipAudioGainCommand,
   SetClipAudioPanCommand,
   SetClipSpeedCommand,
+  AddMaskCommand,
+  UpdateMaskCommand,
+  RemoveMaskCommand,
+  SetEffectMaskCommand,
   TrimClipCommand,
   UpdateClipEffectsCommand,
   UpdateClipAnimationsCommand,
@@ -134,6 +138,26 @@ export const buildSetClipSpeed = (
   ctx: CommandContext,
   payload: SetClipSpeedCommand["payload"],
 ): SetClipSpeedCommand => envelope(ctx, "timeline.set_clip_speed", payload);
+
+export const buildAddMask = (
+  ctx: CommandContext,
+  payload: AddMaskCommand["payload"],
+): AddMaskCommand => envelope(ctx, "timeline.add_mask", payload);
+
+export const buildUpdateMask = (
+  ctx: CommandContext,
+  payload: UpdateMaskCommand["payload"],
+): UpdateMaskCommand => envelope(ctx, "timeline.update_mask", payload);
+
+export const buildRemoveMask = (
+  ctx: CommandContext,
+  payload: RemoveMaskCommand["payload"],
+): RemoveMaskCommand => envelope(ctx, "timeline.remove_mask", payload);
+
+export const buildSetEffectMask = (
+  ctx: CommandContext,
+  payload: SetEffectMaskCommand["payload"],
+): SetEffectMaskCommand => envelope(ctx, "timeline.set_effect_mask", payload);
 
 export const buildAddKeyframe = (
   ctx: CommandContext,

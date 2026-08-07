@@ -653,6 +653,10 @@ function effect<Type extends EffectType, Params extends z.ZodTypeAny>(
       id: z.string().min(1),
       type: z.literal(type),
       enabled: z.boolean(),
+      // The region this effect is confined to, if any. A reference rather than
+      // an embedded shape: one mask can drive several adjustments, and an
+      // adjustment can be moved between regions without being rebuilt.
+      maskId: z.string().min(1).optional(),
       params,
     })
     .strict();
