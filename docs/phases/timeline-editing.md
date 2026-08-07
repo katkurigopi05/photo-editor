@@ -70,3 +70,22 @@ group.
   to its neighbour, Alt drops it where released, a trim handle shortens instead
   of moving, ripple delete closes the gap and one Undo restores all three clips,
   and shift-click deletes two clips as a single step.
+
+## Multi-clip apply (2026-08-07)
+
+The multi-selection above only drove Delete and Ripple Delete, so grading a
+shoot still meant repeating one click per clip. Effects and Looks now apply to
+every selected clip.
+
+- `applyTargets()` resolves what an apply covers. Audio effects skip selected
+  clips that carry no audio: an EQ on a still would validate and then sit there
+  inert, which reads as a bug rather than as a deliberate no-op.
+- The whole apply is one gesture, so a Look of five effects across three clips
+  is fifteen commands and **one** Undo.
+- The palette and Look chips say how many clips they will cover, and the
+  Inspector carries a banner naming the clip its own controls edit — a
+  multi-selection where the panel silently edits one clip is a trap.
+
+Verified in `apps/web/e2e/multi-clip-edit.spec.ts`: a Look turns two selected
+clips monochrome and leaves the third in colour, one Undo restores both, and an
+effect from the palette lands on both selected stacks and not on the third.

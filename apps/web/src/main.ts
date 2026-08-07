@@ -3227,6 +3227,20 @@ function renderInspector(): void {
   const { clip } = loc;
   const asset = findAsset(clip.assetId);
 
+  // With several clips selected the palette and Looks cover all of them while
+  // these panels still edit one. Saying so is the difference between a feature
+  // and a surprise.
+  const selectionCount = selectionClipIds().length;
+  if (selectionCount > 1) {
+    const banner = document.createElement("p");
+    banner.className = "hint";
+    banner.id = "selection-hint";
+    banner.textContent =
+      `${selectionCount} clips selected. Effects and Looks apply to all of ` +
+      `them; the controls below edit ${asset ? assetName(asset) : clip.id}.`;
+    inspectorEl.appendChild(banner);
+  }
+
   if (mode === "photo" && asset?.kind === "image") {
     const aiBtn = document.createElement("button");
     aiBtn.className = "tool primary";
@@ -3849,30 +3863,70 @@ function renderHistory(): void {
   });
 }
 
+/**
+ * The clips an "apply" action covers, and why some are skipped.
+ *
+ * Adding an effect applies to the whole selection, not only the inspected clip:
+ * grading a shoot one clip at a time is the tedium a multi-selection exists to
+ * remove. Audio effects skip image clips — an EQ on a still would validate and
+ * then sit there inert, which reads as a bug rather than as a no-op.
+ */
+function applyTargets(spec: EffectSpec): string[] {
+  const ids = selectionClipIds();
+  if (spec.surface !== "audio") return ids;
+  return ids.filter((clipId) => {
+    const loc = locateClip(clipId);
+    const asset = loc ? findAsset(loc.clip.assetId) : undefined;
+    return asset !== undefined && asset.kind !== "image";
+  });
+}
+
+/** Report what an apply did, naming the count only when it was more than one. */
+function reportApplied(label: string, count: number, skipped: number): void {
+  if (count === 0) {
+    toast(`${label} applies to clips that carry audio.`, true);
+    return;
+  }
+  const scope = count === 1 ? "" : ` to ${count} clips`;
+  const note = skipped > 0 ? ` (${skipped} skipped)` : "";
+  toast(`Added ${label}${scope}${note}. Adjust it in the Inspector →`);
+}
+
 function addEffectByType(type: EffectType): void {
-  if (!selectedClipId) {
+  const spec = effectSpec(type);
+  if (!spec) return;
+  if (selectionClipIds().length === 0) {
     toast("Select a clip on the timeline first, then add an effect.", true);
     return;
   }
-  const spec = effectSpec(type);
-  if (!spec) return;
-  const effect = {
-    id: `fx-${crypto.randomUUID().slice(0, 8)}`,
-    type: spec.type,
-    enabled: true,
-    params: defaultParams(spec),
-  } as unknown as EffectInstance;
-  if (
-    commit(
-      buildAddEffect(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
-        clipId: selectedClipId,
-        effect,
-      }),
-    )
-  ) {
-    toast(`Added ${spec.label}. Adjust it in the Inspector →`);
+  const targets = applyTargets(spec);
+  const skipped = selectionClipIds().length - targets.length;
+
+  // One gesture, however many clips: a single Undo takes the whole apply back.
+  session.beginGesture();
+  let added = 0;
+  for (const clipId of targets) {
+    const effect = {
+      id: `fx-${crypto.randomUUID().slice(0, 8)}`,
+      type: spec.type,
+      enabled: true,
+      params: defaultParams(spec),
+    } as unknown as EffectInstance;
+    if (
+      commit(
+        buildAddEffect(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId,
+          effect,
+        }),
+      )
+    ) {
+      added++;
+    }
   }
+  session.endGesture();
+  updateUI();
+  reportApplied(spec.label, added, skipped);
 }
 
 function renderEffectsPalette(): void {
@@ -3883,10 +3937,14 @@ function renderEffectsPalette(): void {
     const chip = document.createElement("button");
     chip.className = "fx-chip";
     chip.textContent = spec.label;
-    chip.disabled = selectedClipId === null;
-    chip.title = selectedClipId
-      ? `Add ${spec.label} to the selected clip`
-      : "Select a clip first";
+    const count = selectionClipIds().length;
+    chip.disabled = count === 0;
+    chip.title =
+      count === 0
+        ? "Select a clip first"
+        : count === 1
+          ? `Add ${spec.label} to the selected clip`
+          : `Add ${spec.label} to ${count} selected clips`;
     chip.addEventListener("click", () => addEffectByType(spec.type));
     paletteEl.appendChild(chip);
   }
@@ -3942,32 +4000,47 @@ const LOOKS: Look[] = [
 ];
 
 function applyLook(look: Look): void {
-  if (!selectedClipId) {
+  const targets = selectionClipIds();
+  if (targets.length === 0) {
     toast("Select a clip first, then pick a Look.", true);
     return;
   }
-  let added = 0;
-  for (const layer of look.stack) {
-    const spec = effectSpec(layer.type);
-    if (!spec) continue;
-    const effect = {
-      id: `fx-${crypto.randomUUID().slice(0, 8)}`,
-      type: layer.type,
-      enabled: true,
-      params: { ...defaultParams(spec), ...layer.params },
-    } as unknown as EffectInstance;
-    if (
-      commit(
-        buildAddEffect(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
-          clipId: selectedClipId,
-          effect,
-        }),
-      )
-    )
-      added++;
+
+  // A Look is several effects across possibly several clips — one gesture, so
+  // one Undo removes the look rather than peeling it off an effect at a time.
+  session.beginGesture();
+  let clipsTouched = 0;
+  for (const clipId of targets) {
+    let addedHere = 0;
+    for (const layer of look.stack) {
+      const spec = effectSpec(layer.type);
+      if (!spec) continue;
+      const effect = {
+        id: `fx-${crypto.randomUUID().slice(0, 8)}`,
+        type: layer.type,
+        enabled: true,
+        params: { ...defaultParams(spec), ...layer.params },
+      } as unknown as EffectInstance;
+      if (
+        commit(
+          buildAddEffect(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            clipId,
+            effect,
+          }),
+        )
+      ) {
+        addedHere++;
+      }
+    }
+    if (addedHere > 0) clipsTouched++;
   }
-  if (added) toast(`Applied "${look.name}" look. Undo or tweak in the Inspector.`);
+  session.endGesture();
+  updateUI();
+  if (clipsTouched > 0) {
+    const scope = clipsTouched === 1 ? "" : ` to ${clipsTouched} clips`;
+    toast(`Applied "${look.name}"${scope}. Undo or tweak in the Inspector.`);
+  }
 }
 
 function renderLooks(): void {
@@ -3976,10 +4049,14 @@ function renderLooks(): void {
     const chip = document.createElement("button");
     chip.className = "look-chip";
     chip.textContent = look.name;
-    chip.disabled = selectedClipId === null;
-    chip.title = selectedClipId
-      ? `Apply the ${look.name} look to the selected clip`
-      : "Select a clip first";
+    const count = selectionClipIds().length;
+    chip.disabled = count === 0;
+    chip.title =
+      count === 0
+        ? "Select a clip first"
+        : count === 1
+          ? `Apply the ${look.name} look to the selected clip`
+          : `Apply the ${look.name} look to ${count} selected clips`;
     chip.addEventListener("click", () => applyLook(look));
     looksRow.appendChild(chip);
   }
