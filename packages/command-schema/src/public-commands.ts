@@ -2,6 +2,8 @@ import { z } from "zod";
 import {
   audioGainDbSchema,
   audioPanSchema,
+  assetRatingSchema,
+  assetKeywordsSchema,
   animationKeyframeSchema,
   animationPropertySchema,
   animationTracksSchema,
@@ -19,6 +21,8 @@ import {
   clipPlaybackRateSchema,
   clipMaskSchema,
   maskContributionSchema,
+  clipMarkerSchema,
+  markerKindSchema,
 } from "@director/project-schema";
 import { envelopeBaseShape } from "./envelope.js";
 
@@ -64,6 +68,38 @@ export const assetRegisterPayloadSchema = z
 export const assetRegisterCommandSchema = command(
   "asset.register",
   assetRegisterPayloadSchema,
+);
+
+// --- asset.set_rating -------------------------------------------------------
+
+export const setAssetRatingPayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    // null means "restore the ordinary unrated state", not a third rating.
+    rating: assetRatingSchema.nullable(),
+  })
+  .strict();
+
+export const setAssetRatingCommandSchema = command(
+  "asset.set_rating",
+  setAssetRatingPayloadSchema,
+);
+
+// --- asset.set_keywords -----------------------------------------------------
+
+/** Set an asset's whole keyword list. Whole-list rather than add/remove: the
+ * inverse is then exact, and one undo matches one gesture. An empty list
+ * clears them. */
+export const setAssetKeywordsPayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    keywords: assetKeywordsSchema,
+  })
+  .strict();
+
+export const setAssetKeywordsCommandSchema = command(
+  "asset.set_keywords",
+  setAssetKeywordsPayloadSchema,
 );
 
 // --- timeline.create_sequence ----------------------------------------------
@@ -286,6 +322,55 @@ export const setClipAudioPanCommandSchema = command(
   setClipAudioPanPayloadSchema,
 );
 
+// --- timeline markers -------------------------------------------------------
+
+/** Pin a note to a moment of a clip. The time is clip-local, so it must fall
+ * inside the clip; the reducer refuses anything else. */
+export const addMarkerPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    marker: clipMarkerSchema,
+  })
+  .strict();
+
+export const addMarkerCommandSchema = command(
+  "timeline.add_marker",
+  addMarkerPayloadSchema,
+);
+
+/** Every field optional but the identity: renaming, moving and ticking a
+ * marker are the same edit from the model's point of view. */
+export const updateMarkerPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    markerId: z.string().min(1),
+    timeUs: microsecondStringSchema.optional(),
+    name: z.string().min(1).max(200).optional(),
+    kind: markerKindSchema.optional(),
+    done: z.boolean().optional(),
+  })
+  .strict();
+
+export const updateMarkerCommandSchema = command(
+  "timeline.update_marker",
+  updateMarkerPayloadSchema,
+);
+
+export const removeMarkerPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    markerId: z.string().min(1),
+  })
+  .strict();
+
+export const removeMarkerCommandSchema = command(
+  "timeline.remove_marker",
+  removeMarkerPayloadSchema,
+);
+
 // --- timeline masks ---------------------------------------------------------
 
 /** Add a mask to a clip. Masks are geometry, not pixels, so the whole mask
@@ -450,6 +535,8 @@ export const setClipTransitionCommandSchema = command(
 export const projectCommandSchema = z.discriminatedUnion("commandType", [
   projectCreateCommandSchema,
   assetRegisterCommandSchema,
+  setAssetRatingCommandSchema,
+  setAssetKeywordsCommandSchema,
   createSequenceCommandSchema,
   addTrackCommandSchema,
   addClipCommandSchema,
@@ -464,6 +551,9 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   setClipAudioGainCommandSchema,
   setClipAudioPanCommandSchema,
   setClipSpeedCommandSchema,
+  addMarkerCommandSchema,
+  updateMarkerCommandSchema,
+  removeMarkerCommandSchema,
   addMaskCommandSchema,
   updateMaskCommandSchema,
   removeMaskCommandSchema,
@@ -478,6 +568,10 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
 export type ProjectCommand = z.infer<typeof projectCommandSchema>;
 export type ProjectCreateCommand = z.infer<typeof projectCreateCommandSchema>;
 export type AssetRegisterCommand = z.infer<typeof assetRegisterCommandSchema>;
+export type SetAssetRatingCommand = z.infer<typeof setAssetRatingCommandSchema>;
+export type SetAssetKeywordsCommand = z.infer<
+  typeof setAssetKeywordsCommandSchema
+>;
 export type CreateSequenceCommand = z.infer<typeof createSequenceCommandSchema>;
 export type AddTrackCommand = z.infer<typeof addTrackCommandSchema>;
 export type AddClipCommand = z.infer<typeof addClipCommandSchema>;
@@ -500,6 +594,9 @@ export type SetClipAudioPanCommand = z.infer<
   typeof setClipAudioPanCommandSchema
 >;
 export type SetClipSpeedCommand = z.infer<typeof setClipSpeedCommandSchema>;
+export type AddMarkerCommand = z.infer<typeof addMarkerCommandSchema>;
+export type UpdateMarkerCommand = z.infer<typeof updateMarkerCommandSchema>;
+export type RemoveMarkerCommand = z.infer<typeof removeMarkerCommandSchema>;
 export type AddMaskCommand = z.infer<typeof addMaskCommandSchema>;
 export type UpdateMaskCommand = z.infer<typeof updateMaskCommandSchema>;
 export type RemoveMaskCommand = z.infer<typeof removeMaskCommandSchema>;
@@ -519,6 +616,8 @@ export type PublicCommandType = ProjectCommand["commandType"];
 export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "project.create",
   "asset.register",
+  "asset.set_rating",
+  "asset.set_keywords",
   "timeline.create_sequence",
   "timeline.add_track",
   "timeline.add_clip",
@@ -533,6 +632,9 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.set_clip_audio_gain",
   "timeline.set_clip_audio_pan",
   "timeline.set_clip_speed",
+  "timeline.add_marker",
+  "timeline.update_marker",
+  "timeline.remove_marker",
   "timeline.add_mask",
   "timeline.update_mask",
   "timeline.remove_mask",

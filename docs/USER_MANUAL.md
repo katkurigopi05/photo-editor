@@ -1,7 +1,7 @@
 # Project Director User Manual
 
 Photo · Video · Animation · GIF  
-Project version 0.1.0 · Updated August 7, 2026
+Project version 0.1.0 · Updated August 8, 2026
 
 > Maintenance rule: this Markdown file is the editable source of truth. Keep it,
 > `Project_Director_User_Manual.docx`, and affected screenshots synchronized by
@@ -53,9 +53,23 @@ Basic workflow:
 | Timeline | Adds tracks and arranges clips. Split, delete, ripple delete, trim, snap-assisted drag, multi-select, and zoom are available. |
 | Top bar | Theme and skin controls, Undo, Redo, version badge, and Export. |
 
+The workspace adapts to the window: below about 1000 pixels wide it stacks into
+a single column with the preview on top and the panels beneath it. Every control
+shows a focus ring when reached with the keyboard, and animation is dropped
+when the system asks for reduced motion.
+
 ### Shared tools
 
 - Import supports images, video, and audio that the current browser can decode.
+- Mark media as Favorite (★) or Rejected (✕) in the bin, search it by name, and
+  filter to All, Favorites, Rejected, or Unrated. Ratings are project state and
+  undo like any other edit; the original file is never touched.
+- Tag media with keywords using the 🏷 button, then filter by keyword or click a
+  keyword chip. Search covers keywords as well as names. Save the current
+  search, keyword and filter as a named view to return to it later.
+- Large files import without being loaded into memory: the file is read in
+  chunks while a progress line shows how far along it is. Multi-gigabyte video
+  imports as normal.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.
@@ -169,6 +183,10 @@ transitions, audio adjustment, current-frame retouching, and MP4 export.
 Features:
 
 - Video and audio tracks with clip selection, split, delete, drag, and zoom.
+- Markers: press M to pin a note to the selected clip at the playhead, or
+  Shift+M for a to-do. Markers appear along the clip, jump the playhead when
+  clicked, and are listed in the Inspector where they can be renamed, ticked, or
+  removed. They ride the clip, so trimming or moving it carries them along.
 - Dragged clips snap to clip edges, the playhead, and the sequence start. Hold
   Alt while dropping to place a clip exactly where you release it.
 - Trim handles on each clip edge change the in/out point. Hold Shift while
@@ -312,6 +330,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 | Space | Play or pause when page body has focus. |
 | Delete / Backspace | Delete the selected clips when page body has focus. |
 | Shift + Delete | Ripple delete: remove the selection and close the gap. |
+| M | Add a marker to the selected clip at the playhead. |
+| Shift + M | Add a to-do marker at the playhead. |
 | Shift or Cmd/Ctrl + click | Add a clip to the selection. |
 | Alt while dropping a clip | Ignore snapping and drop where released. |
 | Shift while trimming | Ripple trim: shift later clips by the same amount. |
@@ -323,6 +343,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 - **File will not import:** use an image, video, or audio format the browser can
   decode; try PNG/JPEG or H.264 MP4.
+- **A very large file takes a while to import:** the file is read once, end to
+  end, to identify it. The progress line in the toast shows how far along it is;
+  editing starts as soon as it finishes.
 - **Blank preview:** select the clip and move the playhead inside its range.
 - **GIF encoder failure:** verify module loading, leave GIF mode, and reselect it.
 - **GIF too large:** reduce width, frame rate, colors, duration, or boomerang.
@@ -335,6 +358,16 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-08:** Added media keywords, keyword filtering, and saved views.
+- **2026-08-07:** Added clip markers — notes, chapters and to-dos — with pins on
+  the timeline, an Inspector list, and the M shortcut.
+- **2026-08-07:** The media bin gained Favorite/Rejected ratings, name search,
+  and a rating filter.
+- **2026-08-07:** Large files now import by streaming rather than by loading the
+  whole file into memory, with progress shown for files above 64 MB.
+- **2026-08-07:** The workspace now reflows on narrow windows instead of
+  squeezing the preview, every control shows a keyboard focus ring, and reduced
+  motion is honoured throughout.
 - **2026-08-07:** Export gained 4K/1440p and custom resolutions, selectable
   frame rates including 29.97 and 59.94, custom bitrates, audio bitrate and
   no-audio options, and streams to disk where the browser supports it.

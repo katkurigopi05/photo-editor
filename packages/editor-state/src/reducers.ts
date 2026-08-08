@@ -5,6 +5,8 @@ import {
   transitionsFitClip,
   type AnimationKeyframe,
   type AnimationTrack,
+  type AssetRating,
+  type ClipMarker,
   type ClipMask,
   type EffectInstance,
   type MediaAsset,
@@ -205,6 +207,10 @@ export function applyForward(
       return createProject(project, command);
     case "asset.register":
       return registerAsset(project, command);
+    case "asset.set_rating":
+      return setAssetRating(project, command);
+    case "asset.set_keywords":
+      return setAssetKeywords(project, command);
     case "timeline.create_sequence":
       return createSequence(project, command);
     case "timeline.add_track":
@@ -231,6 +237,12 @@ export function applyForward(
       return setClipAudioGain(project, command);
     case "timeline.set_clip_speed":
       return setClipSpeed(project, command);
+    case "timeline.add_marker":
+      return addMarker(project, command);
+    case "timeline.update_marker":
+      return updateMarker(project, command);
+    case "timeline.remove_marker":
+      return removeMarker(project, command);
     case "timeline.add_mask":
       return addMask(project, command);
     case "timeline.update_mask":
@@ -348,6 +360,118 @@ function registerAsset(
     inverse: {
       commandType: "internal.remove_asset",
       payload: { assetId: asset.id, restoreUpdatedAt: prevUpdatedAt },
+    },
+  };
+}
+
+/** Keywords are stored sorted, so two orders of the same set are one project
+ * rather than two byte-different ones. An empty list removes the member. */
+function withAssetKeywords(
+  asset: MediaAsset,
+  keywords: readonly string[],
+): MediaAsset {
+  if (keywords.length === 0) {
+    const { keywords: _removed, ...untagged } = asset;
+    return untagged as MediaAsset;
+  }
+  return { ...asset, keywords: [...keywords].sort() };
+}
+
+function setAssetKeywords(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "asset.set_keywords" }>,
+): ForwardResult {
+  const pre = requireLiveProject(projectOrNull, command.baseVersion);
+  if (!pre.ok) return pre;
+  const project = pre.project;
+  const { assetId, keywords } = command.payload;
+  const asset = findAsset(project, assetId);
+  if (asset === undefined) {
+    return {
+      ok: false,
+      error: makeError("ASSET_NOT_FOUND", `asset ${assetId} not found`, [
+        "payload",
+        "assetId",
+      ]),
+    };
+  }
+
+  const previous = asset.keywords ? [...asset.keywords] : null;
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: {
+      ...project,
+      assets: project.assets.map((candidate) =>
+        candidate.id === assetId
+          ? withAssetKeywords(candidate, keywords)
+          : candidate,
+      ),
+      updatedAt: command.createdAt,
+      currentVersion: project.currentVersion + 1,
+    },
+    inverse: {
+      commandType: "internal.set_asset_keywords",
+      payload: {
+        assetId,
+        keywords: previous,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+function withAssetRating(
+  asset: MediaAsset,
+  rating: AssetRating | null,
+): MediaAsset {
+  if (rating === null) {
+    const { rating: _removed, ...unrated } = asset;
+    return unrated as MediaAsset;
+  }
+  return { ...asset, rating };
+}
+
+function setAssetRating(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "asset.set_rating" }>,
+): ForwardResult {
+  const pre = requireLiveProject(projectOrNull, command.baseVersion);
+  if (!pre.ok) return pre;
+  const project = pre.project;
+  const { assetId, rating } = command.payload;
+  const asset = findAsset(project, assetId);
+  if (asset === undefined) {
+    return {
+      ok: false,
+      error: makeError("ASSET_NOT_FOUND", `asset ${assetId} not found`, [
+        "payload",
+        "assetId",
+      ]),
+    };
+  }
+
+  const previous = asset.rating ?? null;
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: {
+      ...project,
+      assets: project.assets.map((candidate) =>
+        candidate.id === assetId
+          ? withAssetRating(candidate, rating)
+          : candidate,
+      ),
+      updatedAt: command.createdAt,
+      currentVersion: project.currentVersion + 1,
+    },
+    inverse: {
+      commandType: "internal.set_asset_rating",
+      payload: {
+        assetId,
+        rating: previous,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
     },
   };
 }
@@ -2007,6 +2131,218 @@ function setClipSpeed(
   };
 }
 
+// --- markers ----------------------------------------------------------------
+//
+// A marker's time is clip-local, so it has to fall inside the clip: a note past
+// the end would be invisible, unreachable, and would survive every trim. The
+// range is half-open like every other in the model — the end instant belongs to
+// whatever comes next.
+
+function withMarkers(
+  clip: TimelineClip,
+  markers: ClipMarker[] | null,
+): TimelineClip {
+  if (markers === null || markers.length === 0) {
+    const { markers: _dropped, ...rest } = clip;
+    return rest as TimelineClip;
+  }
+  // Sorted on write so the timeline overlay and the inspector list can both
+  // read it straight, and the operation log reads in the order a person expects.
+  const ordered = [...markers].sort((a, b) => {
+    const left = toBig(a.timeUs);
+    const right = toBig(b.timeUs);
+    if (left !== right) return left < right ? -1 : 1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  return { ...clip, markers: ordered };
+}
+
+function markerInverse(
+  sequenceId: string,
+  clipId: string,
+  clip: TimelineClip,
+  restoreUpdatedAt: string,
+): ProjectOperation["inverse"] {
+  return {
+    commandType: "internal.set_clip_markers",
+    payload: {
+      sequenceId,
+      clipId,
+      markers: clip.markers ? structuredClone(clip.markers) : null,
+      restoreUpdatedAt,
+    },
+  };
+}
+
+function markerTimeError(
+  clip: TimelineClip,
+  timeUs: string,
+  path: Array<string | number>,
+): CommandError | null {
+  const time = toBig(timeUs);
+  const duration = toBig(clip.timelineDurationUs);
+  if (time >= duration) {
+    return makeError(
+      "OUT_OF_BOUNDS",
+      `marker at ${timeUs} falls outside the clip's ${duration} duration`,
+      path,
+    );
+  }
+  return null;
+}
+
+function addMarker(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.add_marker" }>,
+): ForwardResult {
+  const { sequenceId, clipId, marker } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  if ((clip.markers ?? []).some((existing) => existing.id === marker.id)) {
+    return {
+      ok: false,
+      error: makeError("DUPLICATE_ID", `marker ${marker.id} already exists`, [
+        "payload",
+        "marker",
+        "id",
+      ]),
+    };
+  }
+  const rangeError = markerTimeError(clip, marker.timeUs, [
+    "payload",
+    "marker",
+    "timeUs",
+  ]);
+  if (rangeError) return { ok: false, error: rangeError };
+
+  const prevUpdatedAt = project.updatedAt;
+  const next = withMarkers(clip, [
+    ...(clip.markers ?? []),
+    structuredClone(marker),
+  ]);
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      next,
+      command.createdAt,
+    ),
+    inverse: markerInverse(sequenceId, clipId, clip, prevUpdatedAt),
+  };
+}
+
+function updateMarker(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.update_marker" }>,
+): ForwardResult {
+  const { sequenceId, clipId, markerId, timeUs, name, kind, done } =
+    command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  const existing = (clip.markers ?? []).find((m) => m.id === markerId);
+  if (existing === undefined) {
+    return {
+      ok: false,
+      error: makeError("MARKER_NOT_FOUND", `marker ${markerId} not found`, [
+        "payload",
+        "markerId",
+      ]),
+    };
+  }
+  if (timeUs !== undefined) {
+    const rangeError = markerTimeError(clip, timeUs, ["payload", "timeUs"]);
+    if (rangeError) return { ok: false, error: rangeError };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const updated: ClipMarker = {
+    ...existing,
+    ...(timeUs === undefined ? {} : { timeUs }),
+    ...(name === undefined ? {} : { name }),
+    ...(kind === undefined ? {} : { kind }),
+    ...(done === undefined ? {} : { done }),
+  };
+  const next = withMarkers(
+    clip,
+    (clip.markers ?? []).map((m) => (m.id === markerId ? updated : m)),
+  );
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      next,
+      command.createdAt,
+    ),
+    inverse: markerInverse(sequenceId, clipId, clip, prevUpdatedAt),
+  };
+}
+
+function removeMarker(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.remove_marker" }>,
+): ForwardResult {
+  const { sequenceId, clipId, markerId } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  if (!(clip.markers ?? []).some((m) => m.id === markerId)) {
+    return {
+      ok: false,
+      error: makeError("MARKER_NOT_FOUND", `marker ${markerId} not found`, [
+        "payload",
+        "markerId",
+      ]),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const next = withMarkers(
+    clip,
+    (clip.markers ?? []).filter((m) => m.id !== markerId),
+  );
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      next,
+      command.createdAt,
+    ),
+    inverse: markerInverse(sequenceId, clipId, clip, prevUpdatedAt),
+  };
+}
+
 // --- masks ------------------------------------------------------------------
 //
 // Every mask command's inverse restores the clip's whole mask list. The list is
@@ -2322,6 +2658,37 @@ export function applyInverse(
         updatedAt: inverse.payload.restoreUpdatedAt,
       };
     }
+    case "internal.set_asset_keywords": {
+      const p = requireProject(project);
+      const { assetId, keywords, restoreUpdatedAt } = inverse.payload;
+      return {
+        ...p,
+        assets: p.assets.map((asset) =>
+          asset.id === assetId
+            ? withAssetKeywords(asset, keywords ?? [])
+            : asset,
+        ),
+        updatedAt: restoreUpdatedAt,
+      };
+    }
+    case "internal.set_asset_rating": {
+      const p = requireProject(project);
+      const asset = findAsset(p, inverse.payload.assetId);
+      if (asset === undefined) {
+        throw new Error(
+          `inverse rating references missing asset ${inverse.payload.assetId}`,
+        );
+      }
+      return {
+        ...p,
+        assets: p.assets.map((candidate) =>
+          candidate.id === inverse.payload.assetId
+            ? withAssetRating(candidate, inverse.payload.rating)
+            : candidate,
+        ),
+        updatedAt: inverse.payload.restoreUpdatedAt,
+      };
+    }
     case "internal.remove_sequence": {
       const p = requireProject(project);
       return {
@@ -2526,6 +2893,17 @@ export function applyInverse(
         playbackRate,
         timelineDurationUs,
       }));
+    }
+    case "internal.set_clip_markers": {
+      const { sequenceId, clipId, markers, restoreUpdatedAt } = inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) =>
+        markers === null
+          ? ((): TimelineClip => {
+              const { markers: _dropped, ...rest } = clip;
+              return rest as TimelineClip;
+            })()
+          : { ...clip, markers: structuredClone(markers) },
+      );
     }
     case "internal.set_clip_masks": {
       const { sequenceId, clipId, masks, restoreUpdatedAt } = inverse.payload;

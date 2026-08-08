@@ -4,6 +4,8 @@ import type {
   AddKeyframeCommand,
   AddTrackCommand,
   AssetRegisterCommand,
+  SetAssetRatingCommand,
+  SetAssetKeywordsCommand,
   CreateSequenceCommand,
   DeleteClipCommand,
   MoveClipCommand,
@@ -15,6 +17,9 @@ import type {
   SetClipAudioGainCommand,
   SetClipAudioPanCommand,
   SetClipSpeedCommand,
+  AddMarkerCommand,
+  UpdateMarkerCommand,
+  RemoveMarkerCommand,
   AddMaskCommand,
   UpdateMaskCommand,
   RemoveMaskCommand,
@@ -64,6 +69,16 @@ export const buildRegisterAsset = (
   ctx: CommandContext,
   payload: AssetRegisterCommand["payload"],
 ): AssetRegisterCommand => envelope(ctx, "asset.register", payload);
+
+export const buildSetAssetRating = (
+  ctx: CommandContext,
+  payload: SetAssetRatingCommand["payload"],
+): SetAssetRatingCommand => envelope(ctx, "asset.set_rating", payload);
+
+export const buildSetAssetKeywords = (
+  ctx: CommandContext,
+  payload: SetAssetKeywordsCommand["payload"],
+): SetAssetKeywordsCommand => envelope(ctx, "asset.set_keywords", payload);
 
 export const buildCreateSequence = (
   ctx: CommandContext,
@@ -138,6 +153,21 @@ export const buildSetClipSpeed = (
   ctx: CommandContext,
   payload: SetClipSpeedCommand["payload"],
 ): SetClipSpeedCommand => envelope(ctx, "timeline.set_clip_speed", payload);
+
+export const buildAddMarker = (
+  ctx: CommandContext,
+  payload: AddMarkerCommand["payload"],
+): AddMarkerCommand => envelope(ctx, "timeline.add_marker", payload);
+
+export const buildUpdateMarker = (
+  ctx: CommandContext,
+  payload: UpdateMarkerCommand["payload"],
+): UpdateMarkerCommand => envelope(ctx, "timeline.update_marker", payload);
+
+export const buildRemoveMarker = (
+  ctx: CommandContext,
+  payload: RemoveMarkerCommand["payload"],
+): RemoveMarkerCommand => envelope(ctx, "timeline.remove_marker", payload);
 
 export const buildAddMask = (
   ctx: CommandContext,

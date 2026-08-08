@@ -275,10 +275,23 @@ body {
   outline-offset: 2px;
 }
 
+/*
+ * Reduced motion.
+ *
+ * Previously only the mode wheel honoured the preference, which is the
+ * animation most obviously *decorative* — while the panel slides, toast
+ * entrances, hover transitions and the export bar kept moving. A blanket rule
+ * is the honest reading of "reduce": nothing here conveys meaning through
+ * motion that it does not also convey through position or text.
+ */
 @media (prefers-reduced-motion: reduce) {
-  .mode-wheel-drum,
-  .mode-wheel-item {
-    transition: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 .timecode {
@@ -572,12 +585,173 @@ body {
   color: var(--danger);
 }
 
+/*
+ * Keyboard focus.
+ *
+ * Four components styled their own focus ring and everything else — every
+ * button, select, slider, chip and clip — showed whatever the browser default
+ * happened to be, which against these panel colours is often nothing. A
+ * keyboard user could not see where they were. One baseline rule covers every
+ * interactive element; the component rules above it still win where they are
+ * more specific.
+ */
+:where(button, [href], input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* The timeline clip is a div with a pointer handler; give it the same ring so
+   tabbing through the timeline is visible. */
+.clip:focus-visible {
+  outline: 2px solid var(--on-accent);
+  outline-offset: 2px;
+}
+
+/* Visually hidden, still announced: the page heading and panel names exist for
+   screen readers without changing a pixel of the design. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.media-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+.media-search,
+.media-filter {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+}
+.media-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 3px;
+}
+.media-keyword-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-3, var(--panel-2));
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.media-keyword-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.media-empty {
+  margin: 6px 2px;
+  font-size: 12px;
+  color: var(--faint);
+}
+.media-empty.hidden {
+  display: none;
+}
+/* Ratings sit on the thumbnail, visible on hover or once set — a bin of
+   permanently visible buttons reads as clutter rather than as state. */
+.media-rating {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: flex;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.media-item:hover .media-rating,
+.media-item:focus-within .media-rating,
+.media-rating:has([aria-pressed="true"]) {
+  opacity: 1;
+}
+.media-rating button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.media-rating button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.media-item.rejected .media-thumb,
+.media-item.rejected .media-meta {
+  opacity: 0.45;
+}
+
 /* ---- workspace ---- */
 #workspace {
   display: grid;
-  grid-template-columns: 264px 1fr 328px;
+  grid-template-columns: 264px minmax(0, 1fr) 328px;
   gap: 8px;
   min-height: 0;
+}
+
+/*
+ * Responsive reflow.
+ *
+ * The three columns used to be fixed either side of a flexible middle, so
+ * narrowing the window took every pixel out of the *stage* — the one panel the
+ * work happens in. At 768px it was a 110px sliver with two full-width sidebars
+ * beside it. The sidebars give ground first, and below the point where that
+ * stops being enough the layout stacks with the picture on top.
+ */
+@media (max-width: 1400px) {
+  #workspace {
+    grid-template-columns: 232px minmax(0, 1fr) 288px;
+  }
+}
+@media (max-width: 1150px) {
+  /* The sidebars are lists and sliders — they lose width more gracefully than
+     a picture does. */
+  #workspace {
+    grid-template-columns: 200px minmax(0, 1fr) 248px;
+  }
+  #left-panel,
+  #right-panel {
+    padding: 10px;
+  }
+}
+@media (max-width: 1000px) {
+  #workspace {
+    /* One column, stage first: on a narrow window the picture matters more
+       than having the tools permanently in view. */
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(320px, 1fr) auto auto;
+  }
+  #left-panel,
+  #right-panel {
+    max-height: 40vh;
+  }
+  #center-panel {
+    order: -1;
+  }
 }
 .panel {
   background: var(--panel);
@@ -704,6 +878,8 @@ body {
   border-color: var(--accent);
 }
 .media-item {
+  /* The rating buttons are positioned against this. */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1611,6 +1787,60 @@ select {
 .clip.selected .clip-trim {
   opacity: 1;
 }
+/* Marker pins sit along the clip's foot, clear of the keyframe diamonds on its
+   top edge, so a clip can carry both without them colliding. */
+.clip-marker {
+  position: absolute;
+  bottom: 2px;
+  transform: translateX(-50%);
+  z-index: 3;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+}
+.clip-marker:hover,
+.clip-marker:focus-visible {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.clip-marker-chapter {
+  color: var(--warning, #ffd166);
+}
+.clip-marker.done {
+  opacity: 0.5;
+}
+.marker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.marker-row:has(input[type="checkbox"]) {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+}
+.marker-name {
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.marker-jump {
+  font-variant-numeric: tabular-nums;
+}
+
 .clip.selected {
   outline: 2px solid #fff;
   box-shadow:

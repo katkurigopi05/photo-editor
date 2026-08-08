@@ -28,6 +28,7 @@
   </head>
   <body>
     <div id="app">
+      <h1 class="visually-hidden">Project Director — photo, video and GIF editor</h1>
       <header id="topbar">
         <div class="top-left">
           <span class="logo">🎬 Project Director</span>
@@ -176,7 +177,7 @@
 
       <main id="workspace">
         <!-- LEFT: media bin + history -->
-        <aside id="left-panel" class="panel">
+        <aside id="left-panel" class="panel" aria-label="Media, looks and effects">
           <div class="panel-title panel-title-row">
             <span>Media</span>
             <button
@@ -188,6 +189,31 @@
             </button>
           </div>
           <button id="btn-import" class="import-btn">＋ Import media…</button>
+          <!-- Culling controls: find media by name and narrow the bin by
+               rating, the way a browser-first editor expects. Neither touches
+               the project — they decide what this list shows. -->
+          <div class="media-tools">
+            <input
+              id="media-search"
+              type="search"
+              class="media-search"
+              placeholder="Search media"
+              aria-label="Search media"
+            />
+            <select
+              id="media-keyword"
+              class="media-filter"
+              aria-label="Keyword filter"
+            >
+              <option value="" selected>Any keyword</option>
+            </select>
+            <select id="media-filter" class="media-filter" aria-label="Media filter">
+              <option value="all" selected>All media</option>
+              <option value="favorites">Favorites</option>
+              <option value="rejected">Rejected</option>
+              <option value="unrated">Unrated</option>
+            </select>
+          </div>
           <!-- `multiple` so a whole shoot can be brought in at once. The
                accept list stays broad: the extension fallback in main.ts
                classifies anything the OS reports without a MIME type. -->
@@ -198,7 +224,16 @@
             multiple
             hidden
           />
+          <div class="media-tools">
+            <select id="media-view" class="media-filter" aria-label="Saved view">
+              <option value="" selected>Saved views…</option>
+            </select>
+            <button id="btn-save-view" class="mini" title="Save the current search, keyword and filter">
+              Save view
+            </button>
+          </div>
           <div id="media-list" class="media-list"></div>
+          <p id="media-empty" class="media-empty hidden"></p>
           <div class="panel-title">Cartoon Clips</div>
           <div
             id="vector-shapes"
@@ -214,7 +249,11 @@
         </aside>
 
         <!-- CENTER: preview + transport -->
-        <section id="center-panel" class="panel">
+        <section
+          id="center-panel"
+          class="panel"
+          aria-label="Preview and transport"
+        >
           <div id="stage" class="stage">
             <canvas id="preview"></canvas>
             <button
@@ -249,7 +288,7 @@
         </section>
 
         <!-- RIGHT: inspector -->
-        <aside id="right-panel" class="panel">
+        <aside id="right-panel" class="panel" aria-label="Inspector">
           <!-- GIF output settings. Present only in GIF mode; the encoder is
                fetched the moment that mode is selected, and this section
                reports where that load got to. -->
@@ -310,7 +349,7 @@
       </main>
 
       <!-- BOTTOM: timeline -->
-      <footer id="timeline" class="panel">
+      <footer id="timeline" class="panel" aria-label="Timeline">
         <div class="timeline-toolbar">
           <button id="btn-add-track" class="tool">＋ Track</button>
           <button id="btn-split" class="tool">✂ Split</button>

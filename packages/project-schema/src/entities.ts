@@ -3,6 +3,8 @@ import { animationTracksSchema } from "./animations.js";
 import { transitionSchema } from "./transitions.js";
 import { effectInstanceSchema } from "./effects.js";
 import { clipMasksSchema } from "./masks.js";
+import { clipMarkersSchema } from "./markers.js";
+import { assetKeywordsSchema } from "./keywords.js";
 import {
   audioGainDbSchema,
   audioPanSchema,
@@ -18,6 +20,9 @@ import {
 
 export const assetKindSchema = z.enum(["image", "video", "audio", "generated"]);
 export type AssetKind = z.infer<typeof assetKindSchema>;
+
+export const assetRatingSchema = z.enum(["favorite", "rejected"]);
+export type AssetRating = z.infer<typeof assetRatingSchema>;
 
 export const trackKindSchema = z.enum(["video", "audio"]);
 export type TrackKind = z.infer<typeof trackKindSchema>;
@@ -41,6 +46,12 @@ export const mediaAssetSchema = z
     originalUri: z.string().min(1),
     checksum: checksumSchema,
     metadata: mediaAssetMetadataSchema,
+    // Optional so projects created before media ratings continue to parse to
+    // byte-equivalent state. Clearing a rating removes this member.
+    rating: assetRatingSchema.optional(),
+    // Optional like `rating`, and for the same reason: an asset registered
+    // before keywords existed must parse byte-for-byte identically.
+    keywords: assetKeywordsSchema.optional(),
     createdAt: isoInstantSchema,
   })
   .strict();
@@ -63,6 +74,9 @@ export const timelineClipSchema = z
     // Optional for the same reason as `animations`: every project written
     // before masks existed must still parse byte-for-byte identically.
     masks: clipMasksSchema.optional(),
+    // Optional for the same reason as `masks`: a project written before
+    // markers existed must still parse byte-for-byte identically.
+    markers: clipMarkersSchema.optional(),
     // Optional preserves byte-equivalent parsing of schema-v1 projects. New
     // animation commands will materialize the array only when first used.
     animations: animationTracksSchema.optional(),

@@ -13,7 +13,12 @@ import {
   buildRemoveEffect,
   buildSetClipAudioGain,
   buildSetClipAudioPan,
+  buildSetAssetRating,
+  buildSetAssetKeywords,
   buildSetClipSpeed,
+  buildAddMarker,
+  buildUpdateMarker,
+  buildRemoveMarker,
   buildAddMask,
   buildUpdateMask,
   buildRemoveMask,
@@ -80,6 +85,11 @@ import {
 } from "./theme.js";
 import { layoutTextLines } from "./text-overlay.js";
 import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
+import { checksumBlob } from "./checksum.js";
+import type {
+  ChecksumRequest,
+  ChecksumResponse,
+} from "./checksum-worker.js";
 import {
   buildExportPreset,
   h264CodecString,
@@ -99,6 +109,7 @@ import {
   TRANSITION_DIRECTIONS,
   TRANSITION_KINDS,
   isAudioEffectType,
+  normalizeKeyword,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
 import {
@@ -185,6 +196,7 @@ import type {
   AnimationEasing,
   AnimationProperty,
   ClipMask,
+  MarkerKind,
   MaskContribution,
   EffectInstance,
   EffectType,
@@ -682,6 +694,47 @@ let selectedClipId: string | null = null;
 /** Extra clips picked with Shift/Cmd-click. `selectedClipId` stays the clip the
  * Inspector is editing; these are the others the next timeline action covers. */
 const selectedClipIds = new Set<string>();
+/** Media-bin culling state. Neither is project state: they decide what the bin
+ * shows, not what the project contains, so they never enter the command log. */
+let mediaSearch = "";
+type MediaFilter = "all" | "favorites" | "rejected" | "unrated";
+let mediaFilter: MediaFilter = "all";
+let mediaKeyword = "";
+
+/**
+ * Saved views: a named search + keyword + rating filter.
+ *
+ * Final Cut's Smart Collections in miniature, and deliberately *not* project
+ * state — a saved view describes how someone likes to look at a bin, not
+ * anything about the media. It lives in localStorage so it survives a reload
+ * without entering the operation log or the project file.
+ */
+interface SavedView {
+  name: string;
+  search: string;
+  keyword: string;
+  filter: MediaFilter;
+}
+const SAVED_VIEWS_KEY = "director.media.views";
+
+function loadSavedViews(): SavedView[] {
+  try {
+    const raw = localStorage.getItem(SAVED_VIEWS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? (parsed as SavedView[]) : [];
+  } catch {
+    // Corrupt or unavailable storage is not a reason to break the bin.
+    return [];
+  }
+}
+
+function storeSavedViews(views: SavedView[]): void {
+  try {
+    localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(views));
+  } catch {
+    toast("Could not save the view — browser storage is unavailable.", true);
+  }
+}
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
 
@@ -857,6 +910,7 @@ const cctx = canvas.getContext("2d")!;
 const stageEl = $<HTMLDivElement>("stage");
 const stageEmpty = $<HTMLDivElement>("stage-empty");
 const mediaListEl = $<HTMLDivElement>("media-list");
+const mediaEmptyEl = $<HTMLParagraphElement>("media-empty");
 let galleryGrid = false; // media bin: grid (gallery) vs list view
 const historyEl = $<HTMLDivElement>("history-list");
 const inspectorEl = $<HTMLDivElement>("inspector");
@@ -923,11 +977,95 @@ function formatTime(us: string | number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
 }
 
-async function sha256Hex(data: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+/** A file size a person can read at a glance. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+/**
+ * The hashing worker, created on first use and kept for the session.
+ *
+ * A worker per import would pay its startup cost on every file of a batch;
+ * one worker, addressed by request id, handles them in turn.
+ */
+let checksumWorker: Worker | null = null;
+let checksumRequestCounter = 0;
+
+function ensureChecksumWorker(): Worker | null {
+  if (checksumWorker) return checksumWorker;
+  try {
+    // The `.ts` specifier is the bundler's form: Vite rewrites it to the built
+    // worker chunk. Pointing at `.js` resolves to nothing in dev, and the
+    // failure arrives as an async error event rather than a throw — which is
+    // how a missing worker turned into an import that hung forever.
+    checksumWorker = new Worker(
+      new URL("./checksum-worker.ts", import.meta.url),
+      { type: "module" },
+    );
+  } catch {
+    // No worker (older browser, blocked context): hashing still happens, just
+    // on this thread. Slower and less responsive, never wrong.
+    checksumWorker = null;
+  }
+  return checksumWorker;
+}
+
+/**
+ * SHA-256 of a file, streamed.
+ *
+ * Previously `file.arrayBuffer()` read the whole file to hash it, so importing
+ * anything past the browser's ArrayBuffer ceiling failed outright and smaller
+ * files still spiked memory by their full size. The bytes now flow through the
+ * hasher a chunk at a time, in a worker, with progress for the files big enough
+ * that the wait is noticeable.
+ */
+async function checksumFile(
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<string> {
+  const worker = ensureChecksumWorker();
+  if (!worker) return checksumBlob(file, (done, total) =>
+    onProgress?.(total > 0 ? done / total : 1),
+  );
+
+  const id = `checksum-${(checksumRequestCounter += 1)}`;
+  return new Promise<string>((resolve, reject) => {
+    const onMessage = (event: MessageEvent<ChecksumResponse>): void => {
+      const message = event.data;
+      if (message.id !== id) return;
+      if (message.type === "progress") {
+        onProgress?.(
+          message.total > 0 ? message.bytesHashed / message.total : 1,
+        );
+        return;
+      }
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      if (message.type === "done") resolve(message.checksum);
+      else reject(new Error(message.message));
+    };
+    // A worker that dies mid-request would otherwise leave this promise
+    // pending and the import silently stuck.
+    const onError = (): void => {
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      checksumWorker = null;
+      void checksumBlob(file, (done, total) =>
+        onProgress?.(total > 0 ? done / total : 1),
+      ).then(resolve, reject);
+    };
+    worker.addEventListener("message", onMessage);
+    worker.addEventListener("error", onError);
+    worker.postMessage({ id, file } satisfies ChecksumRequest);
+  });
 }
 
 function activeSequence(): Sequence | undefined {
@@ -1082,7 +1220,19 @@ async function importFile(file: File): Promise<void> {
     mediaCache.set(url, el as HTMLVideoElement);
   }
 
-  const checksum = await sha256Hex(await file.arrayBuffer());
+  // Large files take long enough that silence reads as a hang; the toast
+  // carries the progress rather than a spinner that says nothing.
+  const LOUD_ENOUGH_BYTES = 64 * 1024 * 1024;
+  const announce = file.size >= LOUD_ENOUGH_BYTES;
+  if (announce) {
+    toast(`Reading ${file.name} (${formatBytes(file.size)})…`);
+  }
+  const checksum = await checksumFile(file, (fraction) => {
+    if (!announce) return;
+    toast(
+      `Reading ${file.name} — ${Math.round(fraction * 100)}% of ${formatBytes(file.size)}`,
+    );
+  });
   const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
   assetNames.set(assetId, file.name);
   const metadata: MediaAsset["metadata"] = {
@@ -1154,7 +1304,7 @@ async function addVectorShape(preset: VectorShapePreset): Promise<void> {
   }
 
   const bytes = new TextEncoder().encode(source.svg);
-  const checksum = await sha256Hex(bytes.slice().buffer);
+  const checksum = await checksumBlob(new Blob([bytes]));
   const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
   const durationUs = "5000000";
   assetNames.set(assetId, `${preset.label} cartoon`);
@@ -2375,6 +2525,33 @@ function renderTimeline(): void {
         el.appendChild(marker);
       }
 
+      // Marker pins along the clip's foot: a note is meant to be found again,
+      // so it has to be visible on the timeline and not only in a panel.
+      for (const marker of clip.markers ?? []) {
+        const pin = document.createElement("button");
+        pin.className = `clip-marker clip-marker-${marker.kind}${
+          marker.done ? " done" : ""
+        }`;
+        pin.style.left = `clamp(4px, ${keyframePositionPercent(
+          marker.timeUs,
+          clip.timelineDurationUs,
+        )}%, calc(100% - 4px))`;
+        pin.textContent =
+          marker.kind === "chapter" ? "▮" : marker.kind === "todo" ? "☐" : "●";
+        pin.title = `${marker.name} — ${formatTime(marker.timeUs)}`;
+        pin.setAttribute(
+          "aria-label",
+          `Marker ${marker.name} at ${formatTime(marker.timeUs)}`,
+        );
+        pin.addEventListener("pointerdown", (event) => event.stopPropagation());
+        pin.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectedClipId = clip.id;
+          seekToClipAnimationTime(clip, marker.timeUs);
+        });
+        el.appendChild(pin);
+      }
+
       const remove = document.createElement("button");
       remove.className = "clip-remove";
       remove.textContent = "✕";
@@ -3293,6 +3470,7 @@ function renderInspector(): void {
     inspectorEl.appendChild(transitionSection(clip));
   }
 
+  inspectorEl.appendChild(markersSection(clip));
   inspectorEl.appendChild(speedSection(clip));
   if (asset && asset.kind !== "audio") {
     inspectorEl.appendChild(masksSection(clip));
@@ -3362,6 +3540,157 @@ function renderInspector(): void {
     addEffectSelect("＋ Add audio effect…", audioEffects()),
   );
   inspectorEl.appendChild(audioSection);
+}
+
+/**
+ * Markers: notes pinned to moments of the clip.
+ *
+ * They change nothing about the render, so the section is a list rather than a
+ * panel of controls: jump to one, rename it, tick a to-do, delete it.
+ */
+function markersSection(clip: TimelineClip): HTMLElement {
+  const section_ = section("Markers");
+  const markers = clip.markers ?? [];
+
+  for (const marker of markers) {
+    const row = document.createElement("div");
+    row.className = "effect-row marker-row";
+
+    const jump = document.createElement("button");
+    jump.className = "mini marker-jump";
+    jump.textContent = formatTime(marker.timeUs);
+    jump.title = "Move the playhead to this marker";
+    jump.setAttribute("aria-label", `Go to ${marker.name}`);
+    jump.addEventListener("click", () =>
+      seekToClipAnimationTime(clip, marker.timeUs),
+    );
+
+    const name = document.createElement("input");
+    name.className = "marker-name";
+    name.value = marker.name;
+    name.setAttribute("aria-label", `Marker name at ${formatTime(marker.timeUs)}`);
+    // On change, not on input: a command per keystroke would bury the log and
+    // make one undo per character.
+    name.addEventListener("change", () => {
+      if (name.value.trim() === "") {
+        name.value = marker.name;
+        return;
+      }
+      commit(
+        buildUpdateMarker(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          markerId: marker.id,
+          name: name.value.trim(),
+        }),
+      );
+    });
+
+    const remove = document.createElement("button");
+    remove.className = "mini";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove ${marker.name}`);
+    remove.addEventListener("click", () =>
+      commit(
+        buildRemoveMarker(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          markerId: marker.id,
+        }),
+      ),
+    );
+
+    if (marker.kind === "todo") {
+      const done = document.createElement("input");
+      done.type = "checkbox";
+      done.checked = marker.done === true;
+      done.setAttribute("aria-label", `${marker.name} done`);
+      done.addEventListener("change", () =>
+        commit(
+          buildUpdateMarker(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            clipId: clip.id,
+            markerId: marker.id,
+            done: done.checked,
+          }),
+        ),
+      );
+      row.append(done);
+    }
+    row.append(jump, name, remove);
+    section_.appendChild(row);
+  }
+
+  const addWrap = document.createElement("div");
+  addWrap.className = "control";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Add marker");
+  select.appendChild(new Option("＋ Add marker at playhead…", ""));
+  for (const [value, label] of [
+    ["standard", "Note"],
+    ["chapter", "Chapter"],
+    ["todo", "To-do"],
+  ] as const) {
+    select.appendChild(new Option(label, value));
+  }
+  select.addEventListener("change", () => {
+    if (select.value) addMarkerAtPlayhead(select.value as MarkerKind);
+  });
+  addWrap.appendChild(select);
+  section_.appendChild(addWrap);
+
+  if (markers.length === 0) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent =
+      "Markers ride the clip: trimming or moving it carries them along. Press M to drop one at the playhead.";
+    section_.appendChild(hint);
+  }
+  return section_;
+}
+
+/**
+ * Add a marker to the selected clip at the playhead.
+ *
+ * The playhead can sit outside the selected clip, and a marker's time is
+ * clip-local — so the caller is told where it landed rather than being handed a
+ * validation error from the reducer.
+ */
+function addMarkerAtPlayhead(kind: MarkerKind = "standard"): void {
+  const loc = locateClip(selectedClipId);
+  if (!loc) {
+    toast("Select a clip first, then add a marker.", true);
+    return;
+  }
+  const { clip } = loc;
+  const local = BigInt(playback.currentTimeUs) - BigInt(clip.timelineStartUs);
+  if (local < 0n || local >= BigInt(clip.timelineDurationUs)) {
+    toast("Move the playhead over the selected clip to mark it.", true);
+    return;
+  }
+  const count = (clip.markers ?? []).length + 1;
+  const name =
+    kind === "chapter"
+      ? `Chapter ${count}`
+      : kind === "todo"
+        ? `To-do ${count}`
+        : `Marker ${count}`;
+  if (
+    commit(
+      buildAddMarker(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        marker: {
+          id: `marker-${crypto.randomUUID().slice(0, 8)}`,
+          timeUs: local.toString(),
+          name,
+          kind,
+        },
+      }),
+    )
+  ) {
+    toast(`${name} added at ${formatTime(local.toString())}.`);
+  }
 }
 
 /**
@@ -4133,13 +4462,139 @@ function renderVectorShapes(): void {
   }
 }
 
+/** Does this asset survive the current search text and rating filter? */
+function matchesMediaFilters(asset: MediaAsset): boolean {
+  const query = mediaSearch.trim().toLowerCase();
+  // Search covers keywords as well as the name: typing "interview" should find
+  // the shots tagged that way, not only a file that happens to be called it.
+  if (
+    query &&
+    !assetName(asset).toLowerCase().includes(query) &&
+    !(asset.keywords ?? []).some((keyword) => keyword.includes(query))
+  ) {
+    return false;
+  }
+  if (mediaKeyword && !(asset.keywords ?? []).includes(mediaKeyword)) {
+    return false;
+  }
+  if (mediaFilter === "favorites") return asset.rating === "favorite";
+  if (mediaFilter === "rejected") return asset.rating === "rejected";
+  if (mediaFilter === "unrated") return asset.rating === undefined;
+  return true;
+}
+
+/**
+ * Edit an asset's keywords.
+ *
+ * A prompt rather than a panel: keywords are typed rarely and read often, and a
+ * comma-separated line is how people already think of them. Normalization
+ * happens here, at the boundary, because the schema refuses anything else —
+ * a command that rewrote its own payload would not replay to its own bytes.
+ */
+function editKeywords(asset: MediaAsset): void {
+  const current = (asset.keywords ?? []).join(", ");
+  const entered = window.prompt(
+    `Keywords for ${assetName(asset)} (comma separated)`,
+    current,
+  );
+  if (entered === null) return;
+
+  const seen = new Set<string>();
+  for (const part of entered.split(",")) {
+    const keyword = normalizeKeyword(part);
+    if (keyword) seen.add(keyword);
+  }
+  commit(
+    buildSetAssetKeywords(nextCtx(), {
+      assetId: asset.id,
+      keywords: [...seen].sort(),
+    }),
+  );
+}
+
+/** Every keyword in the project, for the filter list. */
+function allKeywords(): string[] {
+  const seen = new Set<string>();
+  for (const asset of session.getProject()?.assets ?? []) {
+    if (removedAssets.has(asset.id)) continue;
+    for (const keyword of asset.keywords ?? []) seen.add(keyword);
+  }
+  return [...seen].sort();
+}
+
+/** One rating button. `aria-pressed` carries the state, so the control reads
+ * correctly to a screen reader and to a test without a class-name convention. */
+function ratingButton(
+  asset: MediaAsset,
+  rating: "favorite" | "rejected",
+  glyph: string,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  const label = rating === "favorite" ? "Favorite" : "Reject";
+  button.type = "button";
+  button.textContent = glyph;
+  button.title = `${label} ${assetName(asset)}`;
+  button.setAttribute("aria-label", `${label} ${assetName(asset)}`);
+  button.setAttribute("aria-pressed", String(asset.rating === rating));
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    // Clicking the rating it already has clears it: one control, two states,
+    // and no separate "unrate" button to find.
+    commit(
+      buildSetAssetRating(nextCtx(), {
+        assetId: asset.id,
+        rating: asset.rating === rating ? null : rating,
+      }),
+    );
+  });
+  return button;
+}
+
+/** Fill the saved-view picker from storage. */
+function renderSavedViews(): void {
+  const select = $<HTMLSelectElement>("media-view");
+  const views = loadSavedViews();
+  select.innerHTML = "";
+  select.appendChild(new Option("Saved views…", ""));
+  for (const view of views) select.appendChild(new Option(view.name, view.name));
+  select.disabled = views.length === 0;
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
   mediaListEl.classList.toggle("grid", galleryGrid);
-  for (const asset of session.getProject()?.assets ?? []) {
-    if (removedAssets.has(asset.id)) continue;
+  const visible = (session.getProject()?.assets ?? []).filter(
+    (asset) => !removedAssets.has(asset.id) && matchesMediaFilters(asset),
+  );
+  const anyMedia = (session.getProject()?.assets ?? []).some(
+    (asset) => !removedAssets.has(asset.id),
+  );
+  // Two different empties: nothing imported yet, and nothing matching — saying
+  // "no media" while three clips sit behind a filter would look like data loss.
+  // The keyword filter lists what the project actually has; a keyword that no
+  // longer exists on any asset must not linger as a selectable dead end.
+  const keywordSelect = $<HTMLSelectElement>("media-keyword");
+  const keywords = allKeywords();
+  if (mediaKeyword && !keywords.includes(mediaKeyword)) mediaKeyword = "";
+  keywordSelect.innerHTML = "";
+  keywordSelect.appendChild(new Option("Any keyword", ""));
+  for (const keyword of keywords) {
+    const option = new Option(keyword, keyword);
+    option.selected = keyword === mediaKeyword;
+    keywordSelect.appendChild(option);
+  }
+
+  mediaEmptyEl.classList.toggle("hidden", visible.length > 0);
+  mediaEmptyEl.textContent = anyMedia
+    ? "No media matches this search or filter."
+    : "No media imported yet.";
+
+  for (const asset of visible) {
     const el = document.createElement("div");
-    el.className = "media-item";
+    el.className = `media-item${asset.rating === "rejected" ? " rejected" : ""}`;
+    // The registered digest, exposed so a test can compare it with the file on
+    // disk — the one property of streamed hashing that has to stay true.
+    el.dataset.checksum = asset.checksum;
     el.draggable = true;
     el.addEventListener("dragstart", (e) => {
       e.dataTransfer?.setData("application/x-asset-id", asset.id);
@@ -4178,7 +4633,43 @@ function renderMedia(): void {
       e.stopPropagation();
       removeAsset(asset.id);
     });
-    el.append(thumb, meta, add, remove);
+    if ((asset.keywords ?? []).length > 0) {
+      const chips = document.createElement("div");
+      chips.className = "media-keywords";
+      for (const keyword of asset.keywords ?? []) {
+        const chip = document.createElement("button");
+        chip.className = "media-keyword-chip";
+        chip.textContent = keyword;
+        chip.title = `Filter by "${keyword}" — click again to clear`;
+        chip.setAttribute("aria-label", `Filter by keyword ${keyword}`);
+        chip.addEventListener("click", (event) => {
+          event.stopPropagation();
+          mediaKeyword = mediaKeyword === keyword ? "" : keyword;
+          $<HTMLSelectElement>("media-keyword").value = mediaKeyword;
+          renderMedia();
+        });
+        chips.appendChild(chip);
+      }
+      meta.appendChild(chips);
+    }
+
+    const tag = document.createElement("button");
+    tag.className = "media-remove media-tag";
+    tag.textContent = "🏷";
+    tag.title = "Keywords";
+    tag.setAttribute("aria-label", `Keywords for ${assetName(asset)}`);
+    tag.addEventListener("click", (event) => {
+      event.stopPropagation();
+      editKeywords(asset);
+    });
+
+    const rating = document.createElement("div");
+    rating.className = "media-rating";
+    rating.append(
+      ratingButton(asset, "favorite", "★"),
+      ratingButton(asset, "rejected", "✕"),
+    );
+    el.append(thumb, meta, add, tag, remove, rating);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
@@ -5831,7 +6322,7 @@ async function applyRasterEdit(): Promise<void> {
   const sourceAsset = loc ? findAsset(loc.clip.assetId) : undefined;
   try {
     const blob = await rasterSession.toBlob();
-    const checksum = await sha256Hex(await blob.arrayBuffer());
+    const checksum = await checksumBlob(blob);
     const url = URL.createObjectURL(blob);
     const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
     const baseName = sourceAsset ? assetName(sourceAsset) : "photo";
@@ -6079,6 +6570,47 @@ function bindEvents(): void {
   });
   initExportOptions();
 
+  // Culling controls. Both are view state, so they re-render the bin without
+  // touching the project or the command log.
+  $("media-search").addEventListener("input", () => {
+    mediaSearch = $<HTMLInputElement>("media-search").value;
+    renderMedia();
+  });
+  $("media-keyword").addEventListener("change", () => {
+    mediaKeyword = $<HTMLSelectElement>("media-keyword").value;
+    renderMedia();
+  });
+  $("btn-save-view").addEventListener("click", () => {
+    const name = window.prompt("Name this view", "Selects")?.trim();
+    if (!name) return;
+    const views = loadSavedViews().filter((view) => view.name !== name);
+    views.push({
+      name,
+      search: mediaSearch,
+      keyword: mediaKeyword,
+      filter: mediaFilter,
+    });
+    storeSavedViews(views);
+    renderSavedViews();
+    toast(`Saved view "${name}".`);
+  });
+  $("media-view").addEventListener("change", () => {
+    const chosen = $<HTMLSelectElement>("media-view").value;
+    const view = loadSavedViews().find((candidate) => candidate.name === chosen);
+    if (!view) return;
+    mediaSearch = view.search;
+    mediaKeyword = view.keyword;
+    mediaFilter = view.filter;
+    $<HTMLInputElement>("media-search").value = view.search;
+    $<HTMLSelectElement>("media-filter").value = view.filter;
+    renderMedia();
+  });
+  renderSavedViews();
+  $("media-filter").addEventListener("change", () => {
+    mediaFilter = $<HTMLSelectElement>("media-filter").value as MediaFilter;
+    renderMedia();
+  });
+
   window.addEventListener("keydown", (e) => {
     if (e.target !== document.body) return;
     if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
@@ -6094,6 +6626,8 @@ function bindEvents(): void {
     ) {
       // Shift+Delete ripples: the gap closes behind the deleted clips.
       deleteSelection(e.shiftKey);
+    } else if (e.code === "KeyM" && !e.metaKey && !e.ctrlKey) {
+      addMarkerAtPlayhead(e.shiftKey ? "todo" : "standard");
     } else if (e.code === "Space") {
       e.preventDefault();
       if (!playback.playing) ensureAudioContextResumed();

@@ -14,7 +14,12 @@ import {
   reorderEffectsPayloadSchema,
   setClipAudioGainPayloadSchema,
   setClipAudioPanPayloadSchema,
+  setAssetRatingPayloadSchema,
+  setAssetKeywordsPayloadSchema,
   setClipSpeedPayloadSchema,
+  addMarkerPayloadSchema,
+  updateMarkerPayloadSchema,
+  removeMarkerPayloadSchema,
   addMaskPayloadSchema,
   updateMaskPayloadSchema,
   removeMaskPayloadSchema,
@@ -84,6 +89,27 @@ const COMMAND_TOOLS: CommandTool[] = [
     title: "Add track",
     description: "Add a video or audio track to a sequence.",
     schema: addTrackPayloadSchema,
+  },
+  {
+    name: "set_asset_rating",
+    commandType: "asset.set_rating",
+    title: "Rate an imported asset",
+    description:
+      "Mark an asset as 'favorite' or 'rejected', or pass null to clear the " +
+      "rating. Ratings organise the media bin and never touch the original " +
+      "file or any clip already on the timeline.",
+    schema: setAssetRatingPayloadSchema,
+  },
+  {
+    name: "set_asset_keywords",
+    commandType: "asset.set_keywords",
+    title: "Set an asset's keywords",
+    description:
+      "Replace an asset's whole keyword list; an empty list clears it. " +
+      "Keywords must already be normalized — trimmed, lower case, " +
+      "single-spaced — because a command that rewrote its own payload would " +
+      "not replay to the bytes it recorded.",
+    schema: setAssetKeywordsPayloadSchema,
   },
   {
     name: "add_clip",
@@ -183,6 +209,33 @@ const COMMAND_TOOLS: CommandTool[] = [
       "timeline. Supported between 1/4 and 4. The source range is unchanged; " +
       "slowing a clip fails with OVERLAP if the clip after it is in the way.",
     schema: setClipSpeedPayloadSchema,
+  },
+  {
+    name: "add_marker",
+    commandType: "timeline.add_marker",
+    title: "Pin a marker to a clip",
+    description:
+      "Add a named marker at a clip-local microsecond time. Kinds are " +
+      "'standard' (a note), 'chapter' (a navigation point) and 'todo' (a note " +
+      "with a done flag). The time must fall inside the clip; markers ride the " +
+      "clip, so trimming or moving it carries them along.",
+    schema: addMarkerPayloadSchema,
+  },
+  {
+    name: "update_marker",
+    commandType: "timeline.update_marker",
+    title: "Rename, move or tick a marker",
+    description:
+      "Change a marker's time, name, kind or done flag. Every field but the " +
+      "identity is optional; a new time must still fall inside the clip.",
+    schema: updateMarkerPayloadSchema,
+  },
+  {
+    name: "remove_marker",
+    commandType: "timeline.remove_marker",
+    title: "Remove a marker",
+    description: "Delete one marker from a clip.",
+    schema: removeMarkerPayloadSchema,
   },
   {
     name: "add_mask",
