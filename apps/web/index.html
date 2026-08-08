@@ -247,6 +247,23 @@
             multiple
             hidden
           />
+          <!-- Proxies: edit against small copies, export from the originals.
+               A checkbox rather than a hidden preference, because the answer
+               changes with the footage in front of you. -->
+          <div class="media-tools proxy-tools">
+            <label class="proxy-toggle" title="Edit against small proxy copies; exports always use the originals">
+              <input id="proxy-enabled" type="checkbox" checked />
+              Use proxies
+            </label>
+            <span id="proxy-status" class="proxy-status"></span>
+            <button
+              id="btn-clear-proxies"
+              class="mini"
+              title="Delete the proxy files; editing falls back to the originals"
+            >
+              Clear
+            </button>
+          </div>
           <div class="media-tools">
             <select id="media-view" class="media-filter" aria-label="Saved view">
               <option value="" selected>Saved views…</option>

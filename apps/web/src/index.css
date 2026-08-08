@@ -1947,6 +1947,44 @@ select {
 }
 
 /* ---- toast + drop overlay ---- */
+.proxy-tools {
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+/* Specific rather than a bare `.hidden`: the generic class loses to `.mini`'s
+   own display at equal specificity, which is how the export dialog once shipped
+   with its Custom fields permanently visible. */
+.proxy-tools .mini.hidden {
+  display: none;
+}
+.proxy-toggle {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.proxy-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+.media-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--accent-soft, rgba(99, 102, 241, 0.16));
+  color: var(--accent, #6366f1);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.media-badge.building {
+  background: rgba(148, 163, 184, 0.22);
+  color: var(--muted);
+}
+
 /* Two words that must stay on one line, or the whole top bar grows a row. */
 #btn-save-as {
   white-space: nowrap;

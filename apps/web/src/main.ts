@@ -95,6 +95,14 @@ import {
 } from "./project-file.js";
 import { clearSnapshot, readSnapshot, writeSnapshot } from "./autosave.js";
 import {
+  buildProxy,
+  clearProxies,
+  proxySize,
+  proxyStoreBytes,
+  readProxy,
+  shouldBuildProxy,
+} from "./proxy.js";
+import {
   ensurePermission,
   forgetProject,
   listRecent,
@@ -764,6 +772,203 @@ function assetUri(asset: MediaAsset): string {
   return relinkedUris.get(asset.id) ?? asset.originalUri;
 }
 
+/**
+ * Proxy copies, by asset id.
+ *
+ * Like a relink, a proxy is a fact about this session and not about the
+ * project: the same edit against the same footage must produce the same
+ * operation log whether or not a small copy happened to exist. The map holds
+ * object URLs into `mediaCache`, so every render site reaches a proxy the same
+ * way it reaches an original.
+ */
+const proxyUris = new Map<string, string>();
+
+/** Proxies still being built, by asset id, as a 0..1 fraction. */
+const proxyBuilding = new Map<string, number>();
+
+const PROXY_PREF_KEY = "director.useProxies";
+
+/** Whether editing reads proxies. Exports never do — see `renderOriginals`. */
+let useProxies = localStorage.getItem(PROXY_PREF_KEY) !== "off";
+
+/**
+ * Set while an export is rendering.
+ *
+ * `drawLayer` is shared by the preview and by both export paths, so the choice
+ * of which copy to read cannot live at the call site — it is a property of what
+ * the render is *for*. Editing reads proxies; anything that produces a file the
+ * user keeps reads the originals.
+ */
+let renderOriginals = false;
+
+/** The media element a render should read for this asset. */
+function mediaFor(
+  asset: MediaAsset,
+): HTMLImageElement | HTMLVideoElement | undefined {
+  const original = mediaCache.get(assetUri(asset));
+  if (renderOriginals || !useProxies) return original;
+  // During playback the original element is the one being driven — it is what
+  // carries the sound — so the picture comes from it too. Proxies earn their
+  // keep on the other path: scrubbing, where every move costs a decode.
+  if (playback.playing) return original;
+  const proxy = proxyUris.get(asset.id);
+  const proxyMedia = proxy ? mediaCache.get(proxy) : undefined;
+  return proxyMedia ?? original;
+}
+
+/**
+ * Proxy builds run one at a time.
+ *
+ * Each build holds an encoder and seeks a video element as fast as it can;
+ * three at once is three times the work and three times slower per file, with
+ * a preview that stutters throughout. Importing a folder queues them instead.
+ */
+let proxyQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Set while an export is running, and read by proxy builds.
+ *
+ * Both work the same way — seek a video element, draw, encode — and run against
+ * the same file. Doing them at once starves the export's seeks, so it draws the
+ * frame it already had: an export made during a proxy build came out as one
+ * picture repeated. Building pauses instead, and resumes when the export is
+ * done. Every editor that has both features makes the same trade.
+ */
+let exportActive = false;
+
+/** Proxy builds still owed, by asset id, so a paused one can be picked up. */
+const proxyRequests = new Map<
+  string,
+  { checksum: string; url: string; durationUs: string; name: string }
+>();
+
+/** Start any proxy build that was paused for an export. */
+function resumeProxies(): void {
+  for (const [assetId, request] of proxyRequests) {
+    if (proxyUris.has(assetId)) continue;
+    ensureProxy(assetId, request.checksum, request.url, request.durationUs, request.name);
+  }
+}
+
+/**
+ * Make sure this asset has a proxy, building one if it is worth it.
+ *
+ * Never throws and never blocks the import: a proxy is an optimisation, so a
+ * browser without WebCodecs, a codec the encoder refuses, or a full disk all
+ * end the same way — editing against the original, exactly as before.
+ */
+function ensureProxy(
+  assetId: string,
+  checksum: string,
+  url: string,
+  durationUs: string,
+  name: string,
+): void {
+  proxyRequests.set(assetId, { checksum, url, durationUs, name });
+  proxyQueue = proxyQueue.then(async () => {
+    if (proxyUris.has(assetId) || exportActive) return;
+    const existing = await readProxy(checksum);
+    if (existing) {
+      attachProxy(assetId, existing);
+      renderMedia();
+      return;
+    }
+    // A private element, not the one in the media cache. Transcoding seeks its
+    // source thousands of times, and the cached element is simultaneously the
+    // preview's and the export's — sharing it means each one's seeks land in
+    // the other's frames. That is not theoretical: it turned an export of a
+    // freshly-imported clip into repeated frames.
+    const source = document.createElement("video");
+    source.src = url;
+    source.muted = true;
+    source.preload = "auto";
+    const ready = await new Promise<boolean>((resolve) => {
+      source.onloadedmetadata = () => resolve(true);
+      source.onerror = () => resolve(false);
+    });
+    if (!ready) return;
+
+    proxyBuilding.set(assetId, 0);
+    renderMedia();
+    const file = await buildProxy(source, {
+      checksum,
+      durationUs,
+      onProgress: (fraction) => {
+        proxyBuilding.set(assetId, fraction);
+        updateProxyStatus();
+      },
+      cancelled: () => exportActive,
+    });
+    proxyBuilding.delete(assetId);
+    const size = proxySize(source.videoWidth, source.videoHeight);
+    source.removeAttribute("src");
+    source.load();
+    if (file) {
+      proxyRequests.delete(assetId);
+      attachProxy(assetId, file);
+      toast(`Proxy ready for ${name} (${size.width}x${size.height}).`);
+    }
+    renderMedia();
+    updateProxyStatus();
+  });
+}
+
+/** Load a built proxy into the media cache the renderer reads from. */
+function attachProxy(assetId: string, file: File): void {
+  const url = URL.createObjectURL(file);
+  const element = document.createElement("video");
+  element.src = url;
+  element.muted = true;
+  element.preload = "auto";
+  element.addEventListener("loadedmetadata", () => updateUI(), { once: true });
+  attachOffscreen(element);
+  mediaCache.set(url, element);
+  proxyUris.set(assetId, url);
+}
+
+/** The one-line summary beside the proxy toggle. */
+function updateProxyStatus(): void {
+  const status = $("proxy-status");
+  const clear = $<HTMLButtonElement>("btn-clear-proxies");
+  const building = [...proxyBuilding.values()];
+  if (building.length > 0) {
+    const percent = Math.round((building[0] ?? 0) * 100);
+    status.textContent =
+      building.length === 1
+        ? `Building proxy — ${percent}%`
+        : `Building proxy — ${percent}% (${building.length - 1} queued)`;
+    clear.classList.add("hidden");
+    return;
+  }
+  const count = proxyUris.size;
+  clear.classList.toggle("hidden", count === 0);
+  if (count === 0) {
+    status.textContent = "";
+    return;
+  }
+  status.textContent = `${count} prox${count === 1 ? "y" : "ies"}`;
+  // The size comes from disk rather than from what this session built, so a
+  // store left behind by earlier sessions is counted too.
+  void proxyStoreBytes().then((bytes) => {
+    if (proxyBuilding.size > 0 || proxyUris.size === 0) return;
+    status.textContent = `${count} prox${count === 1 ? "y" : "ies"} · ${formatBytes(bytes)}`;
+  });
+}
+
+/** Delete every proxy file and go back to editing the originals. */
+async function discardProxies(): Promise<void> {
+  for (const url of proxyUris.values()) {
+    mediaCache.delete(url);
+    URL.revokeObjectURL(url);
+  }
+  proxyUris.clear();
+  await clearProxies();
+  renderMedia();
+  updateProxyStatus();
+  updateUI();
+  toast("Proxies deleted — editing the originals.");
+}
+
 /** Assets whose bytes are not available in this session. */
 function offlineAssets(): MediaAsset[] {
   return (session.getProject()?.assets ?? []).filter(
@@ -1327,6 +1532,16 @@ async function importFile(file: File): Promise<void> {
     }),
   );
   if (registered) addAssetToTimeline(assetId, kind, durationUs);
+
+  // Proxies are built after registering, not before: the clip should reach the
+  // timeline the moment the file is readable, and the small copy can catch up.
+  if (
+    registered &&
+    kind === "video" &&
+    shouldBuildProxy({ kind, width, height, fileSizeBytes: file.size })
+  ) {
+    ensureProxy(assetId, checksum, url, durationUs, file.name);
+  }
 }
 
 async function importFiles(files: FileList | File[]): Promise<void> {
@@ -1570,7 +1785,7 @@ function drawLayer(
 ): void {
   const asset = findAsset(clip.assetId);
   if (!asset) return;
-  const media = mediaCache.get(assetUri(asset));
+  const media = mediaFor(asset);
   if (!media) return;
 
   let mw = asset.metadata.width ?? 1920;
@@ -4810,6 +5025,31 @@ function renderMedia(): void {
       ? `${asset.kind} · missing — click Relink`
       : `${asset.kind} · ${formatTime(asset.metadata.durationUs ?? "0")}`;
     meta.append(name, sub);
+    // Which copy this asset is being edited against, said plainly: a soft
+    // preview with no explanation is the usual complaint about proxies.
+    const building = proxyBuilding.get(asset.id);
+    const proxyUrl = proxyUris.get(asset.id);
+    if (building !== undefined) {
+      const badge = document.createElement("span");
+      badge.className = "media-badge building";
+      badge.textContent = `Proxy ${Math.round(building * 100)}%`;
+      sub.append(badge);
+    } else if (proxyUrl) {
+      const proxyMedia = mediaCache.get(proxyUrl);
+      const height =
+        proxyMedia instanceof HTMLVideoElement && proxyMedia.videoHeight
+          ? proxyMedia.videoHeight
+          : proxySize(asset.metadata.width ?? 0, asset.metadata.height ?? 0)
+              .height;
+      const badge = document.createElement("span");
+      badge.className = "media-badge";
+      badge.textContent = `Proxy ${height}p`;
+      badge.title = useProxies
+        ? "Editing against a proxy; exports use the original."
+        : "Proxy built, but proxies are switched off.";
+      el.dataset.proxyHeight = String(height);
+      sub.append(badge);
+    }
     const add = document.createElement("span");
     add.className = "media-add";
     add.textContent = "＋";
@@ -5071,6 +5311,11 @@ async function openProjectFile(file: File): Promise<void> {
   // Media from the previous session is gone with its blob URLs; the hints say
   // what to look for.
   currentProjectHandle = null;
+  for (const url of proxyUris.values()) {
+    mediaCache.delete(url);
+    URL.revokeObjectURL(url);
+  }
+  proxyUris.clear();
   relinkedUris.clear();
   mediaCache.clear();
   removedAssets.clear();
@@ -5164,6 +5409,13 @@ async function attachMediaElement(
   });
   if (element instanceof HTMLVideoElement) attachOffscreen(element);
   mediaCache.set(url, element as HTMLVideoElement);
+  // A proxy is keyed by the source's checksum, so relinking a file that was
+  // proxied in an earlier session picks the small copy straight back up
+  // instead of transcoding it again.
+  if (element instanceof HTMLVideoElement) {
+    const built = await readProxy(asset.checksum);
+    if (built) attachProxy(asset.id, built);
+  }
   void file;
 }
 
@@ -5330,6 +5582,8 @@ function syncAudioMonitors(): void {
   for (const layer of active) {
     const asset = findAsset(layer.assetId);
     if (!asset || asset.kind === "image") continue;
+    // The original, always: a proxy carries picture only, and this is the
+    // element that is actually being heard.
     const el = mediaCache.get(assetUri(asset));
     if (!(el instanceof HTMLMediaElement)) continue;
     const loc = locateClip(layer.clipId);
@@ -7153,6 +7407,21 @@ function bindEvents(): void {
     renderMedia();
   });
   renderSavedViews();
+  const proxyToggle = $<HTMLInputElement>("proxy-enabled");
+  proxyToggle.checked = useProxies;
+  proxyToggle.addEventListener("change", () => {
+    useProxies = proxyToggle.checked;
+    localStorage.setItem(PROXY_PREF_KEY, useProxies ? "on" : "off");
+    toast(
+      useProxies
+        ? "Editing against proxies where they exist."
+        : "Editing against the originals.",
+    );
+    renderMedia();
+    updateUI();
+  });
+  $("btn-clear-proxies").addEventListener("click", () => void discardProxies());
+  updateProxyStatus();
   $("media-filter").addEventListener("change", () => {
     mediaFilter = $<HTMLSelectElement>("media-filter").value as MediaFilter;
     renderMedia();
@@ -7298,7 +7567,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   if (!topLoc) return null;
   const topAsset = findAsset(topLoc.clip.assetId);
   if (!topAsset) return null;
-  const media = mediaCache.get(assetUri(topAsset));
+  const media = mediaFor(topAsset);
   let mw = topAsset.metadata.width ?? 1920;
   let mh = topAsset.metadata.height ?? 1080;
   if (media instanceof HTMLImageElement) {
@@ -7319,7 +7588,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
     if (!loc) continue;
     const layerAsset = findAsset(loc.clip.assetId);
     const layerMedia = layerAsset
-      ? mediaCache.get(assetUri(layerAsset))
+      ? mediaFor(layerAsset)
       : undefined;
     if (layerMedia instanceof HTMLVideoElement) {
       await seekVideoFrame(layerMedia, Number(layer.sourceTimeUs) / 1_000_000);
@@ -7550,6 +7819,12 @@ async function runVideoExport(
 
   let job: ExportJob = startExport(plan);
 
+  // Everything from here reads the originals. A proxy exists to make editing
+  // quick; exporting one would hand the user a soft file that nothing in the
+  // interface warned them about.
+  renderOriginals = true;
+  exportActive = true;
+
   try {
     // A VideoEncoder's `error` callback fires from the codec's own internal
     // task, not from any code we called — throwing there does NOT propagate
@@ -7632,7 +7907,7 @@ async function runVideoExport(
           const loc = locateClip(layer.clipId);
           if (!loc) continue;
           const asset = findAsset(loc.clip.assetId);
-          const media = asset ? mediaCache.get(assetUri(asset)) : undefined;
+          const media = asset ? mediaFor(asset) : undefined;
           if (media instanceof HTMLVideoElement) {
             await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
           }
@@ -7697,6 +7972,10 @@ async function runVideoExport(
       status: "failed",
       message: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    renderOriginals = false;
+    exportActive = false;
+    resumeProxies();
   }
 }
 
@@ -8029,6 +8308,9 @@ async function runGifExport(): Promise<void> {
   const status = $<HTMLDivElement>("gif-status");
   const fps = clampGifFps(gifSettings.fps);
   const frameCount = gifFrameCount(seq);
+  // As with video: a file the user keeps comes from the originals.
+  renderOriginals = true;
+  exportActive = true;
 
   try {
     const sink = await createGifEncoder({
@@ -8055,7 +8337,7 @@ async function runGifExport(): Promise<void> {
         const loc = locateClip(layer.clipId);
         if (!loc) continue;
         const asset = findAsset(loc.clip.assetId);
-        const media = asset ? mediaCache.get(assetUri(asset)) : undefined;
+        const media = asset ? mediaFor(asset) : undefined;
         if (media instanceof HTMLVideoElement) {
           await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
         }
@@ -8092,6 +8374,9 @@ async function runGifExport(): Promise<void> {
     toast(`GIF export failed: ${message}`, true);
   } finally {
     gifExportInFlight = false;
+    renderOriginals = false;
+    exportActive = false;
+    resumeProxies();
     renderGifPanel();
   }
 }

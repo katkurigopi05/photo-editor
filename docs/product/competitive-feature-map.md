@@ -135,7 +135,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Ratings, keywords, search, saved views | FCP, Lightroom, Capture One | ✓ | |
 | Keyword ranges (part of a clip) | FCP | ✗ | step M2, next in line |
 | Persistent catalogue across projects | Lightroom, Capture One | ✗ | step M3 |
-| Proxy / optimised media | all pro | ✗ | step M4 — the fix for slow editing and export of large files |
+| Proxy / optimised media | all pro | ✓ | 540p proxies, built on import, exports read the original |
 | Relink missing media | all pro | ✗ | checksums exist, the flow does not — step M5 |
 | EXIF / metadata display | Lightroom, Capture One, Photoshop | ✗ | small; step M6 |
 | Batch export / recipes | Lightroom, Capture One, Affinity | ◐ | exists in the Python track only — step M7 |
@@ -184,14 +184,12 @@ session, **M** a few sessions, **L** a phase.
 
 ### Now — the foundations everything else assumes
 
-1. **P1 · Save, open and auto-save a project** — **M**. The operation log is
-   already the file format, and `packages/editor-state/src/persistence.ts`
-   already serialises it; what is missing is the File System Access flow, a
-   recent-projects list, and a periodic auto-save. Nothing else on this page
-   matters if closing the tab loses the work.
-2. **M4 · Proxy media** — **M**. Generate a small proxy on import, edit against
-   it, export from the original. This is the answer to both slow scrubbing and
-   slow export of large files, and it is what makes the 5GB import useful.
+1. ~~**P1 · Save, open and auto-save a project**~~ — done. Save, Save as, Open,
+   a recent-projects list, relink by checksum, and a 15-second crash snapshot.
+   See `docs/phases/project-persistence.md`.
+2. ~~**M4 · Proxy media**~~ — done. 540p proxies built on import, keyed by
+   checksum, read while editing; exports read the original. See
+   `docs/phases/proxy-media.md`.
 3. **S1 · Audio meters** and **C2 · Video scopes** — **S** each. Mixing and
    grading without them is guesswork, and both are read-only overlays over data
    the render path already has.

@@ -66,6 +66,11 @@ when the system asks for reduced motion.
   (Cmd/Ctrl+Shift+S) to save to a new one.
 - Recent… lists the last eight projects you saved or opened. Choosing one
   reopens it; the browser asks for permission to read the file each session.
+- Large video (720p and above, or files over 256MB) is proxied automatically: a
+  540p copy is built in the background, editing reads it, and exports read the
+  original. The media item shows a Proxy badge when one is in use. Untick Use
+  proxies to edit the originals directly, or press Clear to delete the proxy
+  files.
 - Media is not copied into the project file. After opening, the bin marks any
   missing media and Relink… matches the files you pick — by checksum first, so a
   renamed file still matches.
