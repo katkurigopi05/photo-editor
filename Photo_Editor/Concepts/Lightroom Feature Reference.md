@@ -122,3 +122,13 @@ Masking applies to *every* visual effect, including the ones drawn through the
 canvas filter string — a masked instance is rerouted through the pixel pass.
 Remaining: a brush painting interaction, and AI masks as a contribution kind
 backed by [[Packages/bg-segmentation]]. See `docs/phases/masks.md`.
+
+
+## Wider comparison (2026-08-08)
+
+This note covers the photo side against one reference. `docs/product/
+competitive-feature-map.md` widens that to ten editors across photo and video,
+records what is deliberately declined, and orders the remaining gaps into steps.
+The items still open from *this* note — per-channel curves with control points,
+AI masks as a contribution kind, the local catalogue — appear there as steps C1,
+L3 and M3.

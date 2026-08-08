@@ -1,0 +1,241 @@
+# Competitive feature map
+
+What ten reference editors offer, what Project Director has, and what that makes
+the next steps. Written 2026-08-08 against the state of the repository at that
+date.
+
+## How to read this
+
+This is a **gap map, not a wish list**. Everything here is either shipped,
+deliberately declined, or queued with a size. A feature is only listed as a step
+if it is compatible with the project's own constraints:
+
+- local-first, on this machine, no accounts and no cloud service
+  ([[Rules/Local Only]]);
+- every project mutation through a validated command with an exact inverse
+  ([[Concepts/Command Engine]]);
+- deterministic render and export from a project version.
+
+Features that exist only to serve a subscription, a marketplace, a rendering
+farm or a collaboration server are recorded in **Declined** with the reason, so
+nobody re-proposes them.
+
+## The reference set
+
+**Video** — Adobe Premiere Pro, DaVinci Resolve, Apple Final Cut Pro, CapCut,
+Kdenlive.
+**Photo** — Adobe Photoshop, Adobe Lightroom, Affinity Photo, GIMP, Capture One.
+
+Chosen for coverage rather than market share: two subscription suites, one
+free/open-source pair, one consumer/social editor, one perpetual-licence
+challenger, one raw-first cataloguer.
+
+## Where the project stands today
+
+Shipped, verified by tests against the running app:
+
+| Area | What exists |
+| --- | --- |
+| Editing model | Command engine with exact inverses, undo/redo, byte-exact replay, canonical JSON |
+| Timeline | Multi-track, drag, snap, split, trim handles, ripple trim/delete, multi-select, per-clip speed 0.25–4× |
+| Effects | 39 effect types — tone, colour grading, HSL mixer, colour wheels, presence, noise reduction, artistic passes, text, background removal |
+| Masks | Linear/radial gradients, brush strokes, luminance and colour range, add/subtract/intersect, any effect maskable |
+| Animation | Keyframes on position, scale, rotation, opacity, five easings, motion presets |
+| Transitions | Crossfade, dip, slide, with per-clip in/out |
+| Audio | Per-clip gain and pan, fades, equal-power crossfades, EQ, compressor, live monitoring, mixdown into export |
+| Media | Import with streamed checksum, ratings, keywords, search, filters, saved views, browser in/out ranges |
+| Markers | Note, chapter and to-do markers riding the clip |
+| Raster | Brush, eraser, clone, lasso, magic wand, sharpen, smart fill, crop, transform, AI background removal (local U²-Net) |
+| Export | H.264/MP4 to 4K, custom size and frame rate, bitrate, audio codec/bitrate, streaming to disk, GIF, PNG |
+| Interfaces | Web app and an MCP server exposing every public command |
+
+## Gap map
+
+Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** declined.
+
+### 1. Timeline and editing model
+
+| Feature | Ref | Us | Note |
+| --- | --- | --- | --- |
+| Multi-track timeline | all | ✓ | |
+| Ripple / roll / slip / slide trims | Premiere, Resolve, FCP | ◐ | ripple only; roll, slip and slide missing |
+| Magnetic timeline, connected clips | FCP | ✗ | an architecture, not a feature — see step M1 |
+| Compound clips / nested sequences | all pro | ✗ | step T3 |
+| Multicam editing | Premiere, Resolve, FCP | ✗ | needs sync + angle switching; step T7 |
+| Roles / lanes / track groups | FCP, Premiere | ✗ | step T4 |
+| Three-point editing, insert/overwrite | all pro | ✗ | browser range exists; the edit modes do not — step T1 |
+| J/K/L and keyboard-first trimming | all pro | ✗ | step T2 |
+| Snapping | all | ✓ | |
+| Markers | all | ✓ | timeline-level markers still missing |
+| Adjustment layers | Premiere, Resolve | ✗ | step T5 |
+| Auto-save / project recovery | all | ✗ | step P1, and the highest-value item on this page |
+| Multiple sequences per project | all pro | ◐ | schema allows it; the UI drives one |
+
+### 2. Colour and image
+
+| Feature | Ref | Us | Note |
+| --- | --- | --- | --- |
+| Primary correction (exposure, contrast, white balance) | all | ✓ | |
+| Curves (RGB and per-channel) | all | ◐ | three-band tone curve only; control-point curve is step C1 |
+| Colour wheels / three-way grading | Resolve, FCP, Premiere | ✓ | |
+| HSL / colour mixer | Lightroom, Resolve | ✓ | |
+| Scopes: waveform, vectorscope, histogram | Resolve, Premiere, Capture One | ✗ | step C2 — grading without scopes is guesswork |
+| LUT import and export | Resolve, Premiere | ✗ | step C3 |
+| Colour management, log/HDR handling | Resolve, Capture One | ✗ | step C6, large |
+| Raw photo development | Lightroom, Capture One, Affinity | ✗ | exists in the Python track only; step C4 |
+| Lens correction, chromatic aberration | Lightroom, Capture One | ✗ | needs a profile database; step C5 |
+| Perspective / keystone correction | Photoshop, Lightroom | ✗ | step C5 |
+| Match colour between shots | Resolve, Premiere | ✗ | step C7 |
+
+### 3. Compositing and layers
+
+| Feature | Ref | Us | Note |
+| --- | --- | --- | --- |
+| Layers with blend modes | Photoshop, Affinity, GIMP | ✗ | tracks composite, but there are no blend modes at all — step L1 |
+| Layer groups, clipping masks | Photoshop, Affinity | ✗ | step L2 |
+| Non-destructive adjustment layers | Photoshop, Affinity, Capture One | ✗ | step L1 |
+| Masks with feather and composition | all | ✓ | |
+| AI subject / sky selection | Photoshop, Lightroom | ◐ | U²-Net background removal ships; masks cannot yet reference it — step L3 |
+| Text with typography controls | all | ◐ | burned-in captions only: no font choice, tracking or leading — step L4 |
+| Shapes and vector paths | Photoshop, Affinity, Canva-likes | ◐ | seven preset shapes, no editable paths |
+| Pen tool / bézier paths | Photoshop, Affinity, GIMP | ✗ | step L5 |
+| Content-aware fill / healing | Photoshop, Affinity | ◐ | diffusion smart-fill ships; no patch or healing brush — step L6 |
+
+### 4. Motion and effects
+
+| Feature | Ref | Us | Note |
+| --- | --- | --- | --- |
+| Keyframed transforms | all | ✓ | |
+| Bézier keyframe interpolation | all pro | ◐ | five named easings; no editable curve — step A1 |
+| Motion tracking | Resolve, Premiere | ✗ | step A2 |
+| Stabilisation | Resolve, Premiere, FCP | ✗ | step A3 |
+| Speed ramps (keyframed speed) | all pro | ◐ | constant per-clip rate only — step A4 |
+| Optical-flow retiming | Resolve, Premiere, FCP | ✗ | step A5 |
+| Titles and lower thirds as templates | all | ✗ | step A6 |
+| Green screen / chroma key | all pro | ◐ | colour-key background removal exists; no spill suppression or matte controls — step A7 |
+
+### 5. Audio
+
+| Feature | Ref | Us | Note |
+| --- | --- | --- | --- |
+| Per-clip gain, pan, fades | all | ✓ | |
+| EQ and compression | all pro | ✓ | |
+| Waveform display | all | ✓ | |
+| Audio meters | all | ✗ | step S1 — mixing without meters is guesswork, same as grading without scopes |
+| Noise reduction / de-hum | Resolve, Premiere | ✗ | step S2 |
+| Ducking, sidechain | Resolve, Premiere, CapCut | ✗ | step S3 |
+| Multi-band / mastering chain | Resolve | ✗ | low priority |
+| Voice isolation | Resolve, CapCut | ✗ | needs a local model; step S4 |
+| Audio-only scrubbing | all pro | ✗ | small; step S5 |
+
+### 6. Media management
+
+| Feature | Ref | Us | Note |
+| --- | --- | --- | --- |
+| Ratings, keywords, search, saved views | FCP, Lightroom, Capture One | ✓ | |
+| Keyword ranges (part of a clip) | FCP | ✗ | step M2, next in line |
+| Persistent catalogue across projects | Lightroom, Capture One | ✗ | step M3 |
+| Proxy / optimised media | all pro | ✗ | step M4 — the fix for slow editing and export of large files |
+| Relink missing media | all pro | ✗ | checksums exist, the flow does not — step M5 |
+| EXIF / metadata display | Lightroom, Capture One, Photoshop | ✗ | small; step M6 |
+| Batch export / recipes | Lightroom, Capture One, Affinity | ◐ | exists in the Python track only — step M7 |
+
+### 7. Output
+
+| Feature | Ref | Us | Note |
+| --- | --- | --- | --- |
+| H.264 MP4 to 4K, custom rate and bitrate | all | ✓ | |
+| Streaming export to disk | all | ✓ | |
+| HEVC, ProRes, VP9, AV1 | all pro | ✗ | schema models them; the browser encoder does one — step O1 |
+| Image sequence export | all pro | ✗ | step O2 |
+| Chapter markers in the file | FCP, Premiere | ✗ | the marker kind exists — step O3, small |
+| Subtitles and captions | Premiere, Resolve, CapCut | ✗ | step O4 |
+| Render queue / background render | all pro | ✗ | step O5 |
+| Project interchange (XML/AAF/EDL) | all pro | ✗ | step O6 |
+| Social presets and aspect-ratio reframe | CapCut, Canva-likes | ✗ | step O7, cheap and popular |
+
+### 8. Application
+
+| Feature | Ref | Us | Note |
+| --- | --- | --- | --- |
+| Save / open a project file | all | ✗ | **the largest hole on this page** — step P1 |
+| Auto-save and crash recovery | all | ✗ | step P1 |
+| Desktop application | all | ✗ | Tauri shell, deferred by decision (cost) |
+| Undo history panel | all | ◐ | the log is listed; it cannot be navigated — step P2 |
+| Customisable shortcuts | all pro | ✗ | step P3 |
+| Templates and presets | CapCut, Canva-likes, Lightroom | ◐ | Looks and motion presets ship; nothing is user-definable — step P4 |
+| GPU-accelerated rendering | all pro | ✗ | canvas 2D throughout; step P5, large |
+
+## Declined
+
+| Feature | Reason |
+| --- | --- |
+| Cloud sync, shared libraries, review links | No server, no accounts ([[Rules/Local Only]]) |
+| Collaboration and comments | Single machine, single user |
+| Subscriptions, entitlement checks, marketplaces | No commercial layer |
+| Generative fill / text-to-video / avatars | Creates new imagery rather than editing the user's own; a hosted model would break local-only, and a local diffusion model is a separate project |
+| Telemetry and analytics | Prohibited |
+| Stock libraries, sound-effect catalogues | Hosted content |
+
+## Upcoming steps, in order
+
+Ordered by value per unit of work, with dependencies respected. Sizes: **S** a
+session, **M** a few sessions, **L** a phase.
+
+### Now — the foundations everything else assumes
+
+1. **P1 · Save, open and auto-save a project** — **M**. The operation log is
+   already the file format, and `packages/editor-state/src/persistence.ts`
+   already serialises it; what is missing is the File System Access flow, a
+   recent-projects list, and a periodic auto-save. Nothing else on this page
+   matters if closing the tab loses the work.
+2. **M4 · Proxy media** — **M**. Generate a small proxy on import, edit against
+   it, export from the original. This is the answer to both slow scrubbing and
+   slow export of large files, and it is what makes the 5GB import useful.
+3. **S1 · Audio meters** and **C2 · Video scopes** — **S** each. Mixing and
+   grading without them is guesswork, and both are read-only overlays over data
+   the render path already has.
+
+### Next — the editing model catches up
+
+4. **M2 · Keyword ranges** — **S**. A persisted range object plus a command;
+   browser ranges and keywords both exist already.
+5. **T1 · Three-point editing (insert / overwrite / append)** — **M**. The
+   browser range is the source half; these are the destination half.
+6. **A4 · Speed ramps** — **M**. Keyframed rate rather than one constant, which
+   the schema's rational rate already accommodates.
+7. **L1 · Blend modes and adjustment layers** — **M**. The single biggest photo
+   gap: everything composites with normal alpha today.
+8. **C1 · Control-point curves** — **S**. Named as missing in the Lightroom
+   reference note since it was written.
+9. **P2 · Navigable history panel** — **S**. The log exists and replay works;
+   this is a UI over both.
+
+### Later — bigger bets
+
+10. **T3 · Compound clips** — **L**. Needs nesting in the schema and the render
+    path.
+11. **A2 · Motion tracking** and **A3 · Stabilisation** — **L** each. Both need
+    real optical-flow work; both are the sort of thing a native pipeline does
+    far better than canvas 2D.
+12. **O1 · More codecs** — **M**, gated on what WebCodecs offers; the schema is
+    already wider than the encoder.
+13. **C4 · Raw development** — **L**. Exists in the Python track; bringing it to
+    the web stack means a decoder and a colour pipeline.
+14. **M1 · Magnetic timeline** — **L**, and a decision before a task: it changes
+    what a track *is*, and the overlap rules in the reducer with it.
+15. **P5 · GPU rendering** — **L**. The `crates/render-engine` scaffold exists
+    for exactly this and has no consumer.
+
+## What this map says about the project
+
+Three honest conclusions:
+
+- **The engine is ahead of the application.** Effects, masks, grading, audio and
+  the command model compare respectably with paid tools; there is no way to save
+  a project. P1 is not the most interesting item on the list, it is the one that
+  makes the rest worth having.
+- **Two gaps are "you cannot see what you are doing":** scopes and audio meters.
+  Both are small, and both change how usable everything already built is.
+- **Large media is imported but not comfortable.** The checksum ceiling is gone;
+  proxies are what make a 5GB file pleasant rather than merely possible.

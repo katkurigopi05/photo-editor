@@ -395,6 +395,29 @@ the distilled shape of this work when it's eventually specified:
 - Authentication, cloud sync, multi-user collaboration.
 - A real database/backend for `apps/api` (currently a scaffold only).
 
+## Competitive feature map (2026-08-08)
+
+`docs/product/competitive-feature-map.md` compares this project against ten
+reference editors — Premiere Pro, DaVinci Resolve, Final Cut Pro, CapCut,
+Kdenlive, Photoshop, Lightroom, Affinity Photo, GIMP and Capture One — and turns
+the gaps into an ordered list of steps.
+
+Its three conclusions, kept here because they change what should be built next:
+
+1. **The engine is ahead of the application.** Effects, masks, grading, audio
+   and the command model compare respectably with paid tools, and there is still
+   no way to save a project. Persistence is the next step, not the most
+   interesting one.
+2. **Two gaps are "you cannot see what you are doing":** video scopes and audio
+   meters. Both are small, read-only overlays over data the render path already
+   produces, and both change how usable everything already built is.
+3. **Large media imports but is not comfortable.** Proxy media is what makes a
+   multi-gigabyte file pleasant rather than merely possible.
+
+Features declined on principle — cloud sync, collaboration, subscriptions,
+generative fill, telemetry, stock libraries — are listed there with reasons, so
+they are not re-proposed.
+
 ## Suggested build order
 
 Phase 0 → 1 → 2 → 3 (playback needs both decode and render) → 5 (UI needs a
