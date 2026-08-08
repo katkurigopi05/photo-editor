@@ -86,6 +86,20 @@ import {
 import { layoutTextLines } from "./text-overlay.js";
 import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
 import { checksumBlob } from "./checksum.js";
+import {
+  buildProjectFile,
+  parseProjectFile,
+  planRelink,
+  serializeProjectFile,
+  type MediaHint,
+} from "./project-file.js";
+import { clearSnapshot, readSnapshot, writeSnapshot } from "./autosave.js";
+import {
+  ensurePermission,
+  forgetProject,
+  listRecent,
+  rememberProject,
+} from "./recent-projects.js";
 import type {
   ChecksumRequest,
   ChecksumResponse,
@@ -717,6 +731,58 @@ interface SavedView {
 }
 const SAVED_VIEWS_KEY = "director.media.views";
 
+/**
+ * In/out points chosen in the bin, per asset.
+ *
+ * Final Cut calls this the browser range: you decide which part of a shot you
+ * want *before* it reaches the timeline, instead of adding the whole thing and
+ * trimming it back. Session state, not project state — the range is an
+ * intention about the next edit, and once a clip exists its own in/out points
+ * are the record. Keeping it out of the project also keeps the media bin from
+ * having opinions that survive a reload.
+ */
+interface BrowserRange {
+  inUs: string;
+  outUs: string;
+}
+const browserRanges = new Map<string, BrowserRange>();
+
+/**
+ * Where an asset's bytes actually are, this session.
+ *
+ * A saved project carries the operation log, and the log carries each asset's
+ * `blob:` URL — which died with the tab that made it. Relinking points the app
+ * at the file the user picked instead, and it lives here rather than in the
+ * project because a relink is not an edit: the same project opened tomorrow
+ * with the same files must produce the same operation log, not one with a
+ * session's worth of relink commands appended.
+ */
+const relinkedUris = new Map<string, string>();
+
+/** The URI to load an asset's media from. */
+function assetUri(asset: MediaAsset): string {
+  return relinkedUris.get(asset.id) ?? asset.originalUri;
+}
+
+/** Assets whose bytes are not available in this session. */
+function offlineAssets(): MediaAsset[] {
+  return (session.getProject()?.assets ?? []).filter(
+    (asset) =>
+      !removedAssets.has(asset.id) && !mediaCache.has(assetUri(asset)),
+  );
+}
+
+/** The source window an asset should be added with: its range, or all of it. */
+function rangeFor(asset: MediaAsset): BrowserRange {
+  const full = { inUs: "0", outUs: asset.metadata.durationUs ?? "5000000" };
+  const chosen = browserRanges.get(asset.id);
+  if (!chosen) return full;
+  // A range outlives nothing: if it somehow exceeds the asset it is ignored
+  // rather than handed to the reducer to refuse.
+  if (BigInt(chosen.outUs) > BigInt(full.outUs)) return full;
+  return chosen;
+}
+
 function loadSavedViews(): SavedView[] {
   try {
     const raw = localStorage.getItem(SAVED_VIEWS_KEY);
@@ -943,6 +1009,8 @@ function commit(command: unknown): boolean {
     toast(session.getLastError()?.message ?? "Command rejected", true);
     return false;
   }
+  // Every accepted command is unsaved work until the next snapshot or save.
+  projectDirty = true;
   updateUI();
   return true;
 }
@@ -1339,6 +1407,7 @@ function addAssetToTimeline(
   kind: MediaAsset["kind"],
   durationUs: string,
   preferredTrackId?: string,
+  range?: BrowserRange,
 ): void {
   const seq = activeSequence();
   if (!seq) return;
@@ -1356,8 +1425,8 @@ function addAssetToTimeline(
         id: clipId,
         assetId,
         timelineStartUs: startUs,
-        sourceInUs: "0",
-        sourceOutUs: durationUs,
+        sourceInUs: range?.inUs ?? "0",
+        sourceOutUs: range?.outUs ?? durationUs,
         playbackRate: { numerator: 1, denominator: 1 },
       },
     }),
@@ -1501,7 +1570,7 @@ function drawLayer(
 ): void {
   const asset = findAsset(clip.assetId);
   if (!asset) return;
-  const media = mediaCache.get(asset.originalUri);
+  const media = mediaCache.get(assetUri(asset));
   if (!media) return;
 
   let mw = asset.metadata.width ?? 1920;
@@ -1574,7 +1643,7 @@ function drawLayer(
   // they came from. Every cache below keys off this: a stylized render of a
   // keyed-out, graded frame is a different image from one of the raw media,
   // and keying by asset alone would serve the stale one.
-  let sourceKey = asset.originalUri;
+  let sourceKey = assetUri(asset);
   if (bgFx) sourceKey += `|bg:${JSON.stringify(bgFx.params)}`;
 
   // Grading runs before stylization, which is the order a photographer works
@@ -1608,7 +1677,7 @@ function drawLayer(
     (e) => e.enabled && e.type === "photo.portrait_blur",
   );
   if (portraitFx) {
-    const mask = portraitMaskFor(asset.originalUri, drawable, mw, mh);
+    const mask = portraitMaskFor(assetUri(asset), drawable, mw, mh);
     if (mask) {
       drawable = compositePortraitBlur(drawable, mw, mh, mask, portraitFx);
     }
@@ -2365,7 +2434,7 @@ async function ensureWaveform(asset: MediaAsset): Promise<void> {
   if (waveformCache.has(asset.id) || waveformPending.has(asset.id)) return;
   waveformPending.add(asset.id);
   try {
-    const bytes = await (await fetch(asset.originalUri)).arrayBuffer();
+    const bytes = await (await fetch(assetUri(asset))).arrayBuffer();
     if (!decodeCtx) decodeCtx = new OfflineAudioContext(1, 1, 44100);
     const buffer = await decodeCtx.decodeAudioData(bytes);
     const data = buffer.getChannelData(0);
@@ -2454,6 +2523,7 @@ function renderTimeline(): void {
             asset.kind,
             asset.metadata.durationUs ?? "5000000",
             track.id,
+            rangeFor(asset),
           );
         }
       } else if (e.dataTransfer?.files.length) {
@@ -2468,6 +2538,9 @@ function renderTimeline(): void {
           ? " selected"
           : ""
       }`;
+      // The clip's own span, exposed so a test can assert what a browser range
+      // actually produced rather than inferring it from pixel width.
+      el.dataset.durationUs = clip.timelineDurationUs;
       el.style.left = `${usToPixels(clip.timelineStartUs, zoom)}px`;
       const clipWidth = Math.max(24, usToPixels(clip.timelineDurationUs, zoom));
       el.style.width = `${clipWidth}px`;
@@ -4512,6 +4585,106 @@ function editKeywords(asset: MediaAsset): void {
   );
 }
 
+/**
+ * The in/out editor for one media item.
+ *
+ * Sliders rather than a scrubbing preview: the bin is a list, and a second
+ * video element per item to scrub would cost far more than the choice is worth.
+ * The pair is kept ordered — dragging In past Out pushes Out along — because a
+ * reversed range is not a state worth being able to express.
+ */
+function openRangeEditor(asset: MediaAsset, item: HTMLElement): void {
+  const existing = item.querySelector(".media-range-editor");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+
+  const totalUs = Number(asset.metadata.durationUs ?? "0");
+  const current = rangeFor(asset);
+  let inUs = Number(current.inUs);
+  let outUs = Number(current.outUs);
+
+  const editor = document.createElement("div");
+  editor.className = "media-range-editor";
+  editor.addEventListener("click", (event) => event.stopPropagation());
+
+  const readout = document.createElement("div");
+  readout.className = "media-range-readout";
+  const refresh = (): void => {
+    readout.textContent = `${formatTime(String(Math.round(inUs)))} – ${formatTime(
+      String(Math.round(outUs)),
+    )}  ·  ${formatTime(String(Math.round(outUs - inUs)))} long`;
+  };
+
+  const slider = (
+    label: string,
+    value: number,
+    onInput: (value: number) => void,
+  ): HTMLElement => {
+    const wrap = document.createElement("label");
+    wrap.className = "media-range-row";
+    const text = document.createElement("span");
+    text.textContent = label;
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = String(totalUs);
+    // A microsecond step would make the slider a thousand times finer than any
+    // pointer; a millisecond is already below a frame at 60fps.
+    input.step = "1000";
+    input.value = String(value);
+    input.setAttribute("aria-label", `${label} for ${assetName(asset)}`);
+    input.addEventListener("input", () => {
+      onInput(Number(input.value));
+      refresh();
+    });
+    wrap.append(text, input);
+    return wrap;
+  };
+
+  // At least one millisecond of picture: an empty range is not a selection.
+  const MIN_SPAN_US = 1000;
+  const inRow = slider("In", inUs, (value) => {
+    inUs = Math.min(value, outUs - MIN_SPAN_US);
+    const control = inRow.querySelector("input")!;
+    control.value = String(inUs);
+  });
+  const outRow = slider("Out", outUs, (value) => {
+    outUs = Math.max(value, inUs + MIN_SPAN_US);
+    const control = outRow.querySelector("input")!;
+    control.value = String(outUs);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "media-range-actions";
+  const apply = document.createElement("button");
+  apply.className = "mini";
+  apply.textContent = "Use range";
+  apply.addEventListener("click", () => {
+    browserRanges.set(asset.id, {
+      inUs: String(Math.round(inUs)),
+      outUs: String(Math.round(outUs)),
+    });
+    renderMedia();
+    toast(
+      `Range set: ${formatTime(String(Math.round(outUs - inUs)))} of ${assetName(asset)}.`,
+    );
+  });
+  const clear = document.createElement("button");
+  clear.className = "mini";
+  clear.textContent = "Whole clip";
+  clear.addEventListener("click", () => {
+    browserRanges.delete(asset.id);
+    renderMedia();
+  });
+  actions.append(apply, clear);
+
+  refresh();
+  editor.append(readout, inRow, outRow, actions);
+  item.appendChild(editor);
+}
+
 /** Every keyword in the project, for the filter list. */
 function allKeywords(): string[] {
   const seen = new Set<string>();
@@ -4584,6 +4757,17 @@ function renderMedia(): void {
     keywordSelect.appendChild(option);
   }
 
+  // Offline media: the project remembers them, this session cannot see their
+  // bytes. Saying so beside a Relink button beats a bin of blank thumbnails.
+  const offline = offlineAssets();
+  const relinkBar = $("media-relink");
+  relinkBar.classList.toggle("hidden", offline.length === 0);
+  if (offline.length > 0) {
+    $("media-relink-text").textContent = `${offline.length} file${
+      offline.length === 1 ? "" : "s"
+    } missing`;
+  }
+
   mediaEmptyEl.classList.toggle("hidden", visible.length > 0);
   mediaEmptyEl.textContent = anyMedia
     ? "No media matches this search or filter."
@@ -4591,7 +4775,10 @@ function renderMedia(): void {
 
   for (const asset of visible) {
     const el = document.createElement("div");
-    el.className = `media-item${asset.rating === "rejected" ? " rejected" : ""}`;
+    const isOffline = !mediaCache.has(assetUri(asset));
+    el.className = `media-item${asset.rating === "rejected" ? " rejected" : ""}${
+      isOffline ? " offline" : ""
+    }`;
     // The registered digest, exposed so a test can compare it with the file on
     // disk — the one property of streamed hashing that has to stay true.
     el.dataset.checksum = asset.checksum;
@@ -4607,7 +4794,7 @@ function renderMedia(): void {
       asset.kind === "video" ||
       asset.kind === "generated"
     ) {
-      thumb.style.backgroundImage = `url("${asset.originalUri}")`;
+      thumb.style.backgroundImage = `url("${assetUri(asset)}")`;
     } else {
       thumb.classList.add("audio");
       thumb.textContent = "🔊";
@@ -4619,7 +4806,9 @@ function renderMedia(): void {
     name.textContent = assetName(asset);
     const sub = document.createElement("span");
     sub.className = "media-sub";
-    sub.textContent = `${asset.kind} · ${formatTime(asset.metadata.durationUs ?? "0")}`;
+    sub.textContent = isOffline
+      ? `${asset.kind} · missing — click Relink`
+      : `${asset.kind} · ${formatTime(asset.metadata.durationUs ?? "0")}`;
     meta.append(name, sub);
     const add = document.createElement("span");
     add.className = "media-add";
@@ -4653,8 +4842,41 @@ function renderMedia(): void {
       meta.appendChild(chips);
     }
 
+    // The row's buttons live in one group: three loose flex children were
+    // enough to squeeze the name down to "mot…" in a narrow sidebar.
+    const actions = document.createElement("div");
+    actions.className = "media-actions";
+
+    // Range editor: two sliders over the asset's own duration. Only for media
+    // that has a duration worth trimming — a still has nothing to choose.
+    const duration = BigInt(asset.metadata.durationUs ?? "0");
+    if (asset.kind !== "image" && duration > 0n) {
+      const range = rangeFor(asset);
+      const chosen = browserRanges.has(asset.id);
+      if (chosen) {
+        const label = document.createElement("span");
+        label.className = "media-range-label";
+        label.textContent = `▶ ${formatTime(range.inUs)} – ${formatTime(range.outUs)}`;
+        label.title = "This part will be added to the timeline";
+        meta.appendChild(label);
+      }
+
+      const rangeBtn = document.createElement("button");
+      rangeBtn.className = "media-action media-range-btn";
+      rangeBtn.textContent = "⟦⟧";
+      rangeBtn.title = chosen
+        ? "Edit the range that will be added"
+        : "Choose the part to add";
+      rangeBtn.setAttribute("aria-label", `Range for ${assetName(asset)}`);
+      rangeBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openRangeEditor(asset, el);
+      });
+      actions.appendChild(rangeBtn);
+    }
+
     const tag = document.createElement("button");
-    tag.className = "media-remove media-tag";
+    tag.className = "media-action media-tag";
     tag.textContent = "🏷";
     tag.title = "Keywords";
     tag.setAttribute("aria-label", `Keywords for ${assetName(asset)}`);
@@ -4669,12 +4891,15 @@ function renderMedia(): void {
       ratingButton(asset, "favorite", "★"),
       ratingButton(asset, "rejected", "✕"),
     );
-    el.append(thumb, meta, add, tag, remove, rating);
+    actions.append(tag, remove);
+    el.append(thumb, meta, add, actions, rating);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
         asset.kind,
         asset.metadata.durationUs ?? "5000000",
+        undefined,
+        rangeFor(asset),
       ),
     );
     mediaListEl.appendChild(el);
@@ -4699,6 +4924,292 @@ function removeAsset(assetId: string): void {
   removedAssets.add(assetId);
   updateUI();
   toast("Removed from project.");
+}
+
+// ==========================================================================
+// Saving and opening a project
+// ==========================================================================
+
+/** Media hints for the save file: enough to find each file again. */
+function mediaHints(): MediaHint[] {
+  return (session.getProject()?.assets ?? [])
+    .filter((asset) => !removedAssets.has(asset.id))
+    .map((asset) => ({
+      assetId: asset.id,
+      name: assetName(asset),
+      checksum: asset.checksum,
+      fileSizeBytes: asset.metadata.fileSizeBytes,
+      kind: asset.kind,
+    }));
+}
+
+function currentProjectText(): string {
+  return serializeProjectFile(
+    buildProjectFile(
+      session.getState().operationLog,
+      mediaHints(),
+      new Date().toISOString(),
+      session.getBaseline(),
+    ),
+  );
+}
+
+/** The file this project is open from, if any. Set by saving or opening
+ * through a picker; a project opened from the plain file input has no handle,
+ * because that API hands over bytes and nothing to write back to. */
+let currentProjectHandle: FileSystemFileHandle | null = null;
+
+/**
+ * Save the project.
+ *
+ * Silent when there is a file to save to: an editor that asks where to put the
+ * project on every Cmd+S is asking a question it already knows the answer to.
+ * `saveAs` forces the picker, and a project with no handle — or one whose
+ * permission has lapsed — falls through to it.
+ *
+ * Saving clears the crash snapshot: the user now has something better than a
+ * recovery offer, and offering it afterwards would be offering something older.
+ */
+async function saveProject(saveAs = false): Promise<void> {
+  if (!session.getProject()) {
+    toast("Nothing to save yet — import some media first.", true);
+    return;
+  }
+  const text = currentProjectText();
+
+  let handle = saveAs ? null : currentProjectHandle;
+  if (handle && !(await ensurePermission(handle, "readwrite"))) handle = null;
+  if (!handle) handle = await pickExportFile("project.json");
+
+  try {
+    if (handle) {
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      currentProjectHandle = handle;
+      await rememberProject(handle);
+      await renderRecentProjects();
+    } else {
+      // No File System Access API, or the picker was dismissed: a download is
+      // still a save, it just cannot be written to again.
+      downloadBlob(
+        new Blob([text], { type: "application/json" }),
+        "project.json",
+      );
+    }
+    projectDirty = false;
+    await clearSnapshot();
+    toast(handle ? `Saved to ${handle.name}.` : "Project saved.");
+  } catch (error) {
+    toast(
+      `Could not save the project: ${error instanceof Error ? error.message : String(error)}`,
+      true,
+    );
+  }
+}
+
+/** Fill the recent-projects picker. */
+async function renderRecentProjects(): Promise<void> {
+  const select = $<HTMLSelectElement>("recent-projects");
+  const recents = await listRecent();
+  select.innerHTML = "";
+  select.appendChild(new Option("Recent…", ""));
+  for (const entry of recents) select.appendChild(new Option(entry.name, entry.name));
+  select.disabled = recents.length === 0;
+}
+
+/**
+ * Open a project from the recent list.
+ *
+ * The stored handle survives a restart but its permission does not, so this
+ * asks. A handle whose file has been moved or deleted is dropped from the list
+ * rather than left to fail the same way tomorrow.
+ */
+async function openRecentProject(name: string): Promise<void> {
+  const entry = (await listRecent()).find((candidate) => candidate.name === name);
+  if (!entry) return;
+  if (!(await ensurePermission(entry.handle, "read"))) {
+    toast(`Permission to read ${name} was declined.`, true);
+    return;
+  }
+  try {
+    const file = await entry.handle.getFile();
+    await openProjectFile(file);
+    currentProjectHandle = entry.handle;
+    await rememberProject(entry.handle);
+    await renderRecentProjects();
+  } catch {
+    await forgetProject(name);
+    await renderRecentProjects();
+    toast(`${name} could not be opened — it may have been moved or deleted.`, true);
+  }
+}
+
+/**
+ * Open a saved project.
+ *
+ * The operation log is replayed through the engine rather than trusted as
+ * state: a file that has been edited by hand, or written by a different build,
+ * fails here rather than half-loading into something that cannot be exported.
+ */
+async function openProjectFile(file: File): Promise<void> {
+  const parsed = parseProjectFile(await file.text());
+  if (!parsed.ok) {
+    toast(parsed.error, true);
+    return;
+  }
+
+  const replayed = session.replaceWithOperationLog(
+    parsed.file.operations,
+    parsed.file.baseline,
+  );
+  if (!replayed.ok) {
+    toast(`That project could not be replayed: ${replayed.error}`, true);
+    return;
+  }
+
+  // Media from the previous session is gone with its blob URLs; the hints say
+  // what to look for.
+  currentProjectHandle = null;
+  relinkedUris.clear();
+  mediaCache.clear();
+  removedAssets.clear();
+  assetNames.clear();
+  for (const hint of parsed.file.media) assetNames.set(hint.assetId, hint.name);
+  pendingRelinkHints = parsed.file.media;
+
+  selectedClipId = null;
+  selectedClipIds.clear();
+  browserRanges.clear();
+  playback = seek(playback, "0");
+  projectDirty = false;
+  await clearSnapshot();
+  updateUI();
+
+  const missing = offlineAssets().length;
+  toast(
+    missing === 0
+      ? "Project opened."
+      : `Project opened. ${missing} media file${missing === 1 ? "" : "s"} need relinking — click Relink.`,
+  );
+}
+
+let pendingRelinkHints: MediaHint[] = [];
+
+/**
+ * Relink offered files to the assets that are waiting for them.
+ *
+ * Checksums are computed for what the user picked, so a renamed file still
+ * matches: the same bytes are the same media. A name-and-size match is accepted
+ * too, and reported as a guess rather than treated as proof.
+ */
+async function relinkFiles(files: FileList | File[]): Promise<void> {
+  const chosen = Array.from(files);
+  if (chosen.length === 0) return;
+
+  const candidates = [];
+  for (const file of chosen) {
+    candidates.push({
+      name: file.name,
+      fileSizeBytes: String(file.size),
+      checksum: await checksumFile(file),
+    });
+  }
+
+  const hints = pendingRelinkHints.length > 0 ? pendingRelinkHints : mediaHints();
+  const plan = planRelink(hints, candidates);
+  let guessed = 0;
+  for (const match of plan.matches) {
+    const file = chosen[match.candidateIndex]!;
+    const asset = findAsset(match.assetId);
+    if (!asset) continue;
+    const url = URL.createObjectURL(file);
+    relinkedUris.set(asset.id, url);
+    assetNames.set(asset.id, file.name);
+    await attachMediaElement(asset, url, file);
+    if (match.confidence === "name-and-size") guessed++;
+  }
+
+  updateUI();
+  const still = offlineAssets().length;
+  toast(
+    `Relinked ${plan.matches.length} file${plan.matches.length === 1 ? "" : "s"}` +
+      (guessed > 0 ? ` (${guessed} matched by name and size, not checksum)` : "") +
+      (still > 0 ? ` — ${still} still missing.` : "."),
+  );
+}
+
+/** Load a relinked file into the media cache the renderer reads from. */
+async function attachMediaElement(
+  asset: MediaAsset,
+  url: string,
+  file: File,
+): Promise<void> {
+  if (asset.kind === "image" || asset.kind === "generated") {
+    const image = new Image();
+    image.src = url;
+    await image.decode().catch(() => undefined);
+    mediaCache.set(url, image);
+    return;
+  }
+  const element = document.createElement(
+    asset.kind === "audio" ? "audio" : "video",
+  ) as HTMLVideoElement | HTMLAudioElement;
+  element.src = url;
+  element.muted = true;
+  element.preload = asset.kind === "video" ? "auto" : "metadata";
+  await new Promise<void>((resolve) => {
+    element.onloadedmetadata = () => resolve();
+    element.onerror = () => resolve();
+  });
+  if (element instanceof HTMLVideoElement) attachOffscreen(element);
+  mediaCache.set(url, element as HTMLVideoElement);
+  void file;
+}
+
+/** Whether anything has changed since the last save or open. */
+let projectDirty = false;
+let autosaveTimer: number | null = null;
+
+/**
+ * Snapshot the project periodically while it is dirty.
+ *
+ * On an interval rather than on every command: a busy drag is dozens of
+ * commands a second, and writing the whole log each time would spend more time
+ * serialising than editing.
+ */
+function startAutosave(): void {
+  if (autosaveTimer !== null) return;
+  autosaveTimer = window.setInterval(() => {
+    if (!projectDirty || !session.getProject()) return;
+    projectDirty = false;
+    void writeSnapshot(currentProjectText()).catch(() => {
+      // Storage can be full or blocked; a failed snapshot must never interrupt
+      // the edit that triggered it.
+    });
+  }, 15_000);
+}
+
+/** Offer the last crash snapshot, if there is one. */
+async function offerRecovery(): Promise<void> {
+  const snapshot = await readSnapshot().catch(() => null);
+  if (!snapshot) return;
+  const bar = $("recovery-bar");
+  $("recovery-text").textContent = `Unsaved work from ${new Date(
+    snapshot.savedAt,
+  ).toLocaleString()} was found.`;
+  bar.classList.remove("hidden");
+  $("btn-recover").addEventListener("click", () => {
+    void openProjectFile(
+      new File([snapshot.contents], "recovered.json", {
+        type: "application/json",
+      }),
+    ).then(() => bar.classList.add("hidden"));
+  });
+  $("btn-discard-recovery").addEventListener("click", () => {
+    void clearSnapshot();
+    bar.classList.add("hidden");
+  });
 }
 
 // ==========================================================================
@@ -4819,7 +5330,7 @@ function syncAudioMonitors(): void {
   for (const layer of active) {
     const asset = findAsset(layer.assetId);
     if (!asset || asset.kind === "image") continue;
-    const el = mediaCache.get(asset.originalUri);
+    const el = mediaCache.get(assetUri(asset));
     if (!(el instanceof HTMLMediaElement)) continue;
     const loc = locateClip(layer.clipId);
     if (!loc) continue;
@@ -5379,7 +5890,7 @@ function enterRasterMode(clipId: string, initialTool: RasterTool = "brush"): boo
     toast("Only photo (image) clips can be edited here.", true);
     return false;
   }
-  const media = mediaCache.get(asset.originalUri);
+  const media = mediaCache.get(assetUri(asset));
   if (!media || !(media instanceof HTMLImageElement)) {
     toast("This photo hasn't finished loading yet.", true);
     return false;
@@ -5524,7 +6035,7 @@ async function enterRasterModeFromVideoFrame(clipId: string): Promise<void> {
     toast("Only video clips can extract a frame here.", true);
     return;
   }
-  const media = mediaCache.get(asset.originalUri);
+  const media = mediaCache.get(assetUri(asset));
   if (!media || !(media instanceof HTMLVideoElement)) {
     toast("This video hasn't finished loading yet.", true);
     return;
@@ -6447,7 +6958,13 @@ function bindEvents(): void {
     if (assetId) {
       const asset = findAsset(assetId);
       if (asset) {
-        addAssetToTimeline(asset.id, asset.kind, asset.metadata.durationUs ?? "5000000");
+        addAssetToTimeline(
+          asset.id,
+          asset.kind,
+          asset.metadata.durationUs ?? "5000000",
+          undefined,
+          rangeFor(asset),
+        );
       }
     } else if (e.dataTransfer?.files.length) {
       void importFiles(e.dataTransfer.files);
@@ -6570,6 +7087,36 @@ function bindEvents(): void {
   });
   initExportOptions();
 
+  $("btn-save-project").addEventListener("click", () => void saveProject());
+  $("btn-save-as").addEventListener("click", () => void saveProject(true));
+  $("recent-projects").addEventListener("change", () => {
+    const select = $<HTMLSelectElement>("recent-projects");
+    const name = select.value;
+    select.value = "";
+    if (name) void openRecentProject(name);
+  });
+  void renderRecentProjects();
+  $("btn-open-project").addEventListener("click", () =>
+    $<HTMLInputElement>("project-input").click(),
+  );
+  $("project-input").addEventListener("change", (event) => {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file) void openProjectFile(file);
+    // Cleared so choosing the same file twice still fires a change.
+    input.value = "";
+  });
+  $("btn-relink").addEventListener("click", () =>
+    $<HTMLInputElement>("relink-input").click(),
+  );
+  $("relink-input").addEventListener("change", (event) => {
+    const input = event.target as HTMLInputElement;
+    if (input.files) void relinkFiles(input.files);
+    input.value = "";
+  });
+  startAutosave();
+  void offerRecovery();
+
   // Culling controls. Both are view state, so they re-render the bin without
   // touching the project or the command log.
   $("media-search").addEventListener("input", () => {
@@ -6613,7 +7160,10 @@ function bindEvents(): void {
 
   window.addEventListener("keydown", (e) => {
     if (e.target !== document.body) return;
-    if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
+    if ((e.metaKey || e.ctrlKey) && e.code === "KeyS") {
+      e.preventDefault();
+      void saveProject(e.shiftKey);
+    } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
       e.preventDefault();
       if (e.shiftKey) {
         if (session.redo()) updateUI();
@@ -6748,7 +7298,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   if (!topLoc) return null;
   const topAsset = findAsset(topLoc.clip.assetId);
   if (!topAsset) return null;
-  const media = mediaCache.get(topAsset.originalUri);
+  const media = mediaCache.get(assetUri(topAsset));
   let mw = topAsset.metadata.width ?? 1920;
   let mh = topAsset.metadata.height ?? 1080;
   if (media instanceof HTMLImageElement) {
@@ -6769,7 +7319,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
     if (!loc) continue;
     const layerAsset = findAsset(loc.clip.assetId);
     const layerMedia = layerAsset
-      ? mediaCache.get(layerAsset.originalUri)
+      ? mediaCache.get(assetUri(layerAsset))
       : undefined;
     if (layerMedia instanceof HTMLVideoElement) {
       await seekVideoFrame(layerMedia, Number(layer.sourceTimeUs) / 1_000_000);
@@ -6841,7 +7391,7 @@ async function renderAndEncodeAudio(
     if (decodedByAsset.has(clip.assetId)) continue;
     const asset = findAsset(clip.assetId);
     if (!asset) continue;
-    const bytes = await (await fetch(asset.originalUri)).arrayBuffer();
+    const bytes = await (await fetch(assetUri(asset))).arrayBuffer();
     try {
       decodedByAsset.set(clip.assetId, await offline.decodeAudioData(bytes));
     } catch {
@@ -7082,7 +7632,7 @@ async function runVideoExport(
           const loc = locateClip(layer.clipId);
           if (!loc) continue;
           const asset = findAsset(loc.clip.assetId);
-          const media = asset ? mediaCache.get(asset.originalUri) : undefined;
+          const media = asset ? mediaCache.get(assetUri(asset)) : undefined;
           if (media instanceof HTMLVideoElement) {
             await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
           }
@@ -7407,7 +7957,7 @@ function gifOutputSize(seq: Sequence): { width: number; height: number } | null 
   const loc = locateClip(top.clipId);
   const asset = loc ? findAsset(loc.clip.assetId) : undefined;
   if (!loc || !asset) return null;
-  const media = mediaCache.get(asset.originalUri);
+  const media = mediaCache.get(assetUri(asset));
   let mw = asset.metadata.width ?? 1920;
   let mh = asset.metadata.height ?? 1080;
   if (media instanceof HTMLImageElement) {
@@ -7505,7 +8055,7 @@ async function runGifExport(): Promise<void> {
         const loc = locateClip(layer.clipId);
         if (!loc) continue;
         const asset = findAsset(loc.clip.assetId);
-        const media = asset ? mediaCache.get(asset.originalUri) : undefined;
+        const media = asset ? mediaCache.get(assetUri(asset)) : undefined;
         if (media instanceof HTMLVideoElement) {
           await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
         }
@@ -7590,7 +8140,10 @@ seed();
 // The seed (project + sequence + tracks) is app scaffolding, not a user edit —
 // clear history so Undo can never pop it and null the project (which made
 // later imports fail with "no project exists").
-session.clearHistory();
+// The seed (project + sequence + tracks) stays in the log — it is what makes a
+// saved file replayable from scratch — with a floor under Undo so it can never
+// be popped, which is what nulled the project and broke later imports.
+session.markBaseline();
 bindEvents();
 initTheme();
 setMode("photo");

@@ -171,6 +171,29 @@
           <button id="btn-redo" class="tool" title="Redo (Cmd/Ctrl+Shift+Z)">
             ↷ Redo
           </button>
+          <button id="btn-save-project" class="tool" title="Save project (Cmd/Ctrl+S)">
+            ⤒ Save
+          </button>
+          <button
+            id="btn-save-as"
+            class="tool"
+            title="Save to a new file (Cmd/Ctrl+Shift+S)"
+          >
+            ⤒ Save as
+          </button>
+          <button id="btn-open-project" class="tool" title="Open a saved project">
+            ⤴ Open
+          </button>
+          <select id="recent-projects" class="recent-select" aria-label="Recent projects">
+            <option value="" selected>Recent…</option>
+          </select>
+          <input
+            id="project-input"
+            type="file"
+            accept=".json,application/json"
+            hidden
+          />
+          <input id="relink-input" type="file" multiple hidden />
           <button id="btn-export" class="tool primary">⤓ Export</button>
         </div>
       </header>
@@ -233,6 +256,10 @@
             </button>
           </div>
           <div id="media-list" class="media-list"></div>
+          <div id="media-relink" class="media-relink hidden">
+            <span id="media-relink-text"></span>
+            <button id="btn-relink" class="mini">Relink…</button>
+          </div>
           <p id="media-empty" class="media-empty hidden"></p>
           <div class="panel-title">Cartoon Clips</div>
           <div
@@ -453,6 +480,11 @@
           </button>
         </div>
       </div>
+    </div>
+    <div id="recovery-bar" class="recovery-bar hidden">
+      <span id="recovery-text"></span>
+      <button id="btn-recover" class="tool">Restore</button>
+      <button id="btn-discard-recovery" class="tool">Discard</button>
     </div>
     <div id="toast" class="toast hidden"></div>
     <script type="module" src="/src/main.ts"></script>
