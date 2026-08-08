@@ -67,6 +67,9 @@ when the system asks for reduced motion.
 - Tag media with keywords using the 🏷 button, then filter by keyword or click a
   keyword chip. Search covers keywords as well as names. Save the current
   search, keyword and filter as a named view to return to it later.
+- Choose part of a video or audio item before adding it: the ⟦⟧ button opens In
+  and Out sliders, and the chosen span is what lands on the timeline. Whole clip
+  clears it. The choice lasts for the session and is not saved in the project.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
@@ -358,6 +361,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-08:** Added browser ranges — pick In and Out on a media item and
+  only that part is added to the timeline.
 - **2026-08-08:** Added media keywords, keyword filtering, and saved views.
 - **2026-08-07:** Added clip markers — notes, chapters and to-dos — with pins on
   the timeline, an Inspector list, and the M shortcut.

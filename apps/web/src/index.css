@@ -658,6 +658,44 @@ body {
   border-color: var(--accent);
   color: var(--text);
 }
+.media-range-label {
+  font-size: 10px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.media-range-editor {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-3, var(--panel-2));
+}
+.media-range-readout {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.media-range-row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+.media-range-actions {
+  display: flex;
+  gap: 6px;
+}
+/* The item is a row; an editor inside it has to break out of that flow or it
+   is squeezed beside the thumbnail. */
+.media-item:has(.media-range-editor) {
+  flex-wrap: wrap;
+}
 .media-empty {
   margin: 6px 2px;
   font-size: 12px;
@@ -944,6 +982,10 @@ body {
   font-weight: 700;
   padding: 0 4px;
 }
+/* Shared shape for the row's buttons. `.media-remove` adds the danger colour;
+   the others must not inherit it — a keyword button that turns red on hover
+   reads as "delete". */
+.media-action,
 .media-remove {
   flex: none;
   width: 20px;
@@ -969,6 +1011,23 @@ body {
 .media-remove:hover {
   background: var(--danger);
   color: #fff;
+}
+.media-action:hover {
+  background: var(--panel-3, var(--panel-2));
+  color: var(--text);
+}
+.media-actions {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+.media-item:hover .media-action,
+.media-item:focus-within .media-action {
+  opacity: 1;
+}
+/* The name gets what is left, and never less than a readable strip. */
+.media-meta {
+  flex: 1 1 96px;
 }
 .history-item {
   padding: 6px 10px;

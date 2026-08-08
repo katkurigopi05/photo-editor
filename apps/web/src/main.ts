@@ -717,6 +717,33 @@ interface SavedView {
 }
 const SAVED_VIEWS_KEY = "director.media.views";
 
+/**
+ * In/out points chosen in the bin, per asset.
+ *
+ * Final Cut calls this the browser range: you decide which part of a shot you
+ * want *before* it reaches the timeline, instead of adding the whole thing and
+ * trimming it back. Session state, not project state — the range is an
+ * intention about the next edit, and once a clip exists its own in/out points
+ * are the record. Keeping it out of the project also keeps the media bin from
+ * having opinions that survive a reload.
+ */
+interface BrowserRange {
+  inUs: string;
+  outUs: string;
+}
+const browserRanges = new Map<string, BrowserRange>();
+
+/** The source window an asset should be added with: its range, or all of it. */
+function rangeFor(asset: MediaAsset): BrowserRange {
+  const full = { inUs: "0", outUs: asset.metadata.durationUs ?? "5000000" };
+  const chosen = browserRanges.get(asset.id);
+  if (!chosen) return full;
+  // A range outlives nothing: if it somehow exceeds the asset it is ignored
+  // rather than handed to the reducer to refuse.
+  if (BigInt(chosen.outUs) > BigInt(full.outUs)) return full;
+  return chosen;
+}
+
 function loadSavedViews(): SavedView[] {
   try {
     const raw = localStorage.getItem(SAVED_VIEWS_KEY);
@@ -1339,6 +1366,7 @@ function addAssetToTimeline(
   kind: MediaAsset["kind"],
   durationUs: string,
   preferredTrackId?: string,
+  range?: BrowserRange,
 ): void {
   const seq = activeSequence();
   if (!seq) return;
@@ -1356,8 +1384,8 @@ function addAssetToTimeline(
         id: clipId,
         assetId,
         timelineStartUs: startUs,
-        sourceInUs: "0",
-        sourceOutUs: durationUs,
+        sourceInUs: range?.inUs ?? "0",
+        sourceOutUs: range?.outUs ?? durationUs,
         playbackRate: { numerator: 1, denominator: 1 },
       },
     }),
@@ -2454,6 +2482,7 @@ function renderTimeline(): void {
             asset.kind,
             asset.metadata.durationUs ?? "5000000",
             track.id,
+            rangeFor(asset),
           );
         }
       } else if (e.dataTransfer?.files.length) {
@@ -2468,6 +2497,9 @@ function renderTimeline(): void {
           ? " selected"
           : ""
       }`;
+      // The clip's own span, exposed so a test can assert what a browser range
+      // actually produced rather than inferring it from pixel width.
+      el.dataset.durationUs = clip.timelineDurationUs;
       el.style.left = `${usToPixels(clip.timelineStartUs, zoom)}px`;
       const clipWidth = Math.max(24, usToPixels(clip.timelineDurationUs, zoom));
       el.style.width = `${clipWidth}px`;
@@ -4512,6 +4544,106 @@ function editKeywords(asset: MediaAsset): void {
   );
 }
 
+/**
+ * The in/out editor for one media item.
+ *
+ * Sliders rather than a scrubbing preview: the bin is a list, and a second
+ * video element per item to scrub would cost far more than the choice is worth.
+ * The pair is kept ordered — dragging In past Out pushes Out along — because a
+ * reversed range is not a state worth being able to express.
+ */
+function openRangeEditor(asset: MediaAsset, item: HTMLElement): void {
+  const existing = item.querySelector(".media-range-editor");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+
+  const totalUs = Number(asset.metadata.durationUs ?? "0");
+  const current = rangeFor(asset);
+  let inUs = Number(current.inUs);
+  let outUs = Number(current.outUs);
+
+  const editor = document.createElement("div");
+  editor.className = "media-range-editor";
+  editor.addEventListener("click", (event) => event.stopPropagation());
+
+  const readout = document.createElement("div");
+  readout.className = "media-range-readout";
+  const refresh = (): void => {
+    readout.textContent = `${formatTime(String(Math.round(inUs)))} – ${formatTime(
+      String(Math.round(outUs)),
+    )}  ·  ${formatTime(String(Math.round(outUs - inUs)))} long`;
+  };
+
+  const slider = (
+    label: string,
+    value: number,
+    onInput: (value: number) => void,
+  ): HTMLElement => {
+    const wrap = document.createElement("label");
+    wrap.className = "media-range-row";
+    const text = document.createElement("span");
+    text.textContent = label;
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = String(totalUs);
+    // A microsecond step would make the slider a thousand times finer than any
+    // pointer; a millisecond is already below a frame at 60fps.
+    input.step = "1000";
+    input.value = String(value);
+    input.setAttribute("aria-label", `${label} for ${assetName(asset)}`);
+    input.addEventListener("input", () => {
+      onInput(Number(input.value));
+      refresh();
+    });
+    wrap.append(text, input);
+    return wrap;
+  };
+
+  // At least one millisecond of picture: an empty range is not a selection.
+  const MIN_SPAN_US = 1000;
+  const inRow = slider("In", inUs, (value) => {
+    inUs = Math.min(value, outUs - MIN_SPAN_US);
+    const control = inRow.querySelector("input")!;
+    control.value = String(inUs);
+  });
+  const outRow = slider("Out", outUs, (value) => {
+    outUs = Math.max(value, inUs + MIN_SPAN_US);
+    const control = outRow.querySelector("input")!;
+    control.value = String(outUs);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "media-range-actions";
+  const apply = document.createElement("button");
+  apply.className = "mini";
+  apply.textContent = "Use range";
+  apply.addEventListener("click", () => {
+    browserRanges.set(asset.id, {
+      inUs: String(Math.round(inUs)),
+      outUs: String(Math.round(outUs)),
+    });
+    renderMedia();
+    toast(
+      `Range set: ${formatTime(String(Math.round(outUs - inUs)))} of ${assetName(asset)}.`,
+    );
+  });
+  const clear = document.createElement("button");
+  clear.className = "mini";
+  clear.textContent = "Whole clip";
+  clear.addEventListener("click", () => {
+    browserRanges.delete(asset.id);
+    renderMedia();
+  });
+  actions.append(apply, clear);
+
+  refresh();
+  editor.append(readout, inRow, outRow, actions);
+  item.appendChild(editor);
+}
+
 /** Every keyword in the project, for the filter list. */
 function allKeywords(): string[] {
   const seen = new Set<string>();
@@ -4653,8 +4785,41 @@ function renderMedia(): void {
       meta.appendChild(chips);
     }
 
+    // The row's buttons live in one group: three loose flex children were
+    // enough to squeeze the name down to "mot…" in a narrow sidebar.
+    const actions = document.createElement("div");
+    actions.className = "media-actions";
+
+    // Range editor: two sliders over the asset's own duration. Only for media
+    // that has a duration worth trimming — a still has nothing to choose.
+    const duration = BigInt(asset.metadata.durationUs ?? "0");
+    if (asset.kind !== "image" && duration > 0n) {
+      const range = rangeFor(asset);
+      const chosen = browserRanges.has(asset.id);
+      if (chosen) {
+        const label = document.createElement("span");
+        label.className = "media-range-label";
+        label.textContent = `▶ ${formatTime(range.inUs)} – ${formatTime(range.outUs)}`;
+        label.title = "This part will be added to the timeline";
+        meta.appendChild(label);
+      }
+
+      const rangeBtn = document.createElement("button");
+      rangeBtn.className = "media-action media-range-btn";
+      rangeBtn.textContent = "⟦⟧";
+      rangeBtn.title = chosen
+        ? "Edit the range that will be added"
+        : "Choose the part to add";
+      rangeBtn.setAttribute("aria-label", `Range for ${assetName(asset)}`);
+      rangeBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openRangeEditor(asset, el);
+      });
+      actions.appendChild(rangeBtn);
+    }
+
     const tag = document.createElement("button");
-    tag.className = "media-remove media-tag";
+    tag.className = "media-action media-tag";
     tag.textContent = "🏷";
     tag.title = "Keywords";
     tag.setAttribute("aria-label", `Keywords for ${assetName(asset)}`);
@@ -4669,12 +4834,15 @@ function renderMedia(): void {
       ratingButton(asset, "favorite", "★"),
       ratingButton(asset, "rejected", "✕"),
     );
-    el.append(thumb, meta, add, tag, remove, rating);
+    actions.append(tag, remove);
+    el.append(thumb, meta, add, actions, rating);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
         asset.kind,
         asset.metadata.durationUs ?? "5000000",
+        undefined,
+        rangeFor(asset),
       ),
     );
     mediaListEl.appendChild(el);
@@ -6447,7 +6615,13 @@ function bindEvents(): void {
     if (assetId) {
       const asset = findAsset(assetId);
       if (asset) {
-        addAssetToTimeline(asset.id, asset.kind, asset.metadata.durationUs ?? "5000000");
+        addAssetToTimeline(
+          asset.id,
+          asset.kind,
+          asset.metadata.durationUs ?? "5000000",
+          undefined,
+          rangeFor(asset),
+        );
       }
     } else if (e.dataTransfer?.files.length) {
       void importFiles(e.dataTransfer.files);
