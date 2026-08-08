@@ -696,6 +696,27 @@ body {
 .media-item:has(.media-range-editor) {
   flex-wrap: wrap;
 }
+.media-relink {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  margin: 4px 0;
+  border: 1px solid var(--warning, #ffd166);
+  border-radius: var(--radius);
+  font-size: 11px;
+  color: var(--text);
+}
+.media-relink.hidden {
+  display: none;
+}
+.media-item.offline .media-thumb {
+  opacity: 0.3;
+}
+.media-item.offline .media-sub {
+  color: var(--warning, #ffd166);
+}
 .media-empty {
   margin: 6px 2px;
   font-size: 12px;
@@ -1926,6 +1947,26 @@ select {
 }
 
 /* ---- toast + drop overlay ---- */
+.recovery-bar {
+  position: fixed;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--text);
+}
+.recovery-bar.hidden {
+  display: none;
+}
 .toast {
   position: fixed;
   bottom: 22px;

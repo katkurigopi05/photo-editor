@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@director/bg-segmentation": "workspace:*",
+    "@director/command-schema": "workspace:^",
     "@director/editor-state": "workspace:*",
     "@director/export-engine": "workspace:*",
     "@director/playback-controller": "workspace:*",
@@ -29,7 +30,8 @@
     "gifenc": "^1.0.3",
     "hash-wasm": "^4.12.0",
     "mp4-muxer": "^5.2.2",
-    "onnxruntime-web": "^1.20.1"
+    "onnxruntime-web": "^1.20.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "vite": "^5.4.21"

@@ -51,7 +51,7 @@ Basic workflow:
 | Inspector | Edits animation, transitions, effects, and audio gain/pan for the selected clip. |
 | Transport | Start, previous frame, play/pause, next frame, seek, timecode, and duration. |
 | Timeline | Adds tracks and arranges clips. Split, delete, ripple delete, trim, snap-assisted drag, multi-select, and zoom are available. |
-| Top bar | Theme and skin controls, Undo, Redo, version badge, and Export. |
+| Top bar | Theme and skin controls, Save, Open, Undo, Redo, version badge, and Export. |
 
 The workspace adapts to the window: below about 1000 pixels wide it stacks into
 a single column with the preview on top and the panels beneath it. Every control
@@ -60,6 +60,13 @@ when the system asks for reduced motion.
 
 ### Shared tools
 
+- Save a project with Save (Cmd/Ctrl+S) and reopen it later with Open. The file
+  holds the full edit history, so opening it restores the timeline exactly.
+- Media is not copied into the project file. After opening, the bin marks any
+  missing media and Relink… matches the files you pick — by checksum first, so a
+  renamed file still matches.
+- Unsaved work is snapshotted every 15 seconds; if the tab closes unexpectedly,
+  the next start offers to restore it.
 - Import supports images, video, and audio that the current browser can decode.
 - Mark media as Favorite (★) or Rejected (✕) in the bin, search it by name, and
   filter to All, Favorites, Rejected, or Unrated. Ratings are project state and
@@ -333,6 +340,7 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 | Space | Play or pause when page body has focus. |
 | Delete / Backspace | Delete the selected clips when page body has focus. |
 | Shift + Delete | Ripple delete: remove the selection and close the gap. |
+| Cmd/Ctrl + S | Save the project. |
 | M | Add a marker to the selected clip at the playhead. |
 | Shift + M | Add a to-do marker at the playhead. |
 | Shift or Cmd/Ctrl + click | Add a clip to the selection. |
@@ -344,6 +352,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## 9. Troubleshooting
 
+- **Media is missing after opening a project:** the project file stores edits,
+  not media. Click Relink… and pick the files; matching is by checksum, so
+  renamed files still match.
 - **File will not import:** use an image, video, or audio format the browser can
   decode; try PNG/JPEG or H.264 MP4.
 - **A very large file takes a while to import:** the file is read once, end to
@@ -361,6 +372,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-08:** Projects can be saved and reopened, with media relinking and a
+  15-second crash-recovery snapshot.
 - **2026-08-08:** Added browser ranges — pick In and Out on a media item and
   only that part is added to the timeline.
 - **2026-08-08:** Added media keywords, keyword filtering, and saved views.

@@ -2,6 +2,7 @@ import {
   createEditorState,
   executeCommand,
   redo,
+  replay,
   undo,
   type CommandError,
   type EditorState,
@@ -31,6 +32,7 @@ export class EditorSession {
    * log are untouched. This is session state describing which entries arrived
    * together, exactly like selection or playback state.
    */
+  private baseline = 0;
   private undoSteps: number[] = [];
   private redoSteps: number[] = [];
   /** Commands dispatched so far inside an open gesture, or null when none. */
@@ -44,10 +46,31 @@ export class EditorSession {
     return this.state;
   }
 
-  /** Drop all undo/redo history, keeping the current project as an
-   * un-undoable baseline. Call after seeding scaffolding (project, sequence,
-   * tracks) so the user can never undo the project out of existence. Keeps
-   * the invariant that `undoStack` mirrors `operationLog` (both empty). */
+  /**
+   * Mark everything applied so far as scaffolding that Undo may not reach.
+   *
+   * Call after seeding the project, sequence and tracks. This *keeps* those
+   * operations in the log — the log is the save format, and a log that began
+   * mid-stream could not be replayed from scratch into a fresh app — while
+   * putting a floor under Undo so the project cannot be popped out of
+   * existence, which is what made later imports fail with "no project exists".
+   */
+  markBaseline(): void {
+    this.baseline = this.state.operationLog.length;
+    this.lastError = null;
+    this.undoSteps = [];
+    this.redoSteps = [];
+    this.openGesture = null;
+  }
+
+  /** How many leading operations are scaffolding rather than user edits. */
+  getBaseline(): number {
+    return this.baseline;
+  }
+
+  /** Drop all undo/redo history *and* the log, keeping the current project as
+   * an un-undoable baseline. Kept for callers that genuinely want the log
+   * emptied; seeding wants `markBaseline` instead. */
   clearHistory(): void {
     this.state = {
       ...this.state,
@@ -56,9 +79,41 @@ export class EditorSession {
       redoStack: [],
     };
     this.lastError = null;
+    this.baseline = 0;
     this.undoSteps = [];
     this.redoSteps = [];
     this.openGesture = null;
+  }
+
+  /**
+   * Replace everything with the state a saved operation log reconstructs.
+   *
+   * The log is replayed through the engine rather than trusted as state: a file
+   * edited by hand, or written by a different build, fails here rather than
+   * half-loading into something that cannot be exported. History is replaced
+   * too — the undo stack of the session that saved the file is not this
+   * session's, and offering it would undo edits the user never made here.
+   */
+  replaceWithOperationLog(
+    operations: readonly unknown[],
+    baseline = 0,
+  ): { ok: true } | { ok: false; error: string } {
+    const result = replay(operations);
+    if (!result.ok) {
+      this.lastError = result.error;
+      return { ok: false, error: result.error.message };
+    }
+    this.state = result.state;
+    // The opened project's own scaffolding stays below the floor, so Undo in
+    // this session cannot delete a sequence the file arrived with.
+    this.baseline = Math.min(baseline, result.state.operationLog.length);
+    this.undoSteps = new Array<number>(
+      Math.max(0, result.state.operationLog.length - this.baseline),
+    ).fill(1);
+    this.redoSteps = [];
+    this.openGesture = null;
+    this.lastError = null;
+    return { ok: true };
   }
 
   /** Start recording the following dispatches as one undoable gesture. */
@@ -88,7 +143,7 @@ export class EditorSession {
   }
 
   canUndo(): boolean {
-    return this.state.operationLog.length > 0;
+    return this.state.operationLog.length > this.baseline;
   }
 
   canRedo(): boolean {
@@ -116,6 +171,8 @@ export class EditorSession {
   /** Undo one step: a whole gesture when the top of the history is one,
    * otherwise a single operation. */
   undo(): boolean {
+    // The scaffolding below the baseline is not the user's to undo.
+    if (!this.canUndo()) return false;
     const steps = this.undoSteps.pop() ?? 1;
     let undone = 0;
     for (let i = 0; i < steps; i++) {
