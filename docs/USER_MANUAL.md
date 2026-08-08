@@ -1,7 +1,7 @@
 # Project Director User Manual
 
 Photo · Video · Animation · GIF  
-Project version 0.1.0 · Updated August 7, 2026
+Project version 0.1.0 · Updated August 8, 2026
 
 > Maintenance rule: this Markdown file is the editable source of truth. Keep it,
 > `Project_Director_User_Manual.docx`, and affected screenshots synchronized by
@@ -64,6 +64,9 @@ when the system asks for reduced motion.
 - Mark media as Favorite (★) or Rejected (✕) in the bin, search it by name, and
   filter to All, Favorites, Rejected, or Unrated. Ratings are project state and
   undo like any other edit; the original file is never touched.
+- Tag media with keywords using the 🏷 button, then filter by keyword or click a
+  keyword chip. Search covers keywords as well as names. Save the current
+  search, keyword and filter as a named view to return to it later.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
@@ -355,6 +358,7 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-08:** Added media keywords, keyword filtering, and saved views.
 - **2026-08-07:** Added clip markers — notes, chapters and to-dos — with pins on
   the timeline, an Inspector list, and the M shortcut.
 - **2026-08-07:** The media bin gained Favorite/Rejected ratings, name search,

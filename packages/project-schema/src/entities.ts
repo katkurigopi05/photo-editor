@@ -4,6 +4,7 @@ import { transitionSchema } from "./transitions.js";
 import { effectInstanceSchema } from "./effects.js";
 import { clipMasksSchema } from "./masks.js";
 import { clipMarkersSchema } from "./markers.js";
+import { assetKeywordsSchema } from "./keywords.js";
 import {
   audioGainDbSchema,
   audioPanSchema,
@@ -48,6 +49,9 @@ export const mediaAssetSchema = z
     // Optional so projects created before media ratings continue to parse to
     // byte-equivalent state. Clearing a rating removes this member.
     rating: assetRatingSchema.optional(),
+    // Optional like `rating`, and for the same reason: an asset registered
+    // before keywords existed must parse byte-for-byte identically.
+    keywords: assetKeywordsSchema.optional(),
     createdAt: isoInstantSchema,
   })
   .strict();

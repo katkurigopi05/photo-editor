@@ -209,6 +209,8 @@ export function applyForward(
       return registerAsset(project, command);
     case "asset.set_rating":
       return setAssetRating(project, command);
+    case "asset.set_keywords":
+      return setAssetKeywords(project, command);
     case "timeline.create_sequence":
       return createSequence(project, command);
     case "timeline.add_track":
@@ -358,6 +360,63 @@ function registerAsset(
     inverse: {
       commandType: "internal.remove_asset",
       payload: { assetId: asset.id, restoreUpdatedAt: prevUpdatedAt },
+    },
+  };
+}
+
+/** Keywords are stored sorted, so two orders of the same set are one project
+ * rather than two byte-different ones. An empty list removes the member. */
+function withAssetKeywords(
+  asset: MediaAsset,
+  keywords: readonly string[],
+): MediaAsset {
+  if (keywords.length === 0) {
+    const { keywords: _removed, ...untagged } = asset;
+    return untagged as MediaAsset;
+  }
+  return { ...asset, keywords: [...keywords].sort() };
+}
+
+function setAssetKeywords(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "asset.set_keywords" }>,
+): ForwardResult {
+  const pre = requireLiveProject(projectOrNull, command.baseVersion);
+  if (!pre.ok) return pre;
+  const project = pre.project;
+  const { assetId, keywords } = command.payload;
+  const asset = findAsset(project, assetId);
+  if (asset === undefined) {
+    return {
+      ok: false,
+      error: makeError("ASSET_NOT_FOUND", `asset ${assetId} not found`, [
+        "payload",
+        "assetId",
+      ]),
+    };
+  }
+
+  const previous = asset.keywords ? [...asset.keywords] : null;
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: {
+      ...project,
+      assets: project.assets.map((candidate) =>
+        candidate.id === assetId
+          ? withAssetKeywords(candidate, keywords)
+          : candidate,
+      ),
+      updatedAt: command.createdAt,
+      currentVersion: project.currentVersion + 1,
+    },
+    inverse: {
+      commandType: "internal.set_asset_keywords",
+      payload: {
+        assetId,
+        keywords: previous,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
     },
   };
 }
@@ -2597,6 +2656,19 @@ export function applyInverse(
         ...p,
         assets: p.assets.filter((a) => a.id !== inverse.payload.assetId),
         updatedAt: inverse.payload.restoreUpdatedAt,
+      };
+    }
+    case "internal.set_asset_keywords": {
+      const p = requireProject(project);
+      const { assetId, keywords, restoreUpdatedAt } = inverse.payload;
+      return {
+        ...p,
+        assets: p.assets.map((asset) =>
+          asset.id === assetId
+            ? withAssetKeywords(asset, keywords ?? [])
+            : asset,
+        ),
+        updatedAt: restoreUpdatedAt,
       };
     }
     case "internal.set_asset_rating": {

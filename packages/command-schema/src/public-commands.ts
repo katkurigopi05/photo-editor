@@ -3,6 +3,7 @@ import {
   audioGainDbSchema,
   audioPanSchema,
   assetRatingSchema,
+  assetKeywordsSchema,
   animationKeyframeSchema,
   animationPropertySchema,
   animationTracksSchema,
@@ -82,6 +83,23 @@ export const setAssetRatingPayloadSchema = z
 export const setAssetRatingCommandSchema = command(
   "asset.set_rating",
   setAssetRatingPayloadSchema,
+);
+
+// --- asset.set_keywords -----------------------------------------------------
+
+/** Set an asset's whole keyword list. Whole-list rather than add/remove: the
+ * inverse is then exact, and one undo matches one gesture. An empty list
+ * clears them. */
+export const setAssetKeywordsPayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    keywords: assetKeywordsSchema,
+  })
+  .strict();
+
+export const setAssetKeywordsCommandSchema = command(
+  "asset.set_keywords",
+  setAssetKeywordsPayloadSchema,
 );
 
 // --- timeline.create_sequence ----------------------------------------------
@@ -518,6 +536,7 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   projectCreateCommandSchema,
   assetRegisterCommandSchema,
   setAssetRatingCommandSchema,
+  setAssetKeywordsCommandSchema,
   createSequenceCommandSchema,
   addTrackCommandSchema,
   addClipCommandSchema,
@@ -550,6 +569,9 @@ export type ProjectCommand = z.infer<typeof projectCommandSchema>;
 export type ProjectCreateCommand = z.infer<typeof projectCreateCommandSchema>;
 export type AssetRegisterCommand = z.infer<typeof assetRegisterCommandSchema>;
 export type SetAssetRatingCommand = z.infer<typeof setAssetRatingCommandSchema>;
+export type SetAssetKeywordsCommand = z.infer<
+  typeof setAssetKeywordsCommandSchema
+>;
 export type CreateSequenceCommand = z.infer<typeof createSequenceCommandSchema>;
 export type AddTrackCommand = z.infer<typeof addTrackCommandSchema>;
 export type AddClipCommand = z.infer<typeof addClipCommandSchema>;
@@ -595,6 +617,7 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "project.create",
   "asset.register",
   "asset.set_rating",
+  "asset.set_keywords",
   "timeline.create_sequence",
   "timeline.add_track",
   "timeline.add_clip",

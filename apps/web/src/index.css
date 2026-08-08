@@ -638,6 +638,26 @@ body {
   font-size: 12px;
   min-width: 0;
 }
+.media-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 3px;
+}
+.media-keyword-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-3, var(--panel-2));
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.media-keyword-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
 .media-empty {
   margin: 6px 2px;
   font-size: 12px;

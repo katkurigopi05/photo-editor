@@ -15,6 +15,7 @@ import {
   setClipAudioGainPayloadSchema,
   setClipAudioPanPayloadSchema,
   setAssetRatingPayloadSchema,
+  setAssetKeywordsPayloadSchema,
   setClipSpeedPayloadSchema,
   addMarkerPayloadSchema,
   updateMarkerPayloadSchema,
@@ -98,6 +99,17 @@ const COMMAND_TOOLS: CommandTool[] = [
       "rating. Ratings organise the media bin and never touch the original " +
       "file or any clip already on the timeline.",
     schema: setAssetRatingPayloadSchema,
+  },
+  {
+    name: "set_asset_keywords",
+    commandType: "asset.set_keywords",
+    title: "Set an asset's keywords",
+    description:
+      "Replace an asset's whole keyword list; an empty list clears it. " +
+      "Keywords must already be normalized — trimmed, lower case, " +
+      "single-spaced — because a command that rewrote its own payload would " +
+      "not replay to the bytes it recorded.",
+    schema: setAssetKeywordsPayloadSchema,
   },
   {
     name: "add_clip",

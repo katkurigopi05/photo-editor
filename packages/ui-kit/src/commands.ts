@@ -5,6 +5,7 @@ import type {
   AddTrackCommand,
   AssetRegisterCommand,
   SetAssetRatingCommand,
+  SetAssetKeywordsCommand,
   CreateSequenceCommand,
   DeleteClipCommand,
   MoveClipCommand,
@@ -73,6 +74,11 @@ export const buildSetAssetRating = (
   ctx: CommandContext,
   payload: SetAssetRatingCommand["payload"],
 ): SetAssetRatingCommand => envelope(ctx, "asset.set_rating", payload);
+
+export const buildSetAssetKeywords = (
+  ctx: CommandContext,
+  payload: SetAssetKeywordsCommand["payload"],
+): SetAssetKeywordsCommand => envelope(ctx, "asset.set_keywords", payload);
 
 export const buildCreateSequence = (
   ctx: CommandContext,

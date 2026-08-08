@@ -14,6 +14,7 @@ import {
   buildSetClipAudioGain,
   buildSetClipAudioPan,
   buildSetAssetRating,
+  buildSetAssetKeywords,
   buildSetClipSpeed,
   buildAddMarker,
   buildUpdateMarker,
@@ -108,6 +109,7 @@ import {
   TRANSITION_DIRECTIONS,
   TRANSITION_KINDS,
   isAudioEffectType,
+  normalizeKeyword,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
 import {
@@ -695,7 +697,44 @@ const selectedClipIds = new Set<string>();
 /** Media-bin culling state. Neither is project state: they decide what the bin
  * shows, not what the project contains, so they never enter the command log. */
 let mediaSearch = "";
-let mediaFilter: "all" | "favorites" | "rejected" | "unrated" = "all";
+type MediaFilter = "all" | "favorites" | "rejected" | "unrated";
+let mediaFilter: MediaFilter = "all";
+let mediaKeyword = "";
+
+/**
+ * Saved views: a named search + keyword + rating filter.
+ *
+ * Final Cut's Smart Collections in miniature, and deliberately *not* project
+ * state — a saved view describes how someone likes to look at a bin, not
+ * anything about the media. It lives in localStorage so it survives a reload
+ * without entering the operation log or the project file.
+ */
+interface SavedView {
+  name: string;
+  search: string;
+  keyword: string;
+  filter: MediaFilter;
+}
+const SAVED_VIEWS_KEY = "director.media.views";
+
+function loadSavedViews(): SavedView[] {
+  try {
+    const raw = localStorage.getItem(SAVED_VIEWS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? (parsed as SavedView[]) : [];
+  } catch {
+    // Corrupt or unavailable storage is not a reason to break the bin.
+    return [];
+  }
+}
+
+function storeSavedViews(views: SavedView[]): void {
+  try {
+    localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(views));
+  } catch {
+    toast("Could not save the view — browser storage is unavailable.", true);
+  }
+}
 let zoom = 120; // pixels per second
 let playback: PlaybackState = createPlaybackState("0");
 
@@ -4426,11 +4465,61 @@ function renderVectorShapes(): void {
 /** Does this asset survive the current search text and rating filter? */
 function matchesMediaFilters(asset: MediaAsset): boolean {
   const query = mediaSearch.trim().toLowerCase();
-  if (query && !assetName(asset).toLowerCase().includes(query)) return false;
+  // Search covers keywords as well as the name: typing "interview" should find
+  // the shots tagged that way, not only a file that happens to be called it.
+  if (
+    query &&
+    !assetName(asset).toLowerCase().includes(query) &&
+    !(asset.keywords ?? []).some((keyword) => keyword.includes(query))
+  ) {
+    return false;
+  }
+  if (mediaKeyword && !(asset.keywords ?? []).includes(mediaKeyword)) {
+    return false;
+  }
   if (mediaFilter === "favorites") return asset.rating === "favorite";
   if (mediaFilter === "rejected") return asset.rating === "rejected";
   if (mediaFilter === "unrated") return asset.rating === undefined;
   return true;
+}
+
+/**
+ * Edit an asset's keywords.
+ *
+ * A prompt rather than a panel: keywords are typed rarely and read often, and a
+ * comma-separated line is how people already think of them. Normalization
+ * happens here, at the boundary, because the schema refuses anything else —
+ * a command that rewrote its own payload would not replay to its own bytes.
+ */
+function editKeywords(asset: MediaAsset): void {
+  const current = (asset.keywords ?? []).join(", ");
+  const entered = window.prompt(
+    `Keywords for ${assetName(asset)} (comma separated)`,
+    current,
+  );
+  if (entered === null) return;
+
+  const seen = new Set<string>();
+  for (const part of entered.split(",")) {
+    const keyword = normalizeKeyword(part);
+    if (keyword) seen.add(keyword);
+  }
+  commit(
+    buildSetAssetKeywords(nextCtx(), {
+      assetId: asset.id,
+      keywords: [...seen].sort(),
+    }),
+  );
+}
+
+/** Every keyword in the project, for the filter list. */
+function allKeywords(): string[] {
+  const seen = new Set<string>();
+  for (const asset of session.getProject()?.assets ?? []) {
+    if (removedAssets.has(asset.id)) continue;
+    for (const keyword of asset.keywords ?? []) seen.add(keyword);
+  }
+  return [...seen].sort();
 }
 
 /** One rating button. `aria-pressed` carries the state, so the control reads
@@ -4461,6 +4550,16 @@ function ratingButton(
   return button;
 }
 
+/** Fill the saved-view picker from storage. */
+function renderSavedViews(): void {
+  const select = $<HTMLSelectElement>("media-view");
+  const views = loadSavedViews();
+  select.innerHTML = "";
+  select.appendChild(new Option("Saved views…", ""));
+  for (const view of views) select.appendChild(new Option(view.name, view.name));
+  select.disabled = views.length === 0;
+}
+
 function renderMedia(): void {
   mediaListEl.innerHTML = "";
   mediaListEl.classList.toggle("grid", galleryGrid);
@@ -4472,6 +4571,19 @@ function renderMedia(): void {
   );
   // Two different empties: nothing imported yet, and nothing matching — saying
   // "no media" while three clips sit behind a filter would look like data loss.
+  // The keyword filter lists what the project actually has; a keyword that no
+  // longer exists on any asset must not linger as a selectable dead end.
+  const keywordSelect = $<HTMLSelectElement>("media-keyword");
+  const keywords = allKeywords();
+  if (mediaKeyword && !keywords.includes(mediaKeyword)) mediaKeyword = "";
+  keywordSelect.innerHTML = "";
+  keywordSelect.appendChild(new Option("Any keyword", ""));
+  for (const keyword of keywords) {
+    const option = new Option(keyword, keyword);
+    option.selected = keyword === mediaKeyword;
+    keywordSelect.appendChild(option);
+  }
+
   mediaEmptyEl.classList.toggle("hidden", visible.length > 0);
   mediaEmptyEl.textContent = anyMedia
     ? "No media matches this search or filter."
@@ -4521,13 +4633,43 @@ function renderMedia(): void {
       e.stopPropagation();
       removeAsset(asset.id);
     });
+    if ((asset.keywords ?? []).length > 0) {
+      const chips = document.createElement("div");
+      chips.className = "media-keywords";
+      for (const keyword of asset.keywords ?? []) {
+        const chip = document.createElement("button");
+        chip.className = "media-keyword-chip";
+        chip.textContent = keyword;
+        chip.title = `Filter by "${keyword}" — click again to clear`;
+        chip.setAttribute("aria-label", `Filter by keyword ${keyword}`);
+        chip.addEventListener("click", (event) => {
+          event.stopPropagation();
+          mediaKeyword = mediaKeyword === keyword ? "" : keyword;
+          $<HTMLSelectElement>("media-keyword").value = mediaKeyword;
+          renderMedia();
+        });
+        chips.appendChild(chip);
+      }
+      meta.appendChild(chips);
+    }
+
+    const tag = document.createElement("button");
+    tag.className = "media-remove media-tag";
+    tag.textContent = "🏷";
+    tag.title = "Keywords";
+    tag.setAttribute("aria-label", `Keywords for ${assetName(asset)}`);
+    tag.addEventListener("click", (event) => {
+      event.stopPropagation();
+      editKeywords(asset);
+    });
+
     const rating = document.createElement("div");
     rating.className = "media-rating";
     rating.append(
       ratingButton(asset, "favorite", "★"),
       ratingButton(asset, "rejected", "✕"),
     );
-    el.append(thumb, meta, add, remove, rating);
+    el.append(thumb, meta, add, tag, remove, rating);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
@@ -6434,9 +6576,38 @@ function bindEvents(): void {
     mediaSearch = $<HTMLInputElement>("media-search").value;
     renderMedia();
   });
+  $("media-keyword").addEventListener("change", () => {
+    mediaKeyword = $<HTMLSelectElement>("media-keyword").value;
+    renderMedia();
+  });
+  $("btn-save-view").addEventListener("click", () => {
+    const name = window.prompt("Name this view", "Selects")?.trim();
+    if (!name) return;
+    const views = loadSavedViews().filter((view) => view.name !== name);
+    views.push({
+      name,
+      search: mediaSearch,
+      keyword: mediaKeyword,
+      filter: mediaFilter,
+    });
+    storeSavedViews(views);
+    renderSavedViews();
+    toast(`Saved view "${name}".`);
+  });
+  $("media-view").addEventListener("change", () => {
+    const chosen = $<HTMLSelectElement>("media-view").value;
+    const view = loadSavedViews().find((candidate) => candidate.name === chosen);
+    if (!view) return;
+    mediaSearch = view.search;
+    mediaKeyword = view.keyword;
+    mediaFilter = view.filter;
+    $<HTMLInputElement>("media-search").value = view.search;
+    $<HTMLSelectElement>("media-filter").value = view.filter;
+    renderMedia();
+  });
+  renderSavedViews();
   $("media-filter").addEventListener("change", () => {
-    mediaFilter = $<HTMLSelectElement>("media-filter")
-      .value as typeof mediaFilter;
+    mediaFilter = $<HTMLSelectElement>("media-filter").value as MediaFilter;
     renderMedia();
   });
 

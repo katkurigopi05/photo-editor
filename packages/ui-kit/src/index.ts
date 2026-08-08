@@ -10,6 +10,7 @@ export {
   buildCreateProject,
   buildRegisterAsset,
   buildSetAssetRating,
+  buildSetAssetKeywords,
   buildCreateSequence,
   buildAddTrack,
   buildAddClip,

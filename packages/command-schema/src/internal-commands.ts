@@ -3,6 +3,7 @@ import {
   audioGainDbSchema,
   audioPanSchema,
   assetRatingSchema,
+  assetKeywordsSchema,
   animationTracksSchema,
   transitionSchema,
   transitionSideSchema,
@@ -61,6 +62,18 @@ export const setAssetRatingInverseSchema = internal(
     .object({
       assetId: z.string().min(1),
       rating: assetRatingSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
+/** `null` restores an asset that had no keywords member. */
+export const setAssetKeywordsInverseSchema = internal(
+  "internal.set_asset_keywords",
+  z
+    .object({
+      assetId: z.string().min(1),
+      keywords: assetKeywordsSchema.nullable(),
       restoreUpdatedAt: isoInstantSchema,
     })
     .strict(),
@@ -319,6 +332,7 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   removeProjectInverseSchema,
   removeAssetInverseSchema,
   setAssetRatingInverseSchema,
+  setAssetKeywordsInverseSchema,
   removeSequenceInverseSchema,
   removeTrackInverseSchema,
   removeClipInverseSchema,

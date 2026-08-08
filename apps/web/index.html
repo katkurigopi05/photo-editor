@@ -200,6 +200,13 @@
               placeholder="Search media"
               aria-label="Search media"
             />
+            <select
+              id="media-keyword"
+              class="media-filter"
+              aria-label="Keyword filter"
+            >
+              <option value="" selected>Any keyword</option>
+            </select>
             <select id="media-filter" class="media-filter" aria-label="Media filter">
               <option value="all" selected>All media</option>
               <option value="favorites">Favorites</option>
@@ -217,6 +224,14 @@
             multiple
             hidden
           />
+          <div class="media-tools">
+            <select id="media-view" class="media-filter" aria-label="Saved view">
+              <option value="" selected>Saved views…</option>
+            </select>
+            <button id="btn-save-view" class="mini" title="Save the current search, keyword and filter">
+              Save view
+            </button>
+          </div>
           <div id="media-list" class="media-list"></div>
           <p id="media-empty" class="media-empty hidden"></p>
           <div class="panel-title">Cartoon Clips</div>
