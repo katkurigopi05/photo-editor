@@ -1947,6 +1947,23 @@ select {
 }
 
 /* ---- toast + drop overlay ---- */
+/* Two words that must stay on one line, or the whole top bar grows a row. */
+#btn-save-as {
+  white-space: nowrap;
+}
+.recent-select {
+  max-width: 150px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.recent-select:disabled {
+  opacity: 0.5;
+}
 .recovery-bar {
   position: fixed;
   left: 50%;

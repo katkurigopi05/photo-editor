@@ -94,6 +94,12 @@ import {
   type MediaHint,
 } from "./project-file.js";
 import { clearSnapshot, readSnapshot, writeSnapshot } from "./autosave.js";
+import {
+  ensurePermission,
+  forgetProject,
+  listRecent,
+  rememberProject,
+} from "./recent-projects.js";
 import type {
   ChecksumRequest,
   ChecksumResponse,
@@ -4948,28 +4954,44 @@ function currentProjectText(): string {
   );
 }
 
+/** The file this project is open from, if any. Set by saving or opening
+ * through a picker; a project opened from the plain file input has no handle,
+ * because that API hands over bytes and nothing to write back to. */
+let currentProjectHandle: FileSystemFileHandle | null = null;
+
 /**
  * Save the project.
  *
- * The same two-path story as export: where the browser offers a file picker the
- * project is written to the chosen file, and elsewhere it downloads. Saving
- * also clears the crash snapshot — the user now has their own copy, and a
- * recovery offer after that would be offering something older than what they
- * just saved.
+ * Silent when there is a file to save to: an editor that asks where to put the
+ * project on every Cmd+S is asking a question it already knows the answer to.
+ * `saveAs` forces the picker, and a project with no handle — or one whose
+ * permission has lapsed — falls through to it.
+ *
+ * Saving clears the crash snapshot: the user now has something better than a
+ * recovery offer, and offering it afterwards would be offering something older.
  */
-async function saveProject(): Promise<void> {
+async function saveProject(saveAs = false): Promise<void> {
   if (!session.getProject()) {
     toast("Nothing to save yet — import some media first.", true);
     return;
   }
   const text = currentProjectText();
-  const handle = await pickExportFile("project.json");
+
+  let handle = saveAs ? null : currentProjectHandle;
+  if (handle && !(await ensurePermission(handle, "readwrite"))) handle = null;
+  if (!handle) handle = await pickExportFile("project.json");
+
   try {
     if (handle) {
       const writable = await handle.createWritable();
       await writable.write(text);
       await writable.close();
+      currentProjectHandle = handle;
+      await rememberProject(handle);
+      await renderRecentProjects();
     } else {
+      // No File System Access API, or the picker was dismissed: a download is
+      // still a save, it just cannot be written to again.
       downloadBlob(
         new Blob([text], { type: "application/json" }),
         "project.json",
@@ -4977,12 +4999,49 @@ async function saveProject(): Promise<void> {
     }
     projectDirty = false;
     await clearSnapshot();
-    toast("Project saved.");
+    toast(handle ? `Saved to ${handle.name}.` : "Project saved.");
   } catch (error) {
     toast(
       `Could not save the project: ${error instanceof Error ? error.message : String(error)}`,
       true,
     );
+  }
+}
+
+/** Fill the recent-projects picker. */
+async function renderRecentProjects(): Promise<void> {
+  const select = $<HTMLSelectElement>("recent-projects");
+  const recents = await listRecent();
+  select.innerHTML = "";
+  select.appendChild(new Option("Recent…", ""));
+  for (const entry of recents) select.appendChild(new Option(entry.name, entry.name));
+  select.disabled = recents.length === 0;
+}
+
+/**
+ * Open a project from the recent list.
+ *
+ * The stored handle survives a restart but its permission does not, so this
+ * asks. A handle whose file has been moved or deleted is dropped from the list
+ * rather than left to fail the same way tomorrow.
+ */
+async function openRecentProject(name: string): Promise<void> {
+  const entry = (await listRecent()).find((candidate) => candidate.name === name);
+  if (!entry) return;
+  if (!(await ensurePermission(entry.handle, "read"))) {
+    toast(`Permission to read ${name} was declined.`, true);
+    return;
+  }
+  try {
+    const file = await entry.handle.getFile();
+    await openProjectFile(file);
+    currentProjectHandle = entry.handle;
+    await rememberProject(entry.handle);
+    await renderRecentProjects();
+  } catch {
+    await forgetProject(name);
+    await renderRecentProjects();
+    toast(`${name} could not be opened — it may have been moved or deleted.`, true);
   }
 }
 
@@ -5011,6 +5070,7 @@ async function openProjectFile(file: File): Promise<void> {
 
   // Media from the previous session is gone with its blob URLs; the hints say
   // what to look for.
+  currentProjectHandle = null;
   relinkedUris.clear();
   mediaCache.clear();
   removedAssets.clear();
@@ -7028,6 +7088,14 @@ function bindEvents(): void {
   initExportOptions();
 
   $("btn-save-project").addEventListener("click", () => void saveProject());
+  $("btn-save-as").addEventListener("click", () => void saveProject(true));
+  $("recent-projects").addEventListener("change", () => {
+    const select = $<HTMLSelectElement>("recent-projects");
+    const name = select.value;
+    select.value = "";
+    if (name) void openRecentProject(name);
+  });
+  void renderRecentProjects();
   $("btn-open-project").addEventListener("click", () =>
     $<HTMLInputElement>("project-input").click(),
   );
@@ -7094,7 +7162,7 @@ function bindEvents(): void {
     if (e.target !== document.body) return;
     if ((e.metaKey || e.ctrlKey) && e.code === "KeyS") {
       e.preventDefault();
-      void saveProject();
+      void saveProject(e.shiftKey);
     } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
       e.preventDefault();
       if (e.shiftKey) {

@@ -78,8 +78,43 @@ which a fresh app boots into, and a Look lands on the clip that was selected
 when it was applied — importing selects what it just added, so that was the
 second clip, not the first.
 
+## Saving to the same file, and the recent list
+
+`saveProject` keeps the `FileSystemFileHandle` the picker returned and writes
+straight back to it: Cmd/Ctrl+S on an open project is not a question. Cmd/Ctrl+
+Shift+S, or the Save as button, forces the picker for a new file. A project with no
+handle — opened through the plain file input, or saved in a browser without the
+File System Access API — still downloads, because there is nothing to write back
+to.
+
+The handle also goes into IndexedDB, which is what makes a recent list possible
+at all: a browser will not tell a page where a file lives, but a handle is
+structured-cloneable, so the handle itself is what is stored. `mergeRecent`
+keeps the eight newest and moves a reopened project to the front rather than
+listing it twice.
+
+Permission does not survive the tab. Reopening from the list asks once, and a
+handle whose file has been moved or deleted is dropped from the list rather than
+left to fail again tomorrow. Handles from the origin-private file system carry
+no permission methods at all, and are treated as granted — nothing was granted,
+so nothing can lapse.
+
+## Tests, second round
+
+- `apps/web/test/recent-projects.test.ts` — the ordering rules: newest first,
+  reopening moves rather than duplicates, and the cap drops the oldest.
+- `apps/web/e2e/project-save-open.spec.ts` — a stubbed picker counts how often it
+  is opened: once for the first save, still once after an edit and a second
+  save, twice after Save As. Then the same project is reopened from the recent
+  list in a fresh app, with the picker never opened at all.
+
+The stub hands back a real handle from the origin-private file system rather
+than a hand-made object with methods on it. That is not fussiness: an object
+carrying functions cannot be structured-cloned, so it would fail to reach
+IndexedDB and the recent-list test would have passed against nothing.
+
 ## Not built
 
-No recent-projects list, and no "save to the file you opened" — every save asks
-where to write. Both are small and belong with a desktop shell, where a project
-has a path rather than a handle that expires with the tab.
+No project *path* shown anywhere, because the browser will not disclose one —
+the title bar can say `stub-project.json` but not where it lives. That needs a
+desktop shell.

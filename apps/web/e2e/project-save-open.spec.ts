@@ -13,6 +13,12 @@ import { downloadBytes, importMedia, MEDIA, setMode } from "./helpers.js";
  * than silently rendering black.
  */
 
+declare global {
+  interface Window {
+    __pickerCalls: number;
+  }
+}
+
 const SCRATCH = "/tmp/director-e2e-project.json";
 
 async function clipCount(page: Page): Promise<number> {
@@ -125,4 +131,102 @@ test("a file that is not a project is refused by name", async ({ page }) => {
 
   await expect(page.locator("#toast")).toContainText("not a Project Director");
   expect(await clipCount(page)).toBe(0);
+});
+
+/**
+ * A stubbed file picker.
+ *
+ * Playwright cannot drive the real one — it is browser chrome — so this stands
+ * a handle in its place that records every write and counts how often the
+ * picker was opened. The count is the whole point: the second save must not
+ * open it.
+ */
+const STUB_PICKER = `
+  window.__pickerCalls = 0;
+  window.showSaveFilePicker = async () => {
+    window.__pickerCalls++;
+    // A real handle, from the origin-private file system, so it survives being
+    // stored in IndexedDB the way a picked one does. A hand-made object with
+    // methods on it would fail to structured-clone and quietly test nothing.
+    const root = await navigator.storage.getDirectory();
+    return root.getFileHandle("stub-project.json", { create: true });
+  };
+`;
+
+/** What the stub handle holds, read back through the same file system. */
+async function writtenProject(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const handle = await root.getFileHandle("stub-project.json");
+    return (await handle.getFile()).text();
+  });
+}
+
+test("saving again writes to the same file without asking", async ({
+  page,
+}) => {
+  await page.addInitScript(STUB_PICKER);
+  await importMedia(page, "photos/colour-chart-512x512.jpg");
+  await setMode(page, "video");
+
+  await page.click("#btn-save-project");
+  await page.waitForTimeout(800);
+  expect(await page.evaluate(() => window.__pickerCalls)).toBe(1);
+  const first = await writtenProject(page);
+
+  // An edit, then Save again. The file is already known, so no second prompt.
+  await page.evaluate(() => {
+    const chip = [...document.querySelectorAll(".look-chip")].find(
+      (node) => (node.textContent ?? "").trim() === "B&W",
+    ) as HTMLElement;
+    chip.click();
+  });
+  await page.waitForTimeout(600);
+  await page.click("#btn-save-project");
+  await page.waitForTimeout(800);
+
+  expect(await page.evaluate(() => window.__pickerCalls)).toBe(1);
+  // And it wrote the newer project over the old one, rather than nothing.
+  const second = await writtenProject(page);
+  expect(second).not.toBe(first);
+  expect(JSON.parse(second).operations.length).toBeGreaterThan(
+    JSON.parse(first).operations.length,
+  );
+
+  // Save As is the way to ask again — by button, and by the shortcut.
+  await page.click("#btn-save-as");
+  await page.waitForTimeout(800);
+  expect(await page.evaluate(() => window.__pickerCalls)).toBe(2);
+  // Shortcuts only fire when nothing has focus; the Save As button still does.
+  await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+  await page.keyboard.press("ControlOrMeta+Shift+s");
+  await page.waitForTimeout(800);
+  expect(await page.evaluate(() => window.__pickerCalls)).toBe(3);
+});
+
+test("a saved project joins the recent list and reopens from it", async ({
+  page,
+}) => {
+  await page.addInitScript(STUB_PICKER);
+  await importMedia(page, "photos/colour-chart-512x512.jpg");
+  await setMode(page, "video");
+  await page.click("#btn-save-project");
+  await page.waitForTimeout(800);
+
+  const recent = page.locator("#recent-projects");
+  await expect(recent.locator("option")).toHaveCount(2);
+  await expect(recent.locator("option").nth(1)).toHaveText("stub-project.json");
+
+  // A fresh app remembers it — the handle lives in IndexedDB, not in the page.
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await expect(page.locator("#recent-projects option")).toHaveCount(2);
+  expect(await clipCount(page)).toBe(0);
+
+  await page.selectOption("#recent-projects", "stub-project.json");
+  await page.waitForTimeout(1500);
+  await setMode(page, "video");
+  expect(await clipCount(page)).toBe(1);
+  // The picker was never opened to get here.
+  expect(await page.evaluate(() => window.__pickerCalls)).toBe(0);
 });
