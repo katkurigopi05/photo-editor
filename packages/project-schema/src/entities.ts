@@ -5,6 +5,7 @@ import { effectInstanceSchema } from "./effects.js";
 import { clipMasksSchema } from "./masks.js";
 import { clipMarkersSchema } from "./markers.js";
 import { assetKeywordsSchema } from "./keywords.js";
+import { blendModeSchema } from "./blend.js";
 import {
   audioGainDbSchema,
   audioPanSchema,
@@ -80,6 +81,10 @@ export const timelineClipSchema = z
     // Optional preserves byte-equivalent parsing of schema-v1 projects. New
     // animation commands will materialize the array only when first used.
     animations: animationTracksSchema.optional(),
+    // Same reasoning again: absent on every project written before blend modes,
+    // and absent rather than "normal" on a clip nobody has changed, so the
+    // default composite costs no bytes and no migration.
+    blendMode: blendModeSchema.optional(),
     // Same reasoning as `animations`: absent on every pre-transition project.
     transitionIn: transitionSchema.optional(),
     transitionOut: transitionSchema.optional(),

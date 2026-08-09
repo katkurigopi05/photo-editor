@@ -235,6 +235,8 @@ export function applyForward(
       return updateClipEffects(project, command);
     case "timeline.set_clip_audio_gain":
       return setClipAudioGain(project, command);
+    case "timeline.set_clip_blend_mode":
+      return setClipBlendMode(project, command);
     case "timeline.set_clip_speed":
       return setClipSpeed(project, command);
     case "timeline.add_marker":
@@ -1931,6 +1933,61 @@ function previousTransition(
   return current === undefined ? null : structuredClone(current);
 }
 
+// --- compositing reducers ---------------------------------------------------
+
+/**
+ * Set how a clip combines with what is beneath it.
+ *
+ * "normal" removes the member rather than storing it, because that is what an
+ * untouched clip looks like: storing it would make a clip set to normal and a
+ * clip never touched two different projects that render identically, and the
+ * whole point of canonical state is that those cannot exist.
+ */
+function setClipBlendMode(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.set_clip_blend_mode" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, blendMode } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+
+  const prevUpdatedAt = project.updatedAt;
+  const prevMode = location.clip.blendMode ?? null;
+  const newClip: TimelineClip = { ...location.clip };
+  if (blendMode === "normal") delete newClip.blendMode;
+  else newClip.blendMode = blendMode;
+
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_blend_mode",
+      payload: {
+        sequenceId,
+        clipId,
+        blendMode: prevMode,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
 // --- audio reducers ---------------------------------------------------------
 
 function setClipAudioGain(
@@ -2865,6 +2922,18 @@ export function applyInverse(
         ...clip,
         effects: structuredClone(effects),
       }));
+    }
+    case "internal.set_clip_blend_mode": {
+      const { sequenceId, clipId, blendMode, restoreUpdatedAt } =
+        inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => {
+        const restored = { ...clip };
+        // `null` is the absent member, not "normal" — undo has to put the
+        // project back byte-for-byte, not merely back to the same picture.
+        if (blendMode === null) delete restored.blendMode;
+        else restored.blendMode = blendMode;
+        return restored;
+      });
     }
     case "internal.set_clip_audio_gain": {
       const { sequenceId, clipId, gainDb, restoreUpdatedAt } = inverse.payload;

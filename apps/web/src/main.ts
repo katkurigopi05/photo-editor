@@ -12,6 +12,7 @@ import {
   buildUpdateEffectParams,
   buildRemoveEffect,
   buildSetClipAudioGain,
+  buildSetClipBlendMode,
   buildSetClipAudioPan,
   buildSetAssetRating,
   buildSetAssetKeywords,
@@ -142,8 +143,10 @@ import {
 } from "./export-sink.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
 import {
+  BLEND_MODES,
   TRANSITION_DIRECTIONS,
   TRANSITION_KINDS,
+  compositeOperation,
   isAudioEffectType,
   normalizeKeyword,
 } from "@director/project-schema";
@@ -2114,11 +2117,20 @@ function drawLayer(
   if (transition.dipColorHex !== undefined) {
     ctx.globalAlpha = 1;
     ctx.filter = "none";
+    // A dip is an explicit colour laid *under* the clip, so it is painted
+    // normally whatever the clip blends as.
+    ctx.globalCompositeOperation = "source-over";
     ctx.fillStyle = transition.dipColorHex;
     ctx.fillRect(dx, dy, dw, dh);
   }
   ctx.globalAlpha = transform.alpha * transition.opacity;
   ctx.filter = staticTransform.filter || "none";
+  // How this clip combines with what is already on the canvas. Set inside the
+  // save/restore the layer already has, so it cannot leak into the next clip —
+  // and set explicitly even for "normal", because passing an unknown value to
+  // `globalCompositeOperation` is silently ignored and would leave the previous
+  // layer's operation in force.
+  ctx.globalCompositeOperation = compositeOperation(clip.blendMode ?? "normal");
   const ccx = dx + dw / 2;
   const ccy = dy + dh / 2;
   // A slide contributes a normalized offset on the same convention as
@@ -3502,6 +3514,74 @@ const SPEED_PRESETS: ReadonlyArray<{
 const rateKey = (rate: { numerator: number; denominator: number }): string =>
   `${rate.numerator}/${rate.denominator}`;
 
+/** Blend-mode labels. The values are the schema's own names — the W3C ones —
+ * so nothing has to be translated between the picker, the command and the
+ * canvas; only the capitalisation is for reading. */
+const BLEND_LABELS: Readonly<Record<string, string>> = {
+  normal: "Normal",
+  multiply: "Multiply",
+  screen: "Screen",
+  overlay: "Overlay",
+  darken: "Darken",
+  lighten: "Lighten",
+  "color-dodge": "Colour Dodge",
+  "color-burn": "Colour Burn",
+  "hard-light": "Hard Light",
+  "soft-light": "Soft Light",
+  difference: "Difference",
+  exclusion: "Exclusion",
+  hue: "Hue",
+  saturation: "Saturation",
+  color: "Colour",
+  luminosity: "Luminosity",
+};
+
+/**
+ * How this clip combines with what is beneath it.
+ *
+ * Only worth showing where there is something to blend with, which is any
+ * visual clip: on the lowest track a blend mode composites against the
+ * background, which is a real (if quiet) result rather than a no-op.
+ */
+function blendSection(clip: TimelineClip): HTMLElement {
+  const blend = section("Blend");
+  const control = document.createElement("div");
+  control.className = "control";
+  const label = document.createElement("label");
+  label.textContent = "Blend mode";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Blend mode");
+  const current = clip.blendMode ?? "normal";
+  for (const mode of BLEND_MODES) {
+    const option = new Option(BLEND_LABELS[mode] ?? mode, mode);
+    option.selected = mode === current;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => {
+    const loc = locateClip(clip.id);
+    if (!loc) return;
+    commit(
+      buildSetClipBlendMode(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        blendMode: select.value as (typeof BLEND_MODES)[number],
+      }),
+    );
+    updateUI();
+  });
+  control.append(label, select);
+  blend.appendChild(control);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "Multiply darkens, Screen brightens, Overlay does both from the midpoint. " +
+    "A clip blends with whatever is composited beneath it, so the result " +
+    "depends on the track order.";
+  blend.appendChild(note);
+  return blend;
+}
+
 /**
  * Retiming.
  *
@@ -3967,6 +4047,9 @@ function renderInspector(): void {
   }
 
   inspectorEl.appendChild(markersSection(clip));
+  if (asset && asset.kind !== "audio") {
+    inspectorEl.appendChild(blendSection(clip));
+  }
   inspectorEl.appendChild(speedSection(clip));
   if (asset && asset.kind !== "audio") {
     inspectorEl.appendChild(masksSection(clip));

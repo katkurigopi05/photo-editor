@@ -76,6 +76,10 @@ when the system asks for reduced motion.
   renamed file still matches.
 - Unsaved work is snapshotted every 15 seconds; if the tab closes unexpectedly,
   the next start offers to restore it.
+- Blend mode (Inspector) decides how a clip combines with what is beneath it:
+  Multiply darkens, Screen brightens, Overlay does both from the midpoint, and
+  the rest of the standard modes are there too. Earlier tracks draw on top, so
+  the mode applies to the clip above.
 - The level meter beside the transport shows peak and RMS per channel while the
   timeline plays. The red light latches when audio clips; ⟲ clears it.
 - Scopes (Inspector, top) measure the picture: Histogram for levels, Waveform for

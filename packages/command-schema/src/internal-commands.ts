@@ -16,6 +16,7 @@ import {
   clipPlaybackRateSchema,
   clipMasksSchema,
   clipMarkersSchema,
+  blendModeSchema,
 } from "@director/project-schema";
 
 /**
@@ -226,6 +227,21 @@ export const setClipAudioGainInverseSchema = internal(
     .strict(),
 );
 
+/** Restores a clip's blend mode, or its absence. `null` is not the same as
+ * "normal": an untouched clip carries no member at all, and undo has to put the
+ * project back byte-for-byte, not merely back to the same picture. */
+export const setClipBlendModeInverseSchema = internal(
+  "internal.set_clip_blend_mode",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      blendMode: blendModeSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 /** Restores a clip's rate *and* the duration derived from it: recomputing the
  * duration on undo would repeat the truncation the forward command did. */
 /** Restores a clip's whole marker list. Same reasoning as the mask inverse:
@@ -345,6 +361,7 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   reorderEffectsInverseSchema,
   setClipEffectsInverseSchema,
   setClipAudioGainInverseSchema,
+  setClipBlendModeInverseSchema,
   setClipAudioPanInverseSchema,
   setClipSpeedInverseSchema,
   setClipMarkersInverseSchema,

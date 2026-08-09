@@ -91,7 +91,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 
 | Feature | Ref | Us | Note |
 | --- | --- | --- | --- |
-| Layers with blend modes | Photoshop, Affinity, GIMP | ✗ | tracks composite, but there are no blend modes at all — step L1 |
+| Layers with blend modes | Photoshop, Affinity, GIMP | ✓ | all sixteen W3C modes, per clip |
 | Layer groups, clipping masks | Photoshop, Affinity | ✗ | step L2 |
 | Non-destructive adjustment layers | Photoshop, Affinity, Capture One | ✗ | step L1 |
 | Masks with feather and composition | all | ✓ | |
@@ -202,8 +202,9 @@ session, **M** a few sessions, **L** a phase.
    browser range is the source half; these are the destination half.
 6. **A4 · Speed ramps** — **M**. Keyframed rate rather than one constant, which
    the schema's rational rate already accommodates.
-7. **L1 · Blend modes and adjustment layers** — **M**. The single biggest photo
-   gap: everything composites with normal alpha today.
+7. **L1 · Blend modes and adjustment layers** — **M**. Blend modes are done (see
+   `docs/phases/blend-modes.md`); adjustment layers are the remaining half — a
+   clip that carries only effects and applies them to everything beneath it.
 8. **C1 · Control-point curves** — **S**. Named as missing in the Lightroom
    reference note since it was written.
 9. **P2 · Navigable history panel** — **S**. The log exists and replay works;

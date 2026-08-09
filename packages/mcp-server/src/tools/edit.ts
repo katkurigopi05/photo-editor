@@ -13,6 +13,7 @@ import {
   removeKeyframePayloadSchema,
   reorderEffectsPayloadSchema,
   setClipAudioGainPayloadSchema,
+  setClipBlendModePayloadSchema,
   setClipAudioPanPayloadSchema,
   setAssetRatingPayloadSchema,
   setAssetKeywordsPayloadSchema,
@@ -198,6 +199,18 @@ const COMMAND_TOOLS: CommandTool[] = [
     title: "Set clip pan",
     description: "Set a clip's stereo pan, -1 (left) to 1 (right).",
     schema: setClipAudioPanPayloadSchema,
+  },
+  {
+    name: "set_clip_blend_mode",
+    commandType: "timeline.set_clip_blend_mode",
+    title: "Set a clip's blend mode",
+    description:
+      "Set how a clip composites with what is beneath it: 'normal' (the " +
+      "default, which hides what is under it), 'multiply' to darken, 'screen' " +
+      "to brighten, 'overlay', 'soft-light' and the rest of the W3C " +
+      "compositing modes under their usual names. Setting 'normal' clears the " +
+      "mode rather than storing it.",
+    schema: setClipBlendModePayloadSchema,
   },
   {
     name: "set_clip_speed",

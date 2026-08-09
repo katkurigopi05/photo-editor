@@ -23,6 +23,7 @@ export {
   buildReorderEffects,
   buildUpdateClipEffects,
   buildSetClipAudioGain,
+  buildSetClipBlendMode,
   buildSetClipAudioPan,
   buildSetClipSpeed,
   buildAddMarker,

@@ -23,6 +23,7 @@ import {
   maskContributionSchema,
   clipMarkerSchema,
   markerKindSchema,
+  blendModeSchema,
 } from "@director/project-schema";
 import { envelopeBaseShape } from "./envelope.js";
 
@@ -307,6 +308,21 @@ export const setClipAudioGainCommandSchema = command(
   setClipAudioGainPayloadSchema,
 );
 
+// --- timeline.set_clip_blend_mode -------------------------------------------
+
+export const setClipBlendModePayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    blendMode: blendModeSchema,
+  })
+  .strict();
+
+export const setClipBlendModeCommandSchema = command(
+  "timeline.set_clip_blend_mode",
+  setClipBlendModePayloadSchema,
+);
+
 // --- timeline.set_clip_audio_pan --------------------------------------------
 
 export const setClipAudioPanPayloadSchema = z
@@ -549,6 +565,7 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   reorderEffectsCommandSchema,
   updateClipEffectsCommandSchema,
   setClipAudioGainCommandSchema,
+  setClipBlendModeCommandSchema,
   setClipAudioPanCommandSchema,
   setClipSpeedCommandSchema,
   addMarkerCommandSchema,
@@ -589,6 +606,9 @@ export type UpdateClipEffectsCommand = z.infer<
 >;
 export type SetClipAudioGainCommand = z.infer<
   typeof setClipAudioGainCommandSchema
+>;
+export type SetClipBlendModeCommand = z.infer<
+  typeof setClipBlendModeCommandSchema
 >;
 export type SetClipAudioPanCommand = z.infer<
   typeof setClipAudioPanCommandSchema
@@ -631,6 +651,7 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.update_clip_effects",
   "timeline.set_clip_audio_gain",
   "timeline.set_clip_audio_pan",
+  "timeline.set_clip_blend_mode",
   "timeline.set_clip_speed",
   "timeline.add_marker",
   "timeline.update_marker",
