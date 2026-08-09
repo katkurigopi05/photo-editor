@@ -66,11 +66,21 @@ when the system asks for reduced motion.
   (Cmd/Ctrl+Shift+S) to save to a new one.
 - Recent… lists the last eight projects you saved or opened. Choosing one
   reopens it; the browser asks for permission to read the file each session.
+- Large video (720p and above, or files over 256MB) is proxied automatically: a
+  540p copy is built in the background, editing reads it, and exports read the
+  original. The media item shows a Proxy badge when one is in use. Untick Use
+  proxies to edit the originals directly, or press Clear to delete the proxy
+  files.
 - Media is not copied into the project file. After opening, the bin marks any
   missing media and Relink… matches the files you pick — by checksum first, so a
   renamed file still matches.
 - Unsaved work is snapshotted every 15 seconds; if the tab closes unexpectedly,
   the next start offers to restore it.
+- The level meter beside the transport shows peak and RMS per channel while the
+  timeline plays. The red light latches when audio clips; ⟲ clears it.
+- Scopes (Inspector, top) measure the picture: Histogram for levels, Waveform for
+  where those levels sit across the frame, Vectorscope for hue and saturation.
+  They are off by default because each reads back every displayed frame.
 - Import supports images, video, and audio that the current browser can decode.
 - Mark media as Favorite (★) or Rejected (✕) in the bin, search it by name, and
   filter to All, Favorites, Rejected, or Unrated. Ratings are project state and

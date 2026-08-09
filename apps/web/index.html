@@ -247,6 +247,23 @@
             multiple
             hidden
           />
+          <!-- Proxies: edit against small copies, export from the originals.
+               A checkbox rather than a hidden preference, because the answer
+               changes with the footage in front of you. -->
+          <div class="media-tools proxy-tools">
+            <label class="proxy-toggle" title="Edit against small proxy copies; exports always use the originals">
+              <input id="proxy-enabled" type="checkbox" checked />
+              Use proxies
+            </label>
+            <span id="proxy-status" class="proxy-status"></span>
+            <button
+              id="btn-clear-proxies"
+              class="mini"
+              title="Delete the proxy files; editing falls back to the originals"
+            >
+              Clear
+            </button>
+          </div>
           <div class="media-tools">
             <select id="media-view" class="media-filter" aria-label="Saved view">
               <option value="" selected>Saved views…</option>
@@ -311,11 +328,48 @@
               value="0"
             />
             <span id="duration" class="duration">/ 00:00.000</span>
+            <!-- Level meter: peak bar, RMS fill and a falling peak-hold mark,
+                 per channel, with a clip light that latches. -->
+            <canvas
+              id="audio-meter"
+              class="audio-meter"
+              width="52"
+              height="34"
+              aria-label="Audio level meter"
+            ></canvas>
+            <button
+              id="btn-meter-reset"
+              class="mini meter-reset"
+              title="Clear the clip indicator"
+            >
+              ⟲
+            </button>
           </div>
         </section>
 
         <!-- RIGHT: inspector -->
         <aside id="right-panel" class="panel" aria-label="Inspector">
+          <!-- Scopes: measure the picture rather than look at it. Off by
+               default — they cost a readback of every displayed frame. -->
+          <section id="scope-section" class="scope-section">
+            <div class="panel-title">Scopes</div>
+            <div class="scope-tools">
+              <select id="scope-kind" class="media-filter" aria-label="Scope">
+                <option value="off" selected>Off</option>
+                <option value="histogram">Histogram</option>
+                <option value="waveform">Waveform</option>
+                <option value="vectorscope">Vectorscope</option>
+              </select>
+              <span id="scope-readout" class="scope-readout"></span>
+            </div>
+            <canvas
+              id="scope-canvas"
+              class="scope-canvas hidden"
+              width="256"
+              height="160"
+              aria-label="Scope"
+            ></canvas>
+          </section>
           <!-- GIF output settings. Present only in GIF mode; the encoder is
                fetched the moment that mode is selected, and this section
                reports where that load got to. -->

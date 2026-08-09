@@ -95,6 +95,28 @@ import {
 } from "./project-file.js";
 import { clearSnapshot, readSnapshot, writeSnapshot } from "./autosave.js";
 import {
+  chromaCentre,
+  clippedFraction,
+  histogram,
+  vectorscope,
+  waveform,
+} from "./scopes.js";
+import {
+  METER_FLOOR_DB,
+  meterFraction,
+  readChannel,
+  silentReading,
+  type ChannelReading,
+} from "./audio-meter.js";
+import {
+  buildProxy,
+  clearProxies,
+  proxySize,
+  proxyStoreBytes,
+  readProxy,
+  shouldBuildProxy,
+} from "./proxy.js";
+import {
   ensurePermission,
   forgetProject,
   listRecent,
@@ -764,6 +786,216 @@ function assetUri(asset: MediaAsset): string {
   return relinkedUris.get(asset.id) ?? asset.originalUri;
 }
 
+/**
+ * Proxy copies, by asset id.
+ *
+ * Like a relink, a proxy is a fact about this session and not about the
+ * project: the same edit against the same footage must produce the same
+ * operation log whether or not a small copy happened to exist. The map holds
+ * object URLs into `mediaCache`, so every render site reaches a proxy the same
+ * way it reaches an original.
+ */
+const proxyUris = new Map<string, string>();
+
+/** Proxies still being built, by asset id, as a 0..1 fraction. */
+const proxyBuilding = new Map<string, number>();
+
+const PROXY_PREF_KEY = "director.useProxies";
+
+/** Whether editing reads proxies. Exports never do — see `renderOriginals`. */
+let useProxies = localStorage.getItem(PROXY_PREF_KEY) !== "off";
+
+/**
+ * Set while an export is rendering.
+ *
+ * `drawLayer` is shared by the preview and by both export paths, so the choice
+ * of which copy to read cannot live at the call site — it is a property of what
+ * the render is *for*. Editing reads proxies; anything that produces a file the
+ * user keeps reads the originals.
+ */
+let renderOriginals = false;
+
+/** The media element a render should read for this asset. */
+function mediaFor(
+  asset: MediaAsset,
+): HTMLImageElement | HTMLVideoElement | undefined {
+  const original = mediaCache.get(assetUri(asset));
+  if (renderOriginals || !useProxies) return original;
+  // During playback the original element is the one being driven — it is what
+  // carries the sound — so the picture comes from it too. Proxies earn their
+  // keep on the other path: scrubbing, where every move costs a decode.
+  if (playback.playing) return original;
+  const proxy = proxyUris.get(asset.id);
+  const proxyMedia = proxy ? mediaCache.get(proxy) : undefined;
+  return proxyMedia ?? original;
+}
+
+/**
+ * Proxy builds run one at a time.
+ *
+ * Each build holds an encoder and seeks a video element as fast as it can;
+ * three at once is three times the work and three times slower per file, with
+ * a preview that stutters throughout. Importing a folder queues them instead.
+ */
+let proxyQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Set while an export is running, and read by proxy builds.
+ *
+ * Both work the same way — seek a video element, draw, encode — and run against
+ * the same file. Doing them at once starves the export's seeks, so it draws the
+ * frame it already had: an export made during a proxy build came out as one
+ * picture repeated. Building pauses instead, and resumes when the export is
+ * done. Every editor that has both features makes the same trade.
+ */
+let exportActive = false;
+
+/** How long a source is given to report its dimensions before the build gives
+ * up on it. Long enough for a large file off a slow disk, short enough that an
+ * unreadable one does not hold the queue. */
+const PROXY_METADATA_TIMEOUT_MS = 15_000;
+
+/** Proxy builds still owed, by asset id, so a paused one can be picked up. */
+const proxyRequests = new Map<
+  string,
+  { checksum: string; url: string; durationUs: string; name: string }
+>();
+
+/** Start any proxy build that was paused for an export. */
+function resumeProxies(): void {
+  for (const [assetId, request] of proxyRequests) {
+    if (proxyUris.has(assetId)) continue;
+    ensureProxy(assetId, request.checksum, request.url, request.durationUs, request.name);
+  }
+}
+
+/**
+ * Make sure this asset has a proxy, building one if it is worth it.
+ *
+ * Never throws and never blocks the import: a proxy is an optimisation, so a
+ * browser without WebCodecs, a codec the encoder refuses, or a full disk all
+ * end the same way — editing against the original, exactly as before.
+ */
+function ensureProxy(
+  assetId: string,
+  checksum: string,
+  url: string,
+  durationUs: string,
+  name: string,
+): void {
+  proxyRequests.set(assetId, { checksum, url, durationUs, name });
+  proxyQueue = proxyQueue.then(async () => {
+    if (proxyUris.has(assetId) || exportActive) return;
+    const existing = await readProxy(checksum);
+    if (existing) {
+      attachProxy(assetId, existing);
+      renderMedia();
+      return;
+    }
+    // A private element, not the one in the media cache. Transcoding seeks its
+    // source thousands of times, and the cached element is simultaneously the
+    // preview's and the export's — sharing it means each one's seeks land in
+    // the other's frames. That is not theoretical: it turned an export of a
+    // freshly-imported clip into repeated frames.
+    const source = document.createElement("video");
+    source.src = url;
+    source.muted = true;
+    source.preload = "auto";
+    const ready = await new Promise<boolean>((resolve) => {
+      source.onloadedmetadata = () => resolve(true);
+      source.onerror = () => resolve(false);
+      // Neither event is promised. A file the browser cannot probe at all just
+      // never answers, and since builds are queued one at a time, waiting on it
+      // forever would cost every proxy behind it too.
+      setTimeout(() => resolve(false), PROXY_METADATA_TIMEOUT_MS);
+    });
+    if (!ready) {
+      source.removeAttribute("src");
+      source.load();
+      return;
+    }
+
+    proxyBuilding.set(assetId, 0);
+    renderMedia();
+    const file = await buildProxy(source, {
+      checksum,
+      durationUs,
+      onProgress: (fraction) => {
+        proxyBuilding.set(assetId, fraction);
+        updateProxyStatus();
+      },
+      cancelled: () => exportActive,
+    });
+    proxyBuilding.delete(assetId);
+    const size = proxySize(source.videoWidth, source.videoHeight);
+    source.removeAttribute("src");
+    source.load();
+    if (file) {
+      proxyRequests.delete(assetId);
+      attachProxy(assetId, file);
+      toast(`Proxy ready for ${name} (${size.width}x${size.height}).`);
+    }
+    renderMedia();
+    updateProxyStatus();
+  });
+}
+
+/** Load a built proxy into the media cache the renderer reads from. */
+function attachProxy(assetId: string, file: File): void {
+  const url = URL.createObjectURL(file);
+  const element = document.createElement("video");
+  element.src = url;
+  element.muted = true;
+  element.preload = "auto";
+  element.addEventListener("loadedmetadata", () => updateUI(), { once: true });
+  attachOffscreen(element);
+  mediaCache.set(url, element);
+  proxyUris.set(assetId, url);
+}
+
+/** The one-line summary beside the proxy toggle. */
+function updateProxyStatus(): void {
+  const status = $("proxy-status");
+  const clear = $<HTMLButtonElement>("btn-clear-proxies");
+  const building = [...proxyBuilding.values()];
+  if (building.length > 0) {
+    const percent = Math.round((building[0] ?? 0) * 100);
+    status.textContent =
+      building.length === 1
+        ? `Building proxy — ${percent}%`
+        : `Building proxy — ${percent}% (${building.length - 1} queued)`;
+    clear.classList.add("hidden");
+    return;
+  }
+  const count = proxyUris.size;
+  clear.classList.toggle("hidden", count === 0);
+  if (count === 0) {
+    status.textContent = "";
+    return;
+  }
+  status.textContent = `${count} prox${count === 1 ? "y" : "ies"}`;
+  // The size comes from disk rather than from what this session built, so a
+  // store left behind by earlier sessions is counted too.
+  void proxyStoreBytes().then((bytes) => {
+    if (proxyBuilding.size > 0 || proxyUris.size === 0) return;
+    status.textContent = `${count} prox${count === 1 ? "y" : "ies"} · ${formatBytes(bytes)}`;
+  });
+}
+
+/** Delete every proxy file and go back to editing the originals. */
+async function discardProxies(): Promise<void> {
+  for (const url of proxyUris.values()) {
+    mediaCache.delete(url);
+    URL.revokeObjectURL(url);
+  }
+  proxyUris.clear();
+  await clearProxies();
+  renderMedia();
+  updateProxyStatus();
+  updateUI();
+  toast("Proxies deleted — editing the originals.");
+}
+
 /** Assets whose bytes are not available in this session. */
 function offlineAssets(): MediaAsset[] {
   return (session.getProject()?.assets ?? []).filter(
@@ -1327,6 +1559,16 @@ async function importFile(file: File): Promise<void> {
     }),
   );
   if (registered) addAssetToTimeline(assetId, kind, durationUs);
+
+  // Proxies are built after registering, not before: the clip should reach the
+  // timeline the moment the file is readable, and the small copy can catch up.
+  if (
+    registered &&
+    kind === "video" &&
+    shouldBuildProxy({ kind, width, height, fileSizeBytes: file.size })
+  ) {
+    ensureProxy(assetId, checksum, url, durationUs, file.name);
+  }
 }
 
 async function importFiles(files: FileList | File[]): Promise<void> {
@@ -1480,7 +1722,10 @@ function drawPreview(): void {
   });
 
   stageEmpty.style.display = visual.length === 0 ? "block" : "none";
-  if (visual.length === 0) return;
+  if (visual.length === 0) {
+    drawScope();
+    return;
+  }
 
   // Paint highest track index last (on top): resolve order is track order.
   for (const layer of [...visual].reverse()) {
@@ -1496,6 +1741,177 @@ function drawPreview(): void {
       );
     }
   }
+  // Measured after everything is painted, so a scope reads exactly what the
+  // viewer is looking at rather than an intermediate state.
+  drawScope();
+}
+
+// ==========================================================================
+// Scopes
+// ==========================================================================
+
+type ScopeKind = "off" | "histogram" | "waveform" | "vectorscope";
+
+let scopeKind: ScopeKind = "off";
+
+/**
+ * How much of the preview a scope reads.
+ *
+ * A scope wants a fair sample of the picture, not every pixel of it: reading a
+ * 4K canvas back on every redraw costs more than drawing it did. Sampling one
+ * pixel in nine changes the counts by a constant factor and the shape not at
+ * all, which is all a scope is read for.
+ */
+const SCOPE_SAMPLE_STEP = 9;
+
+/** Read the displayed frame back for measuring, or null when there is none. */
+function scopePixels(): ImageData | null {
+  if (scopeKind === "off") return null;
+  if (canvas.width === 0 || canvas.height === 0) return null;
+  try {
+    return cctx.getImageData(0, 0, canvas.width, canvas.height);
+  } catch {
+    // A tainted canvas cannot be read back. Nothing here is worth breaking the
+    // preview over.
+    return null;
+  }
+}
+
+/** Paint whichever scope is selected from the current preview. */
+function drawScope(): void {
+  const scopeCanvas = $<HTMLCanvasElement>("scope-canvas");
+  const readout = $("scope-readout");
+  scopeCanvas.classList.toggle("hidden", scopeKind === "off");
+  if (scopeKind === "off") {
+    readout.textContent = "";
+    return;
+  }
+  const ctx = scopeCanvas.getContext("2d");
+  const frame = scopePixels();
+  if (!ctx) return;
+  ctx.fillStyle = "#0b0d12";
+  ctx.fillRect(0, 0, scopeCanvas.width, scopeCanvas.height);
+  if (!frame) {
+    readout.textContent = "no picture";
+    return;
+  }
+  if (scopeKind === "histogram") drawHistogram(ctx, scopeCanvas, frame, readout);
+  else if (scopeKind === "waveform")
+    drawLumaWaveform(ctx, scopeCanvas, frame, readout);
+  else drawVectorscope(ctx, scopeCanvas, frame, readout);
+}
+
+function drawHistogram(
+  ctx: CanvasRenderingContext2D,
+  scopeCanvas: HTMLCanvasElement,
+  frame: ImageData,
+  readout: HTMLElement,
+): void {
+  const bins = histogram(frame.data, SCOPE_SAMPLE_STEP);
+  const tallest = Math.max(
+    1,
+    ...bins.red,
+    ...bins.green,
+    ...bins.blue,
+  );
+  // Additive, so where the three channels agree the trace reads white — the
+  // conventional RGB parade-less histogram.
+  ctx.globalCompositeOperation = "lighter";
+  const channels: [number[], string][] = [
+    [bins.red, "rgba(255,72,72,0.85)"],
+    [bins.green, "rgba(72,255,120,0.85)"],
+    [bins.blue, "rgba(96,140,255,0.85)"],
+  ];
+  for (const [channel, colour] of channels) {
+    ctx.fillStyle = colour;
+    for (let level = 0; level < 256; level++) {
+      const height =
+        ((channel[level] ?? 0) / tallest) * (scopeCanvas.height - 2);
+      const x = (level / 256) * scopeCanvas.width;
+      ctx.fillRect(x, scopeCanvas.height - height, scopeCanvas.width / 256, height);
+    }
+  }
+  ctx.globalCompositeOperation = "source-over";
+  const clipped = clippedFraction(bins.luma, bins.total);
+  readout.textContent = `clip ${(clipped.black * 100).toFixed(1)}% / ${(
+    clipped.white * 100
+  ).toFixed(1)}%`;
+}
+
+function drawLumaWaveform(
+  ctx: CanvasRenderingContext2D,
+  scopeCanvas: HTMLCanvasElement,
+  frame: ImageData,
+  readout: HTMLElement,
+): void {
+  const columns = scopeCanvas.width;
+  const scope = waveform(
+    frame.data,
+    frame.width,
+    frame.height,
+    columns,
+    SCOPE_SAMPLE_STEP,
+  );
+  const image = ctx.createImageData(scopeCanvas.width, scopeCanvas.height);
+  const peak = Math.max(1, scope.peak);
+  for (let x = 0; x < columns; x++) {
+    const bucket = scope.columns[x]!;
+    for (let level = 0; level < 256; level++) {
+      const count = bucket[level] ?? 0;
+      if (count === 0) continue;
+      // Brightness is density, so a flat area reads as a bright line and a
+      // gradient as a soft band — the way a waveform monitor behaves.
+      const intensity = Math.min(255, Math.round((count / peak) * 900));
+      const y = Math.min(
+        scopeCanvas.height - 1,
+        Math.round((1 - level / 255) * (scopeCanvas.height - 1)),
+      );
+      const i = (y * scopeCanvas.width + x) * 4;
+      image.data[i] = Math.min(255, (image.data[i] ?? 0) + intensity * 0.5);
+      image.data[i + 1] = Math.min(255, (image.data[i + 1] ?? 0) + intensity);
+      image.data[i + 2] = Math.min(255, (image.data[i + 2] ?? 0) + intensity * 0.7);
+      image.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  readout.textContent = "0–100 IRE, left to right";
+}
+
+function drawVectorscope(
+  ctx: CanvasRenderingContext2D,
+  scopeCanvas: HTMLCanvasElement,
+  frame: ImageData,
+  readout: HTMLElement,
+): void {
+  const size = 96;
+  const scope = vectorscope(frame.data, size, SCOPE_SAMPLE_STEP);
+  const side = Math.min(scopeCanvas.width, scopeCanvas.height);
+  const originX = (scopeCanvas.width - side) / 2;
+  const cell = side / size;
+  const peak = Math.max(1, scope.peak);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const count = scope.grid[y * size + x] ?? 0;
+      if (count === 0) continue;
+      const intensity = Math.min(1, (count / peak) * 6);
+      ctx.fillStyle = `rgba(120,255,190,${0.15 + intensity * 0.85})`;
+      ctx.fillRect(originX + x * cell, y * cell, Math.ceil(cell), Math.ceil(cell));
+    }
+  }
+  // Graticule: the centre is neutral, the ring is full saturation.
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.beginPath();
+  ctx.arc(originX + side / 2, side / 2, side / 2 - 1, 0, Math.PI * 2);
+  ctx.moveTo(originX, side / 2);
+  ctx.lineTo(originX + side, side / 2);
+  ctx.moveTo(originX + side / 2, 0);
+  ctx.lineTo(originX + side / 2, side);
+  ctx.stroke();
+
+  const centre = chromaCentre(frame.data, SCOPE_SAMPLE_STEP);
+  readout.textContent = `cast ${centre.distance.toFixed(1)} · sat ${(
+    scope.maxSaturation * 100
+  ).toFixed(0)}%`;
 }
 
 /** Crop/reframe is a non-destructive effect: it narrows the source rect
@@ -1570,7 +1986,7 @@ function drawLayer(
 ): void {
   const asset = findAsset(clip.assetId);
   if (!asset) return;
-  const media = mediaCache.get(assetUri(asset));
+  const media = mediaFor(asset);
   if (!media) return;
 
   let mw = asset.metadata.width ?? 1920;
@@ -3534,7 +3950,14 @@ function renderInspector(): void {
     editFrameBtn.style.width = "100%";
     editFrameBtn.style.marginBottom = "12px";
     editFrameBtn.textContent = "🎞 Edit Current Frame (Brush, Clone, Wand…)";
-    editFrameBtn.addEventListener("click", () => void enterRasterModeFromVideoFrame(clip.id));
+    editFrameBtn.addEventListener("click", () => {
+      void enterRasterModeFromVideoFrame(clip.id).catch((err: unknown) => {
+        toast(
+          `Could not read that frame: ${err instanceof Error ? err.message : String(err)}`,
+          true,
+        );
+      });
+    });
     inspectorEl.appendChild(editFrameBtn);
   }
 
@@ -4810,6 +5233,31 @@ function renderMedia(): void {
       ? `${asset.kind} · missing — click Relink`
       : `${asset.kind} · ${formatTime(asset.metadata.durationUs ?? "0")}`;
     meta.append(name, sub);
+    // Which copy this asset is being edited against, said plainly: a soft
+    // preview with no explanation is the usual complaint about proxies.
+    const building = proxyBuilding.get(asset.id);
+    const proxyUrl = proxyUris.get(asset.id);
+    if (building !== undefined) {
+      const badge = document.createElement("span");
+      badge.className = "media-badge building";
+      badge.textContent = `Proxy ${Math.round(building * 100)}%`;
+      sub.append(badge);
+    } else if (proxyUrl) {
+      const proxyMedia = mediaCache.get(proxyUrl);
+      const height =
+        proxyMedia instanceof HTMLVideoElement && proxyMedia.videoHeight
+          ? proxyMedia.videoHeight
+          : proxySize(asset.metadata.width ?? 0, asset.metadata.height ?? 0)
+              .height;
+      const badge = document.createElement("span");
+      badge.className = "media-badge";
+      badge.textContent = `Proxy ${height}p`;
+      badge.title = useProxies
+        ? "Editing against a proxy; exports use the original."
+        : "Proxy built, but proxies are switched off.";
+      el.dataset.proxyHeight = String(height);
+      sub.append(badge);
+    }
     const add = document.createElement("span");
     add.className = "media-add";
     add.textContent = "＋";
@@ -5071,6 +5519,11 @@ async function openProjectFile(file: File): Promise<void> {
   // Media from the previous session is gone with its blob URLs; the hints say
   // what to look for.
   currentProjectHandle = null;
+  for (const url of proxyUris.values()) {
+    mediaCache.delete(url);
+    URL.revokeObjectURL(url);
+  }
+  proxyUris.clear();
   relinkedUris.clear();
   mediaCache.clear();
   removedAssets.clear();
@@ -5164,6 +5617,13 @@ async function attachMediaElement(
   });
   if (element instanceof HTMLVideoElement) attachOffscreen(element);
   mediaCache.set(url, element as HTMLVideoElement);
+  // A proxy is keyed by the source's checksum, so relinking a file that was
+  // proxied in an earlier session picks the small copy straight back up
+  // instead of transcoding it again.
+  if (element instanceof HTMLVideoElement) {
+    const built = await readProxy(asset.checksum);
+    if (built) attachProxy(asset.id, built);
+  }
   void file;
 }
 
@@ -5236,6 +5696,108 @@ function dbToGain(db: number): number {
   return 10 ** (db / 20);
 }
 
+/**
+ * The metering bus every clip's chain feeds into.
+ *
+ * Clips used to connect straight to the destination, which leaves nothing to
+ * measure: a meter has to see the sum, not one clip at a time. The bus splits
+ * into two analysers so left and right read separately — a mix that is loud
+ * only on one side is exactly the fault a stereo meter exists to catch — and
+ * then goes on to the speakers unchanged.
+ */
+let meterNodes: {
+  bus: GainNode;
+  left: AnalyserNode;
+  right: AnalyserNode;
+} | null = null;
+
+function meterBus(ctx: AudioContext): GainNode {
+  if (meterNodes) return meterNodes.bus;
+  const bus = ctx.createGain();
+  const splitter = ctx.createChannelSplitter(2);
+  const left = ctx.createAnalyser();
+  const right = ctx.createAnalyser();
+  // 1024 samples at 48kHz is about 21ms — short enough to see a transient,
+  // long enough that RMS means something.
+  left.fftSize = 1024;
+  right.fftSize = 1024;
+  bus.connect(splitter);
+  splitter.connect(left, 0);
+  splitter.connect(right, 1);
+  bus.connect(ctx.destination);
+  meterNodes = { bus, left, right };
+  return bus;
+}
+
+/** The last reading per channel, so the peak-hold and clip latch survive
+ * between frames. */
+let meterReadings: [ChannelReading, ChannelReading] = [
+  silentReading(),
+  silentReading(),
+];
+
+/** Sample the analysers and paint the meter. Called every animation tick. */
+function drawAudioMeter(): void {
+  const meter = $<HTMLCanvasElement>("audio-meter");
+  const ctx = meter.getContext("2d");
+  if (!ctx) return;
+
+  if (meterNodes && playback.playing) {
+    const buffer = new Float32Array(meterNodes.left.fftSize);
+    meterNodes.left.getFloatTimeDomainData(buffer);
+    const leftReading = readChannel(buffer, meterReadings[0]);
+    meterNodes.right.getFloatTimeDomainData(buffer);
+    const rightReading = readChannel(buffer, meterReadings[1]);
+    meterReadings = [leftReading, rightReading];
+  } else if (meterNodes) {
+    // Paused: no signal to read, but the hold keeps falling and the clip latch
+    // stays lit until it is cleared.
+    const quiet = new Float32Array(0);
+    meterReadings = [
+      readChannel(quiet, meterReadings[0]),
+      readChannel(quiet, meterReadings[1]),
+    ];
+  }
+
+  ctx.clearRect(0, 0, meter.width, meter.height);
+  const barHeight = 9;
+  const gap = 4;
+  const clipWidth = 6;
+  const trackWidth = meter.width - clipWidth - 3;
+  // The empty track has to be visible against whichever theme is on. A fixed
+  // translucent white vanished entirely on the light skin, leaving a meter that
+  // looked like an empty box until something played.
+  const style = getComputedStyle(meter);
+  const trackColour = style.getPropertyValue("--line").trim() || "#8884";
+  meterReadings.forEach((reading, index) => {
+    const y = 4 + index * (barHeight + gap);
+    ctx.fillStyle = trackColour;
+    ctx.fillRect(0, y, trackWidth, barHeight);
+    // RMS is the filled bar (what sounds loud), peak is a brighter cap.
+    const rms = meterFraction(reading.rmsDb) * trackWidth;
+    ctx.fillStyle = reading.peakDb > -6 ? "#f0b03a" : "#4ade80";
+    ctx.fillRect(0, y, rms, barHeight);
+    const peak = meterFraction(reading.peakDb) * trackWidth;
+    ctx.fillStyle = style.getPropertyValue("--muted").trim() || "#888";
+    ctx.fillRect(Math.max(0, peak - 1), y, 1.5, barHeight);
+    // The falling hold mark.
+    if (reading.holdDb > METER_FLOOR_DB) {
+      const hold = meterFraction(reading.holdDb) * trackWidth;
+      ctx.fillStyle = style.getPropertyValue("--text").trim() || "#fff";
+      ctx.fillRect(Math.max(0, hold - 1), y, 1.5, barHeight);
+    }
+  });
+  const clipped = meterReadings.some((reading) => reading.clipped);
+  ctx.fillStyle = clipped ? "#ef4444" : trackColour;
+  ctx.fillRect(meter.width - clipWidth, 4, clipWidth, barHeight * 2 + gap);
+}
+
+/** Clear the latched clip indicator. */
+function resetAudioMeter(): void {
+  meterReadings = [silentReading(), silentReading()];
+  drawAudioMeter();
+}
+
 /** Lazily build (once) and return gain/pan routing for a media element.
  * `createMediaElementSource` can only run once per element and permanently
  * reroutes the element's audio into the graph, so we cache the nodes and
@@ -5247,7 +5809,7 @@ function audioRouteFor(el: HTMLMediaElement): AudioRoute {
     const source = ctx.createMediaElementSource(el);
     const chain = buildAudioChain(ctx);
     source.connect(chain.low);
-    chain.pan.connect(ctx.destination);
+    chain.pan.connect(meterBus(ctx));
     el.muted = false;
     route = chain;
     audioRoutes.set(el, route);
@@ -5330,6 +5892,8 @@ function syncAudioMonitors(): void {
   for (const layer of active) {
     const asset = findAsset(layer.assetId);
     if (!asset || asset.kind === "image") continue;
+    // The original, always: a proxy carries picture only, and this is the
+    // element that is actually being heard.
     const el = mediaCache.get(assetUri(asset));
     if (!(el instanceof HTMLMediaElement)) continue;
     const loc = locateClip(layer.clipId);
@@ -5388,6 +5952,9 @@ function animate(now: number): void {
     drawPreview();
     renderTimeline();
   }
+  // Outside the branch on purpose: paused, there is no signal to read, but the
+  // peak-hold still has to fall and the clip latch still has to stay lit.
+  drawAudioMeter();
   requestAnimationFrame(animate);
 }
 
@@ -5955,6 +6522,20 @@ function attachOffscreen(video: HTMLVideoElement): void {
 const FRAME_PRESENT_TIMEOUT_MS = 300;
 
 /**
+ * Safety net for the seek itself, which is a different thing to cap.
+ *
+ * A seek has no failure event: an element that stops decoding part-way simply
+ * never fires `seeked`, and an export waiting on it waits forever. This ends
+ * that wait — but unlike the net above it throws rather than resolves.
+ * Resolving would hand `drawImage` whichever frame happened to be presented
+ * last and write a file that is quietly wrong, which is the exact failure this
+ * function was written to prevent and the one this project has already shipped
+ * twice (LESSONS.md, 2026-08-08). A stuck export that says so is recoverable;
+ * a finished export that lied is not.
+ */
+const SEEK_LANDED_TIMEOUT_MS = 10_000;
+
+/**
  * Seek `video` and resolve once the target frame can actually be drawn.
  *
  * The tempting checks are all wrong on their own. `currentTime` reports the
@@ -5982,16 +6563,27 @@ function seekVideoFrame(
   ) {
     return Promise.resolve();
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (): void => {
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const listeners = new AbortController();
+    const done = (error?: Error): void => {
       if (settled) return;
       settled = true;
-      resolve();
+      if (guard !== undefined) clearTimeout(guard);
+      listeners.abort();
+      if (error) reject(error);
+      else resolve();
     };
     const awaitPresentedFrame = (): void => {
+      // The seek landed, so its cap has done its job; from here the
+      // frame-present net below is the one that applies.
+      if (guard !== undefined) {
+        clearTimeout(guard);
+        guard = undefined;
+      }
       if (typeof video.requestVideoFrameCallback !== "function") {
-        finish();
+        done();
         return;
       }
       const onFrame = (_now: number, metadata: { mediaTime: number }): void => {
@@ -5999,14 +6591,25 @@ function seekVideoFrame(
         // Frames already in flight can arrive first; keep waiting for the one
         // whose own timestamp is the frame that was asked for.
         if (Math.abs(metadata.mediaTime - targetSeconds) < 0.05) {
-          finish();
+          done();
           return;
         }
         video.requestVideoFrameCallback(onFrame);
       };
       video.requestVideoFrameCallback(onFrame);
-      setTimeout(finish, FRAME_PRESENT_TIMEOUT_MS);
+      setTimeout(() => done(), FRAME_PRESENT_TIMEOUT_MS);
     };
+
+    video.addEventListener(
+      "error",
+      () =>
+        done(
+          new Error(
+            `video errored while seeking to ${targetSeconds.toFixed(3)}s`,
+          ),
+        ),
+      { signal: listeners.signal },
+    );
 
     if (atTarget) {
       // A seek to this same time is already in flight — started by drawLayer's
@@ -6015,11 +6618,20 @@ function seekVideoFrame(
       awaitPresentedFrame();
       return;
     }
-    const onSeeked = (): void => {
-      video.removeEventListener("seeked", onSeeked);
-      awaitPresentedFrame();
-    };
-    video.addEventListener("seeked", onSeeked);
+    // `once`, as before the abort signal was introduced: another seek landing
+    // on this element mid-wait must not start a second frame-wait alongside
+    // the first.
+    video.addEventListener("seeked", () => awaitPresentedFrame(), {
+      once: true,
+      signal: listeners.signal,
+    });
+    guard = setTimeout(
+      () =>
+        done(
+          new Error(`seek to ${targetSeconds.toFixed(3)}s never completed`),
+        ),
+      SEEK_LANDED_TIMEOUT_MS,
+    );
     video.currentTime = targetSeconds;
   });
 }
@@ -7153,6 +7765,31 @@ function bindEvents(): void {
     renderMedia();
   });
   renderSavedViews();
+  const proxyToggle = $<HTMLInputElement>("proxy-enabled");
+  proxyToggle.checked = useProxies;
+  proxyToggle.addEventListener("change", () => {
+    useProxies = proxyToggle.checked;
+    localStorage.setItem(PROXY_PREF_KEY, useProxies ? "on" : "off");
+    toast(
+      useProxies
+        ? "Editing against proxies where they exist."
+        : "Editing against the originals.",
+    );
+    renderMedia();
+    updateUI();
+  });
+  $("btn-clear-proxies").addEventListener("click", () => void discardProxies());
+  const scopeSelect = $<HTMLSelectElement>("scope-kind");
+  scopeSelect.value = scopeKind;
+  scopeSelect.addEventListener("change", () => {
+    scopeKind = scopeSelect.value as ScopeKind;
+    // Repaint rather than measure what is already on the canvas: paused, the
+    // scope would otherwise read whatever was last drawn, and turning one on
+    // would show nothing until the next redraw.
+    drawPreview();
+  });
+  $("btn-meter-reset").addEventListener("click", () => resetAudioMeter());
+  updateProxyStatus();
   $("media-filter").addEventListener("change", () => {
     mediaFilter = $<HTMLSelectElement>("media-filter").value as MediaFilter;
     renderMedia();
@@ -7298,7 +7935,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   if (!topLoc) return null;
   const topAsset = findAsset(topLoc.clip.assetId);
   if (!topAsset) return null;
-  const media = mediaCache.get(assetUri(topAsset));
+  const media = mediaFor(topAsset);
   let mw = topAsset.metadata.width ?? 1920;
   let mh = topAsset.metadata.height ?? 1080;
   if (media instanceof HTMLImageElement) {
@@ -7319,7 +7956,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
     if (!loc) continue;
     const layerAsset = findAsset(loc.clip.assetId);
     const layerMedia = layerAsset
-      ? mediaCache.get(assetUri(layerAsset))
+      ? mediaFor(layerAsset)
       : undefined;
     if (layerMedia instanceof HTMLVideoElement) {
       await seekVideoFrame(layerMedia, Number(layer.sourceTimeUs) / 1_000_000);
@@ -7347,7 +7984,18 @@ async function exportPhotoImage(): Promise<void> {
     playback = pause(playback);
     syncTransport();
   }
-  const canvasEl = await renderExportFrame();
+  // A frame that never decoded throws rather than exporting the wrong picture;
+  // say so instead of failing as an unhandled rejection.
+  let canvasEl: HTMLCanvasElement | null;
+  try {
+    canvasEl = await renderExportFrame();
+  } catch (err) {
+    toast(
+      `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+      true,
+    );
+    return;
+  }
   if (!canvasEl) {
     toast("Nothing to export.", true);
     return;
@@ -7550,6 +8198,12 @@ async function runVideoExport(
 
   let job: ExportJob = startExport(plan);
 
+  // Everything from here reads the originals. A proxy exists to make editing
+  // quick; exporting one would hand the user a soft file that nothing in the
+  // interface warned them about.
+  renderOriginals = true;
+  exportActive = true;
+
   try {
     // A VideoEncoder's `error` callback fires from the codec's own internal
     // task, not from any code we called — throwing there does NOT propagate
@@ -7632,7 +8286,7 @@ async function runVideoExport(
           const loc = locateClip(layer.clipId);
           if (!loc) continue;
           const asset = findAsset(loc.clip.assetId);
-          const media = asset ? mediaCache.get(assetUri(asset)) : undefined;
+          const media = asset ? mediaFor(asset) : undefined;
           if (media instanceof HTMLVideoElement) {
             await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
           }
@@ -7697,6 +8351,10 @@ async function runVideoExport(
       status: "failed",
       message: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    renderOriginals = false;
+    exportActive = false;
+    resumeProxies();
   }
 }
 
@@ -8029,6 +8687,9 @@ async function runGifExport(): Promise<void> {
   const status = $<HTMLDivElement>("gif-status");
   const fps = clampGifFps(gifSettings.fps);
   const frameCount = gifFrameCount(seq);
+  // As with video: a file the user keeps comes from the originals.
+  renderOriginals = true;
+  exportActive = true;
 
   try {
     const sink = await createGifEncoder({
@@ -8055,7 +8716,7 @@ async function runGifExport(): Promise<void> {
         const loc = locateClip(layer.clipId);
         if (!loc) continue;
         const asset = findAsset(loc.clip.assetId);
-        const media = asset ? mediaCache.get(assetUri(asset)) : undefined;
+        const media = asset ? mediaFor(asset) : undefined;
         if (media instanceof HTMLVideoElement) {
           await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
         }
@@ -8092,6 +8753,9 @@ async function runGifExport(): Promise<void> {
     toast(`GIF export failed: ${message}`, true);
   } finally {
     gifExportInFlight = false;
+    renderOriginals = false;
+    exportActive = false;
+    resumeProxies();
     renderGifPanel();
   }
 }

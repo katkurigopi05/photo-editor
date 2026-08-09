@@ -1947,12 +1947,90 @@ select {
 }
 
 /* ---- toast + drop overlay ---- */
+.audio-meter {
+  width: 52px;
+  height: 34px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.meter-reset {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.scope-section {
+  margin-bottom: 14px;
+}
+.scope-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.scope-readout {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.scope-canvas {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #0b0d12;
+  image-rendering: pixelated;
+}
+.scope-canvas.hidden {
+  display: none;
+}
+.proxy-tools {
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+/* Specific rather than a bare `.hidden`: the generic class loses to `.mini`'s
+   own display at equal specificity, which is how the export dialog once shipped
+   with its Custom fields permanently visible. */
+.proxy-tools .mini.hidden {
+  display: none;
+}
+.proxy-toggle {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.proxy-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+.media-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--accent-soft, rgba(99, 102, 241, 0.16));
+  color: var(--accent, #6366f1);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.media-badge.building {
+  background: rgba(148, 163, 184, 0.22);
+  color: var(--muted);
+}
+
 /* Two words that must stay on one line, or the whole top bar grows a row. */
 #btn-save-as {
   white-space: nowrap;
 }
 .recent-select {
-  max-width: 150px;
+  /* Fixed rather than flexible: in a full top bar the browser was shrinking it
+     to a single letter and an arrow. */
+  width: 104px;
+  flex: 0 0 104px;
+  max-width: 104px;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
