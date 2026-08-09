@@ -69,6 +69,14 @@ against the original exactly as before. A build that dies part-way leaves a
 zero-length file, which `readProxy` treats as absent rather than as a proxy that
 renders black.
 
+The one failure that needed a cap of its own is a source that stops answering.
+A seek has no failure event: a decode that dies half way through a file simply
+never fires `seeked`. Waiting on it forever would be bad enough on its own, but
+because builds are queued one at a time it would also cost every proxy behind
+it, with the status line stuck on a percentage that never moves again. Each
+seek is given ten seconds and the metadata probe fifteen; past that the build
+ends the way every other failure does, and the queue moves on.
+
 ## Two things that share a video element
 
 Both problems found while building this were the same problem: transcoding and
@@ -93,6 +101,9 @@ fixture it uses became large enough to proxy.
 - `apps/web/test/proxy.test.ts` — the rules that decide whether and at what
   size: aspect and even dimensions, no upscaling a small source, the height and
   file-size thresholds, stills and audio never proxied, and the bitrate floor.
+  Also `seekTo`, against a source that never answers: the assertion is that the
+  build gives up rather than waits, and with the cap removed it does not fail,
+  it hangs — which is precisely the production symptom.
 - `apps/web/e2e/proxy-media.spec.ts` — a 720p import genuinely edited against a
   540p copy stored under its checksum; the preview still painting through the
   proxy; the toggle surviving a reload; Clear deleting the files; and the export

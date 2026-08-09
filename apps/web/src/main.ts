@@ -95,6 +95,20 @@ import {
 } from "./project-file.js";
 import { clearSnapshot, readSnapshot, writeSnapshot } from "./autosave.js";
 import {
+  chromaCentre,
+  clippedFraction,
+  histogram,
+  vectorscope,
+  waveform,
+} from "./scopes.js";
+import {
+  METER_FLOOR_DB,
+  meterFraction,
+  readChannel,
+  silentReading,
+  type ChannelReading,
+} from "./audio-meter.js";
+import {
   buildProxy,
   clearProxies,
   proxySize,
@@ -836,6 +850,11 @@ let proxyQueue: Promise<void> = Promise.resolve();
  */
 let exportActive = false;
 
+/** How long a source is given to report its dimensions before the build gives
+ * up on it. Long enough for a large file off a slow disk, short enough that an
+ * unreadable one does not hold the queue. */
+const PROXY_METADATA_TIMEOUT_MS = 15_000;
+
 /** Proxy builds still owed, by asset id, so a paused one can be picked up. */
 const proxyRequests = new Map<
   string,
@@ -885,8 +904,16 @@ function ensureProxy(
     const ready = await new Promise<boolean>((resolve) => {
       source.onloadedmetadata = () => resolve(true);
       source.onerror = () => resolve(false);
+      // Neither event is promised. A file the browser cannot probe at all just
+      // never answers, and since builds are queued one at a time, waiting on it
+      // forever would cost every proxy behind it too.
+      setTimeout(() => resolve(false), PROXY_METADATA_TIMEOUT_MS);
     });
-    if (!ready) return;
+    if (!ready) {
+      source.removeAttribute("src");
+      source.load();
+      return;
+    }
 
     proxyBuilding.set(assetId, 0);
     renderMedia();
@@ -1695,7 +1722,10 @@ function drawPreview(): void {
   });
 
   stageEmpty.style.display = visual.length === 0 ? "block" : "none";
-  if (visual.length === 0) return;
+  if (visual.length === 0) {
+    drawScope();
+    return;
+  }
 
   // Paint highest track index last (on top): resolve order is track order.
   for (const layer of [...visual].reverse()) {
@@ -1711,6 +1741,177 @@ function drawPreview(): void {
       );
     }
   }
+  // Measured after everything is painted, so a scope reads exactly what the
+  // viewer is looking at rather than an intermediate state.
+  drawScope();
+}
+
+// ==========================================================================
+// Scopes
+// ==========================================================================
+
+type ScopeKind = "off" | "histogram" | "waveform" | "vectorscope";
+
+let scopeKind: ScopeKind = "off";
+
+/**
+ * How much of the preview a scope reads.
+ *
+ * A scope wants a fair sample of the picture, not every pixel of it: reading a
+ * 4K canvas back on every redraw costs more than drawing it did. Sampling one
+ * pixel in nine changes the counts by a constant factor and the shape not at
+ * all, which is all a scope is read for.
+ */
+const SCOPE_SAMPLE_STEP = 9;
+
+/** Read the displayed frame back for measuring, or null when there is none. */
+function scopePixels(): ImageData | null {
+  if (scopeKind === "off") return null;
+  if (canvas.width === 0 || canvas.height === 0) return null;
+  try {
+    return cctx.getImageData(0, 0, canvas.width, canvas.height);
+  } catch {
+    // A tainted canvas cannot be read back. Nothing here is worth breaking the
+    // preview over.
+    return null;
+  }
+}
+
+/** Paint whichever scope is selected from the current preview. */
+function drawScope(): void {
+  const scopeCanvas = $<HTMLCanvasElement>("scope-canvas");
+  const readout = $("scope-readout");
+  scopeCanvas.classList.toggle("hidden", scopeKind === "off");
+  if (scopeKind === "off") {
+    readout.textContent = "";
+    return;
+  }
+  const ctx = scopeCanvas.getContext("2d");
+  const frame = scopePixels();
+  if (!ctx) return;
+  ctx.fillStyle = "#0b0d12";
+  ctx.fillRect(0, 0, scopeCanvas.width, scopeCanvas.height);
+  if (!frame) {
+    readout.textContent = "no picture";
+    return;
+  }
+  if (scopeKind === "histogram") drawHistogram(ctx, scopeCanvas, frame, readout);
+  else if (scopeKind === "waveform")
+    drawLumaWaveform(ctx, scopeCanvas, frame, readout);
+  else drawVectorscope(ctx, scopeCanvas, frame, readout);
+}
+
+function drawHistogram(
+  ctx: CanvasRenderingContext2D,
+  scopeCanvas: HTMLCanvasElement,
+  frame: ImageData,
+  readout: HTMLElement,
+): void {
+  const bins = histogram(frame.data, SCOPE_SAMPLE_STEP);
+  const tallest = Math.max(
+    1,
+    ...bins.red,
+    ...bins.green,
+    ...bins.blue,
+  );
+  // Additive, so where the three channels agree the trace reads white — the
+  // conventional RGB parade-less histogram.
+  ctx.globalCompositeOperation = "lighter";
+  const channels: [number[], string][] = [
+    [bins.red, "rgba(255,72,72,0.85)"],
+    [bins.green, "rgba(72,255,120,0.85)"],
+    [bins.blue, "rgba(96,140,255,0.85)"],
+  ];
+  for (const [channel, colour] of channels) {
+    ctx.fillStyle = colour;
+    for (let level = 0; level < 256; level++) {
+      const height =
+        ((channel[level] ?? 0) / tallest) * (scopeCanvas.height - 2);
+      const x = (level / 256) * scopeCanvas.width;
+      ctx.fillRect(x, scopeCanvas.height - height, scopeCanvas.width / 256, height);
+    }
+  }
+  ctx.globalCompositeOperation = "source-over";
+  const clipped = clippedFraction(bins.luma, bins.total);
+  readout.textContent = `clip ${(clipped.black * 100).toFixed(1)}% / ${(
+    clipped.white * 100
+  ).toFixed(1)}%`;
+}
+
+function drawLumaWaveform(
+  ctx: CanvasRenderingContext2D,
+  scopeCanvas: HTMLCanvasElement,
+  frame: ImageData,
+  readout: HTMLElement,
+): void {
+  const columns = scopeCanvas.width;
+  const scope = waveform(
+    frame.data,
+    frame.width,
+    frame.height,
+    columns,
+    SCOPE_SAMPLE_STEP,
+  );
+  const image = ctx.createImageData(scopeCanvas.width, scopeCanvas.height);
+  const peak = Math.max(1, scope.peak);
+  for (let x = 0; x < columns; x++) {
+    const bucket = scope.columns[x]!;
+    for (let level = 0; level < 256; level++) {
+      const count = bucket[level] ?? 0;
+      if (count === 0) continue;
+      // Brightness is density, so a flat area reads as a bright line and a
+      // gradient as a soft band — the way a waveform monitor behaves.
+      const intensity = Math.min(255, Math.round((count / peak) * 900));
+      const y = Math.min(
+        scopeCanvas.height - 1,
+        Math.round((1 - level / 255) * (scopeCanvas.height - 1)),
+      );
+      const i = (y * scopeCanvas.width + x) * 4;
+      image.data[i] = Math.min(255, (image.data[i] ?? 0) + intensity * 0.5);
+      image.data[i + 1] = Math.min(255, (image.data[i + 1] ?? 0) + intensity);
+      image.data[i + 2] = Math.min(255, (image.data[i + 2] ?? 0) + intensity * 0.7);
+      image.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  readout.textContent = "0–100 IRE, left to right";
+}
+
+function drawVectorscope(
+  ctx: CanvasRenderingContext2D,
+  scopeCanvas: HTMLCanvasElement,
+  frame: ImageData,
+  readout: HTMLElement,
+): void {
+  const size = 96;
+  const scope = vectorscope(frame.data, size, SCOPE_SAMPLE_STEP);
+  const side = Math.min(scopeCanvas.width, scopeCanvas.height);
+  const originX = (scopeCanvas.width - side) / 2;
+  const cell = side / size;
+  const peak = Math.max(1, scope.peak);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const count = scope.grid[y * size + x] ?? 0;
+      if (count === 0) continue;
+      const intensity = Math.min(1, (count / peak) * 6);
+      ctx.fillStyle = `rgba(120,255,190,${0.15 + intensity * 0.85})`;
+      ctx.fillRect(originX + x * cell, y * cell, Math.ceil(cell), Math.ceil(cell));
+    }
+  }
+  // Graticule: the centre is neutral, the ring is full saturation.
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.beginPath();
+  ctx.arc(originX + side / 2, side / 2, side / 2 - 1, 0, Math.PI * 2);
+  ctx.moveTo(originX, side / 2);
+  ctx.lineTo(originX + side, side / 2);
+  ctx.moveTo(originX + side / 2, 0);
+  ctx.lineTo(originX + side / 2, side);
+  ctx.stroke();
+
+  const centre = chromaCentre(frame.data, SCOPE_SAMPLE_STEP);
+  readout.textContent = `cast ${centre.distance.toFixed(1)} · sat ${(
+    scope.maxSaturation * 100
+  ).toFixed(0)}%`;
 }
 
 /** Crop/reframe is a non-destructive effect: it narrows the source rect
@@ -3749,7 +3950,14 @@ function renderInspector(): void {
     editFrameBtn.style.width = "100%";
     editFrameBtn.style.marginBottom = "12px";
     editFrameBtn.textContent = "🎞 Edit Current Frame (Brush, Clone, Wand…)";
-    editFrameBtn.addEventListener("click", () => void enterRasterModeFromVideoFrame(clip.id));
+    editFrameBtn.addEventListener("click", () => {
+      void enterRasterModeFromVideoFrame(clip.id).catch((err: unknown) => {
+        toast(
+          `Could not read that frame: ${err instanceof Error ? err.message : String(err)}`,
+          true,
+        );
+      });
+    });
     inspectorEl.appendChild(editFrameBtn);
   }
 
@@ -5488,6 +5696,108 @@ function dbToGain(db: number): number {
   return 10 ** (db / 20);
 }
 
+/**
+ * The metering bus every clip's chain feeds into.
+ *
+ * Clips used to connect straight to the destination, which leaves nothing to
+ * measure: a meter has to see the sum, not one clip at a time. The bus splits
+ * into two analysers so left and right read separately — a mix that is loud
+ * only on one side is exactly the fault a stereo meter exists to catch — and
+ * then goes on to the speakers unchanged.
+ */
+let meterNodes: {
+  bus: GainNode;
+  left: AnalyserNode;
+  right: AnalyserNode;
+} | null = null;
+
+function meterBus(ctx: AudioContext): GainNode {
+  if (meterNodes) return meterNodes.bus;
+  const bus = ctx.createGain();
+  const splitter = ctx.createChannelSplitter(2);
+  const left = ctx.createAnalyser();
+  const right = ctx.createAnalyser();
+  // 1024 samples at 48kHz is about 21ms — short enough to see a transient,
+  // long enough that RMS means something.
+  left.fftSize = 1024;
+  right.fftSize = 1024;
+  bus.connect(splitter);
+  splitter.connect(left, 0);
+  splitter.connect(right, 1);
+  bus.connect(ctx.destination);
+  meterNodes = { bus, left, right };
+  return bus;
+}
+
+/** The last reading per channel, so the peak-hold and clip latch survive
+ * between frames. */
+let meterReadings: [ChannelReading, ChannelReading] = [
+  silentReading(),
+  silentReading(),
+];
+
+/** Sample the analysers and paint the meter. Called every animation tick. */
+function drawAudioMeter(): void {
+  const meter = $<HTMLCanvasElement>("audio-meter");
+  const ctx = meter.getContext("2d");
+  if (!ctx) return;
+
+  if (meterNodes && playback.playing) {
+    const buffer = new Float32Array(meterNodes.left.fftSize);
+    meterNodes.left.getFloatTimeDomainData(buffer);
+    const leftReading = readChannel(buffer, meterReadings[0]);
+    meterNodes.right.getFloatTimeDomainData(buffer);
+    const rightReading = readChannel(buffer, meterReadings[1]);
+    meterReadings = [leftReading, rightReading];
+  } else if (meterNodes) {
+    // Paused: no signal to read, but the hold keeps falling and the clip latch
+    // stays lit until it is cleared.
+    const quiet = new Float32Array(0);
+    meterReadings = [
+      readChannel(quiet, meterReadings[0]),
+      readChannel(quiet, meterReadings[1]),
+    ];
+  }
+
+  ctx.clearRect(0, 0, meter.width, meter.height);
+  const barHeight = 9;
+  const gap = 4;
+  const clipWidth = 6;
+  const trackWidth = meter.width - clipWidth - 3;
+  // The empty track has to be visible against whichever theme is on. A fixed
+  // translucent white vanished entirely on the light skin, leaving a meter that
+  // looked like an empty box until something played.
+  const style = getComputedStyle(meter);
+  const trackColour = style.getPropertyValue("--line").trim() || "#8884";
+  meterReadings.forEach((reading, index) => {
+    const y = 4 + index * (barHeight + gap);
+    ctx.fillStyle = trackColour;
+    ctx.fillRect(0, y, trackWidth, barHeight);
+    // RMS is the filled bar (what sounds loud), peak is a brighter cap.
+    const rms = meterFraction(reading.rmsDb) * trackWidth;
+    ctx.fillStyle = reading.peakDb > -6 ? "#f0b03a" : "#4ade80";
+    ctx.fillRect(0, y, rms, barHeight);
+    const peak = meterFraction(reading.peakDb) * trackWidth;
+    ctx.fillStyle = style.getPropertyValue("--muted").trim() || "#888";
+    ctx.fillRect(Math.max(0, peak - 1), y, 1.5, barHeight);
+    // The falling hold mark.
+    if (reading.holdDb > METER_FLOOR_DB) {
+      const hold = meterFraction(reading.holdDb) * trackWidth;
+      ctx.fillStyle = style.getPropertyValue("--text").trim() || "#fff";
+      ctx.fillRect(Math.max(0, hold - 1), y, 1.5, barHeight);
+    }
+  });
+  const clipped = meterReadings.some((reading) => reading.clipped);
+  ctx.fillStyle = clipped ? "#ef4444" : trackColour;
+  ctx.fillRect(meter.width - clipWidth, 4, clipWidth, barHeight * 2 + gap);
+}
+
+/** Clear the latched clip indicator. */
+function resetAudioMeter(): void {
+  meterReadings = [silentReading(), silentReading()];
+  drawAudioMeter();
+}
+
 /** Lazily build (once) and return gain/pan routing for a media element.
  * `createMediaElementSource` can only run once per element and permanently
  * reroutes the element's audio into the graph, so we cache the nodes and
@@ -5499,7 +5809,7 @@ function audioRouteFor(el: HTMLMediaElement): AudioRoute {
     const source = ctx.createMediaElementSource(el);
     const chain = buildAudioChain(ctx);
     source.connect(chain.low);
-    chain.pan.connect(ctx.destination);
+    chain.pan.connect(meterBus(ctx));
     el.muted = false;
     route = chain;
     audioRoutes.set(el, route);
@@ -5642,6 +5952,9 @@ function animate(now: number): void {
     drawPreview();
     renderTimeline();
   }
+  // Outside the branch on purpose: paused, there is no signal to read, but the
+  // peak-hold still has to fall and the clip latch still has to stay lit.
+  drawAudioMeter();
   requestAnimationFrame(animate);
 }
 
@@ -6209,6 +6522,20 @@ function attachOffscreen(video: HTMLVideoElement): void {
 const FRAME_PRESENT_TIMEOUT_MS = 300;
 
 /**
+ * Safety net for the seek itself, which is a different thing to cap.
+ *
+ * A seek has no failure event: an element that stops decoding part-way simply
+ * never fires `seeked`, and an export waiting on it waits forever. This ends
+ * that wait — but unlike the net above it throws rather than resolves.
+ * Resolving would hand `drawImage` whichever frame happened to be presented
+ * last and write a file that is quietly wrong, which is the exact failure this
+ * function was written to prevent and the one this project has already shipped
+ * twice (LESSONS.md, 2026-08-08). A stuck export that says so is recoverable;
+ * a finished export that lied is not.
+ */
+const SEEK_LANDED_TIMEOUT_MS = 10_000;
+
+/**
  * Seek `video` and resolve once the target frame can actually be drawn.
  *
  * The tempting checks are all wrong on their own. `currentTime` reports the
@@ -6236,16 +6563,27 @@ function seekVideoFrame(
   ) {
     return Promise.resolve();
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (): void => {
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const listeners = new AbortController();
+    const done = (error?: Error): void => {
       if (settled) return;
       settled = true;
-      resolve();
+      if (guard !== undefined) clearTimeout(guard);
+      listeners.abort();
+      if (error) reject(error);
+      else resolve();
     };
     const awaitPresentedFrame = (): void => {
+      // The seek landed, so its cap has done its job; from here the
+      // frame-present net below is the one that applies.
+      if (guard !== undefined) {
+        clearTimeout(guard);
+        guard = undefined;
+      }
       if (typeof video.requestVideoFrameCallback !== "function") {
-        finish();
+        done();
         return;
       }
       const onFrame = (_now: number, metadata: { mediaTime: number }): void => {
@@ -6253,14 +6591,25 @@ function seekVideoFrame(
         // Frames already in flight can arrive first; keep waiting for the one
         // whose own timestamp is the frame that was asked for.
         if (Math.abs(metadata.mediaTime - targetSeconds) < 0.05) {
-          finish();
+          done();
           return;
         }
         video.requestVideoFrameCallback(onFrame);
       };
       video.requestVideoFrameCallback(onFrame);
-      setTimeout(finish, FRAME_PRESENT_TIMEOUT_MS);
+      setTimeout(() => done(), FRAME_PRESENT_TIMEOUT_MS);
     };
+
+    video.addEventListener(
+      "error",
+      () =>
+        done(
+          new Error(
+            `video errored while seeking to ${targetSeconds.toFixed(3)}s`,
+          ),
+        ),
+      { signal: listeners.signal },
+    );
 
     if (atTarget) {
       // A seek to this same time is already in flight — started by drawLayer's
@@ -6269,11 +6618,20 @@ function seekVideoFrame(
       awaitPresentedFrame();
       return;
     }
-    const onSeeked = (): void => {
-      video.removeEventListener("seeked", onSeeked);
-      awaitPresentedFrame();
-    };
-    video.addEventListener("seeked", onSeeked);
+    // `once`, as before the abort signal was introduced: another seek landing
+    // on this element mid-wait must not start a second frame-wait alongside
+    // the first.
+    video.addEventListener("seeked", () => awaitPresentedFrame(), {
+      once: true,
+      signal: listeners.signal,
+    });
+    guard = setTimeout(
+      () =>
+        done(
+          new Error(`seek to ${targetSeconds.toFixed(3)}s never completed`),
+        ),
+      SEEK_LANDED_TIMEOUT_MS,
+    );
     video.currentTime = targetSeconds;
   });
 }
@@ -7421,6 +7779,16 @@ function bindEvents(): void {
     updateUI();
   });
   $("btn-clear-proxies").addEventListener("click", () => void discardProxies());
+  const scopeSelect = $<HTMLSelectElement>("scope-kind");
+  scopeSelect.value = scopeKind;
+  scopeSelect.addEventListener("change", () => {
+    scopeKind = scopeSelect.value as ScopeKind;
+    // Repaint rather than measure what is already on the canvas: paused, the
+    // scope would otherwise read whatever was last drawn, and turning one on
+    // would show nothing until the next redraw.
+    drawPreview();
+  });
+  $("btn-meter-reset").addEventListener("click", () => resetAudioMeter());
   updateProxyStatus();
   $("media-filter").addEventListener("change", () => {
     mediaFilter = $<HTMLSelectElement>("media-filter").value as MediaFilter;
@@ -7616,7 +7984,18 @@ async function exportPhotoImage(): Promise<void> {
     playback = pause(playback);
     syncTransport();
   }
-  const canvasEl = await renderExportFrame();
+  // A frame that never decoded throws rather than exporting the wrong picture;
+  // say so instead of failing as an unhandled rejection.
+  let canvasEl: HTMLCanvasElement | null;
+  try {
+    canvasEl = await renderExportFrame();
+  } catch (err) {
+    toast(
+      `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+      true,
+    );
+    return;
+  }
   if (!canvasEl) {
     toast("Nothing to export.", true);
     return;

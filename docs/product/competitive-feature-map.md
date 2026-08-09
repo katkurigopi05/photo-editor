@@ -79,7 +79,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Curves (RGB and per-channel) | all | ◐ | three-band tone curve only; control-point curve is step C1 |
 | Colour wheels / three-way grading | Resolve, FCP, Premiere | ✓ | |
 | HSL / colour mixer | Lightroom, Resolve | ✓ | |
-| Scopes: waveform, vectorscope, histogram | Resolve, Premiere, Capture One | ✗ | step C2 — grading without scopes is guesswork |
+| Scopes: waveform, vectorscope, histogram | Resolve, Premiere, Capture One | ✓ | all three, off by default |
 | LUT import and export | Resolve, Premiere | ✗ | step C3 |
 | Colour management, log/HDR handling | Resolve, Capture One | ✗ | step C6, large |
 | Raw photo development | Lightroom, Capture One, Affinity | ✗ | exists in the Python track only; step C4 |
@@ -121,7 +121,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Per-clip gain, pan, fades | all | ✓ | |
 | EQ and compression | all pro | ✓ | |
 | Waveform display | all | ✓ | |
-| Audio meters | all | ✗ | step S1 — mixing without meters is guesswork, same as grading without scopes |
+| Audio meters | all | ✓ | peak + RMS per channel, latching clip light |
 | Noise reduction / de-hum | Resolve, Premiere | ✗ | step S2 |
 | Ducking, sidechain | Resolve, Premiere, CapCut | ✗ | step S3 |
 | Multi-band / mastering chain | Resolve | ✗ | low priority |
@@ -190,9 +190,9 @@ session, **M** a few sessions, **L** a phase.
 2. ~~**M4 · Proxy media**~~ — done. 540p proxies built on import, keyed by
    checksum, read while editing; exports read the original. See
    `docs/phases/proxy-media.md`.
-3. **S1 · Audio meters** and **C2 · Video scopes** — **S** each. Mixing and
-   grading without them is guesswork, and both are read-only overlays over data
-   the render path already has.
+3. ~~**S1 · Audio meters** and **C2 · Video scopes**~~ — done. Peak/RMS metering
+   with a latching clip light, and histogram, waveform and vectorscope. See
+   `docs/phases/meters-and-scopes.md`.
 
 ### Next — the editing model catches up
 
@@ -229,11 +229,18 @@ session, **M** a few sessions, **L** a phase.
 
 Three honest conclusions:
 
-- **The engine is ahead of the application.** Effects, masks, grading, audio and
-  the command model compare respectably with paid tools; there is no way to save
-  a project. P1 is not the most interesting item on the list, it is the one that
-  makes the rest worth having.
-- **Two gaps are "you cannot see what you are doing":** scopes and audio meters.
-  Both are small, and both change how usable everything already built is.
-- **Large media is imported but not comfortable.** The checksum ceiling is gone;
-  proxies are what make a 5GB file pleasant rather than merely possible.
+- **The engine was ahead of the application, and the application has caught up
+  on the basics.** Effects, masks, grading, audio and the command model compared
+  respectably with paid tools while there was no way to save a project. Saving,
+  reopening and relinking closed that; the interesting items on this list are
+  worth having now.
+- **The two "you cannot see what you are doing" gaps are closed.** Scopes and
+  audio meters were both small and both changed how usable everything already
+  built is — which is the pattern to keep looking for.
+- **Large media is imported and now comfortable.** The checksum ceiling went
+  first, proxies second. What remains on that axis is the export audio mixdown,
+  which still allocates one buffer for the whole timeline.
+- **What is left divides cleanly.** Steps 4–9 are editing-model work the schema
+  already accommodates; steps 10–15 are the ones that need new machinery
+  (nesting, optical flow, a raw pipeline, the GPU crate that still has no
+  consumer).

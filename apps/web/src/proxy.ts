@@ -136,6 +136,23 @@ export async function proxyStoreBytes(): Promise<number> {
   }
 }
 
+/** A paused element may never present another frame once the seek lands; the
+ * seek itself is the guarantee the data is there. */
+const FRAME_PRESENT_TIMEOUT_MS = 120;
+
+/**
+ * How long one seek is given before the build gives up on the file.
+ *
+ * A seek has no failure event of its own: a decode that dies part-way simply
+ * stops answering, and `seeked` never comes. Without a cap the build would
+ * await it forever — and because builds are queued one at a time, every proxy
+ * behind it would never run either, with the status line stuck on a percentage
+ * that no longer moves. Generous enough that a long keyframe interval on a slow
+ * disk still makes it, finite enough that one unreadable file cannot cost the
+ * session its queue.
+ */
+export const SEEK_TIMEOUT_MS = 10_000;
+
 /**
  * Wait for a video element to have the frame at `seconds` decoded and painted.
  *
@@ -143,27 +160,37 @@ export async function proxyStoreBytes(): Promise<number> {
  * being available to `drawImage` — hence the frame callback where the browser
  * has one. Getting this wrong does not fail loudly; it silently encodes the
  * previous frame, so a proxy would drift out of sync with its source.
+ *
+ * Resolves false when the source stopped answering, which ends the build
+ * rather than encoding a stale frame over and over.
  */
-function seekTo(video: HTMLVideoElement, seconds: number): Promise<void> {
+export function seekTo(
+  video: HTMLVideoElement,
+  seconds: number,
+): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (): void => {
+    const finish = (decoded: boolean): void => {
       if (settled) return;
       settled = true;
-      resolve();
+      clearTimeout(guard);
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+      resolve(decoded);
     };
+    const onError = (): void => finish(false);
     const onSeeked = (): void => {
       video.removeEventListener("seeked", onSeeked);
       if (typeof video.requestVideoFrameCallback !== "function") {
-        finish();
+        finish(true);
         return;
       }
-      video.requestVideoFrameCallback(() => finish());
-      // A paused element may never present another frame; the seek itself is
-      // the guarantee the data is there.
-      setTimeout(finish, 120);
+      video.requestVideoFrameCallback(() => finish(true));
+      setTimeout(() => finish(true), FRAME_PRESENT_TIMEOUT_MS);
     };
+    const guard = setTimeout(() => finish(false), SEEK_TIMEOUT_MS);
     video.addEventListener("seeked", onSeeked);
+    video.addEventListener("error", onError);
     video.currentTime = seconds;
   });
 }
@@ -257,7 +284,15 @@ export async function buildProxy(
         await dir.removeEntry(`${options.checksum}.mp4`).catch(() => undefined);
         return null;
       }
-      await seekTo(source, Math.min(index / PROXY_FPS, durationSeconds));
+      const decoded = await seekTo(
+        source,
+        Math.min(index / PROXY_FPS, durationSeconds),
+      );
+      // The source stopped answering. Carrying on would encode the last good
+      // frame for the rest of the clip — a proxy that silently diverges from
+      // its source is worse than no proxy, which is what the catch below
+      // leaves behind.
+      if (!decoded) throw new Error("proxy: source stopped decoding");
       ctx.drawImage(source, 0, 0, size.width, size.height);
       const frame = new VideoFrame(canvas, {
         timestamp: index * frameUs,

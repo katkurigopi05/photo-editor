@@ -76,6 +76,11 @@ when the system asks for reduced motion.
   renamed file still matches.
 - Unsaved work is snapshotted every 15 seconds; if the tab closes unexpectedly,
   the next start offers to restore it.
+- The level meter beside the transport shows peak and RMS per channel while the
+  timeline plays. The red light latches when audio clips; ⟲ clears it.
+- Scopes (Inspector, top) measure the picture: Histogram for levels, Waveform for
+  where those levels sit across the frame, Vectorscope for hue and saturation.
+  They are off by default because each reads back every displayed frame.
 - Import supports images, video, and audio that the current browser can decode.
 - Mark media as Favorite (★) or Rejected (✕) in the bin, search it by name, and
   filter to All, Favorites, Rejected, or Unrated. Ratings are project state and

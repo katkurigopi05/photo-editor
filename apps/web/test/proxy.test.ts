@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PROXY_HEIGHT,
   PROXY_MIN_BYTES,
   PROXY_MIN_HEIGHT,
+  SEEK_TIMEOUT_MS,
   proxyBitrateKbps,
   proxySize,
+  seekTo,
   shouldBuildProxy,
 } from "../src/proxy.js";
 
@@ -98,6 +100,55 @@ describe("shouldBuildProxy", () => {
 
   it("does not fall over on an asset with no dimensions recorded", () => {
     expect(shouldBuildProxy({ kind: "video" })).toBe(false);
+  });
+});
+
+/**
+ * A source with no `requestVideoFrameCallback`, so a landed seek is the whole
+ * signal — which is the case `seekTo` has to get right without one.
+ */
+function fakeVideo(): HTMLVideoElement {
+  return new EventTarget() as unknown as HTMLVideoElement;
+}
+
+describe("seekTo", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reports a decoded frame once the seek lands", async () => {
+    const video = fakeVideo();
+    const seek = seekTo(video, 4);
+    expect(video.currentTime).toBe(4);
+    video.dispatchEvent(new Event("seeked"));
+    await expect(seek).resolves.toBe(true);
+  });
+
+  it("gives up when the source stops answering", async () => {
+    // A seek has no failure event: a decode that dies part-way simply never
+    // fires `seeked`. Without the cap the build awaits it forever and, because
+    // builds are queued one at a time, every proxy behind it never runs.
+    vi.useFakeTimers();
+    const video = fakeVideo();
+    const seek = seekTo(video, 4);
+    await vi.advanceTimersByTimeAsync(SEEK_TIMEOUT_MS);
+    await expect(seek).resolves.toBe(false);
+  });
+
+  it("gives up when the element errors", async () => {
+    const video = fakeVideo();
+    const seek = seekTo(video, 4);
+    video.dispatchEvent(new Event("error"));
+    await expect(seek).resolves.toBe(false);
+  });
+
+  it("leaves no timer behind once the seek lands", async () => {
+    vi.useFakeTimers();
+    const video = fakeVideo();
+    const seek = seekTo(video, 4);
+    video.dispatchEvent(new Event("seeked"));
+    await expect(seek).resolves.toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
