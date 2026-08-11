@@ -1,5 +1,6 @@
 import {
   isAudioEffectType,
+  rampSpans,
   type EffectInstance,
   type Project,
 } from "@director/project-schema";
@@ -42,8 +43,13 @@ export interface AudioClipPlacement {
   sourceOutUs: string;
   gainDb: number;
   pan: number;
-  /** Source time consumed per unit of timeline time, as a reduced rational. */
+  /** Source time consumed per unit of timeline time, as a reduced rational.
+   * On a ramped clip this is 1/1 and `spans` carries the real rates. */
   playbackRate: { numerator: number; denominator: number };
+  /** The clip's speed as spans on both clocks — one entry unless it is ramped.
+   * A sound is scheduled as a span and one source node holds one rate, so a
+   * ramped clip is mixed as one node per span rather than one per clip. */
+  spans: ReturnType<typeof rampSpans>;
   /** The clip's audio effects (EQ, compressor, fade), in stack order. Visual
    * effects are left out: the mixdown has no use for a blur. */
   effects: EffectInstance[];
@@ -118,6 +124,7 @@ export function planExport(
         gainDb: clip.audioGainDb,
         pan: clip.audioPan,
         playbackRate: clip.playbackRate,
+        spans: rampSpans(clip),
         effects: clip.effects.filter((fx) => isAudioEffectType(fx.type)),
         // Neighbours are the rest of this track: an overlap is what turns two
         // adjacent clips into a crossfade.

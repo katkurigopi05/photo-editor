@@ -5,6 +5,7 @@ export * from "./masks.js";
 export * from "./blend.js";
 export * from "./markers.js";
 export * from "./keywords.js";
+export * from "./speed-ramp.js";
 export * from "./animations.js";
 export * from "./transitions.js";
 export * from "./entities.js";

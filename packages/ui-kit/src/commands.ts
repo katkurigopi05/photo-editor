@@ -23,6 +23,7 @@ import type {
   SetClipBlendModeCommand,
   SetClipAudioPanCommand,
   SetClipSpeedCommand,
+  SetClipSpeedRampCommand,
   AddMarkerCommand,
   UpdateMarkerCommand,
   RemoveMarkerCommand,
@@ -192,6 +193,12 @@ export const buildSetClipSpeed = (
   ctx: CommandContext,
   payload: SetClipSpeedCommand["payload"],
 ): SetClipSpeedCommand => envelope(ctx, "timeline.set_clip_speed", payload);
+
+export const buildSetClipSpeedRamp = (
+  ctx: CommandContext,
+  payload: SetClipSpeedRampCommand["payload"],
+): SetClipSpeedRampCommand =>
+  envelope(ctx, "timeline.set_clip_speed_ramp", payload);
 
 export const buildAddMarker = (
   ctx: CommandContext,

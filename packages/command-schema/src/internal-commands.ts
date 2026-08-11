@@ -15,6 +15,7 @@ import {
   nonNegativeSafeIntSchema,
   timelineClipSchema,
   clipPlaybackRateSchema,
+  speedRampSchema,
   clipMasksSchema,
   clipMarkersSchema,
   blendModeSchema,
@@ -285,6 +286,29 @@ export const setClipBlendModeInverseSchema = internal(
  * the list is small, and carrying it entire keeps undo exact — including the
  * difference between no markers and an empty list. `null` restores the absent
  * member. */
+/**
+ * Restores a clip's ramp, the constant rate the ramp displaced, and the
+ * duration derived from whichever was in force.
+ *
+ * The duration is carried verbatim rather than recomputed, for the reason the
+ * constant-speed inverse carries it: the forward arithmetic truncates at
+ * sub-microsecond precision, and recomputing on undo would repeat the
+ * truncation instead of restoring the bytes that were there.
+ */
+export const setClipSpeedRampInverseSchema = internal(
+  "internal.set_clip_speed_ramp",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      speedRamp: speedRampSchema.nullable(),
+      playbackRate: clipPlaybackRateSchema,
+      timelineDurationUs: microsecondStringSchema,
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 export const setClipMarkersInverseSchema = internal(
   "internal.set_clip_markers",
   z
@@ -403,6 +427,7 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   setClipBlendModeInverseSchema,
   setClipAudioPanInverseSchema,
   setClipSpeedInverseSchema,
+  setClipSpeedRampInverseSchema,
   setClipMarkersInverseSchema,
   setClipMasksInverseSchema,
   setEffectMaskInverseSchema,

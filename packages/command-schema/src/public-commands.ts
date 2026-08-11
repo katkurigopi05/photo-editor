@@ -21,6 +21,7 @@ import {
   timelineClipSchema,
   trackSchema,
   clipPlaybackRateSchema,
+  speedRampSchema,
   clipMaskSchema,
   maskContributionSchema,
   clipMarkerSchema,
@@ -635,6 +636,27 @@ export const updateClipAnimationsCommandSchema = command(
 
 /** One command sets or clears either end's transition: `null` removes it, so
  * add/replace/remove share a single validated shape and a single inverse. */
+/**
+ * Set or clear a clip's speed ramp. `null` clears it.
+ *
+ * Whole-ramp rather than per-segment commands: a ramp is a handful of segments
+ * that only make sense together — moving one boundary changes the timeline
+ * position of every segment after it — so one command carrying the whole thing
+ * makes the inverse exact and one undo match one gesture.
+ */
+export const setClipSpeedRampPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    ramp: speedRampSchema.nullable(),
+  })
+  .strict();
+
+export const setClipSpeedRampCommandSchema = command(
+  "timeline.set_clip_speed_ramp",
+  setClipSpeedRampPayloadSchema,
+);
+
 export const setClipTransitionPayloadSchema = z
   .object({
     sequenceId: z.string().min(1),
@@ -676,6 +698,7 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   setClipBlendModeCommandSchema,
   setClipAudioPanCommandSchema,
   setClipSpeedCommandSchema,
+  setClipSpeedRampCommandSchema,
   addMarkerCommandSchema,
   updateMarkerCommandSchema,
   removeMarkerCommandSchema,
@@ -733,6 +756,9 @@ export type SetClipAudioPanCommand = z.infer<
   typeof setClipAudioPanCommandSchema
 >;
 export type SetClipSpeedCommand = z.infer<typeof setClipSpeedCommandSchema>;
+export type SetClipSpeedRampCommand = z.infer<
+  typeof setClipSpeedRampCommandSchema
+>;
 export type AddMarkerCommand = z.infer<typeof addMarkerCommandSchema>;
 export type UpdateMarkerCommand = z.infer<typeof updateMarkerCommandSchema>;
 export type RemoveMarkerCommand = z.infer<typeof removeMarkerCommandSchema>;
@@ -777,6 +803,7 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.set_clip_audio_pan",
   "timeline.set_clip_blend_mode",
   "timeline.set_clip_speed",
+  "timeline.set_clip_speed_ramp",
   "timeline.add_marker",
   "timeline.update_marker",
   "timeline.remove_marker",

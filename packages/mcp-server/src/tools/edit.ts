@@ -23,6 +23,7 @@ import {
   updateKeywordRangePayloadSchema,
   removeKeywordRangePayloadSchema,
   setClipSpeedPayloadSchema,
+  setClipSpeedRampPayloadSchema,
   addMarkerPayloadSchema,
   updateMarkerPayloadSchema,
   removeMarkerPayloadSchema,
@@ -283,6 +284,22 @@ const COMMAND_TOOLS: CommandTool[] = [
       "timeline. Supported between 1/4 and 4. The source range is unchanged; " +
       "slowing a clip fails with OVERLAP if the clip after it is in the way.",
     schema: setClipSpeedPayloadSchema,
+  },
+  {
+    name: "set_clip_speed_ramp",
+    commandType: "timeline.set_clip_speed_ramp",
+    title: "Ramp a clip's speed",
+    description:
+      "Give a clip a speed that changes partway through: a list of segments, " +
+      "each a constant rational rate starting at a source offset measured " +
+      "from the clip's sourceInUs. The first segment must start at 0, offsets " +
+      "must strictly increase and stay inside the clip's source, and two " +
+      "segments are the minimum — one rate for a whole clip is set_clip_speed. " +
+      "Stepped rather than interpolated, so every source instant stays exactly " +
+      "computable. Pass null to clear the ramp. Setting a ramp pins " +
+      "playbackRate to 1/1, and set_clip_speed is refused while one is in " +
+      "force. The clip is resized to the sum of the segments.",
+    schema: setClipSpeedRampPayloadSchema,
   },
   {
     name: "add_marker",

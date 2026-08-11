@@ -21,6 +21,7 @@ import {
   buildOverwriteClip,
   buildRemoveKeywordRange,
   buildSetClipSpeed,
+  buildSetClipSpeedRamp,
   buildAddMarker,
   buildUpdateMarker,
   buildRemoveMarker,
@@ -153,6 +154,10 @@ import {
   compositeOperation,
   isAudioEffectType,
   normalizeKeyword,
+  rateAtClipOffset,
+  rampTimelineDurationUs,
+  sourceAtClipOffset,
+  type SpeedRamp,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
 import {
@@ -3661,6 +3666,15 @@ function speedSection(clip: TimelineClip): HTMLElement {
   control.append(label, select);
   speed.appendChild(control);
 
+  // A ramp and a constant rate are two descriptions of one clip's speed, and
+  // only one is ever live — so the constant picker is disabled while a ramp is
+  // in force, rather than offering a change the reducer would refuse.
+  if (clip.speedRamp !== undefined) {
+    select.disabled = true;
+    select.title = "This clip has a speed ramp; clear it to set one rate";
+  }
+  speed.appendChild(rampControl(clip));
+
   const note = document.createElement("p");
   note.className = "hint";
   note.textContent =
@@ -3669,6 +3683,190 @@ function speedSection(clip: TimelineClip): HTMLElement {
     "pitch — there is no pitch-preserving stretch yet.";
   speed.appendChild(note);
   return speed;
+}
+
+/**
+ * The ramp editor: the segments a clip's speed is made of, and a way to add one
+ * at the playhead.
+ *
+ * The playhead is the anchor because it is where you are already looking — you
+ * scrub to the moment the action should slow, and say how much. Its *source*
+ * position is what the segment records, since that is the coordinate a ramp is
+ * written in and it does not move when a later rate changes.
+ *
+ * Every action rebuilds the whole ramp and issues one command, because the
+ * command is whole-ramp: segments only mean anything together.
+ */
+function rampControl(clip: TimelineClip): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "ramp";
+
+  const sourceSpan = BigInt(clip.sourceOutUs) - BigInt(clip.sourceInUs);
+  const offsetAtPlayhead =
+    sourceAtClipOffset(
+      clip,
+      BigInt(playback.currentTimeUs) - BigInt(clip.timelineStartUs),
+    ) - BigInt(clip.sourceInUs);
+  const insideClip =
+    BigInt(playback.currentTimeUs) >= BigInt(clip.timelineStartUs) &&
+    BigInt(playback.currentTimeUs) <
+      BigInt(clip.timelineStartUs) + BigInt(clip.timelineDurationUs);
+
+  const segments = clip.speedRamp ?? [];
+  if (segments.length > 0) {
+    const list = document.createElement("div");
+    list.className = "ramp-list";
+    for (const segment of segments) {
+      const row = document.createElement("div");
+      row.className = "ramp-row";
+      row.dataset.offsetUs = segment.sourceOffsetUs;
+
+      const at = document.createElement("span");
+      at.className = "ramp-at";
+      at.textContent = `from ${formatTime(segment.sourceOffsetUs)}`;
+
+      const rate = document.createElement("select");
+      rate.className = "ramp-rate";
+      rate.setAttribute(
+        "aria-label",
+        `Rate from ${formatTime(segment.sourceOffsetUs)}`,
+      );
+      for (const preset of SPEED_PRESETS) {
+        const option = new Option(preset.label, rateKey(preset.rate));
+        option.selected = rateKey(preset.rate) === rateKey(segment.rate);
+        rate.appendChild(option);
+      }
+      rate.addEventListener("change", () => {
+        const preset = SPEED_PRESETS.find((p) => rateKey(p.rate) === rate.value);
+        if (!preset) return;
+        setSpeedRamp(
+          clip,
+          segments.map((s) =>
+            s.id === segment.id ? { ...s, rate: preset.rate } : s,
+          ),
+        );
+      });
+
+      const drop = document.createElement("button");
+      drop.className = "mini ramp-drop";
+      drop.textContent = "✕";
+      drop.title = "Remove this speed change";
+      drop.setAttribute(
+        "aria-label",
+        `Remove speed change at ${formatTime(segment.sourceOffsetUs)}`,
+      );
+      // The first segment is the clip's own opening rate; removing it would
+      // leave the span before the next boundary with no rate at all.
+      drop.disabled = segment.sourceOffsetUs === "0";
+      drop.addEventListener("click", () => {
+        const kept = segments.filter((s) => s.id !== segment.id);
+        // One segment left is a constant rate, which has its own spelling — the
+        // schema refuses a one-segment ramp, so this clears it instead.
+        setSpeedRamp(clip, kept.length < 2 ? null : kept);
+      });
+
+      row.append(at, rate, drop);
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "ramp-actions";
+
+  const add = document.createElement("button");
+  add.className = "mini";
+  add.id = "btn-add-speed-change";
+  add.textContent = "＋ Speed change at playhead";
+  const already = segments.some(
+    (s) => BigInt(s.sourceOffsetUs) === offsetAtPlayhead,
+  );
+  const usable =
+    insideClip && offsetAtPlayhead > 0n && offsetAtPlayhead < sourceSpan;
+  add.disabled = !usable || already;
+  add.title = already
+    ? "There is already a speed change here"
+    : usable
+      ? "Split the clip's speed here and slow what follows"
+      : "Move the playhead inside this clip, past its first frame";
+  add.addEventListener("click", () => {
+    // A new boundary defaults to half speed: the point of adding one is to
+    // change the rate, and 1× would look like nothing happened.
+    const half = { numerator: 1, denominator: 2 };
+    const base =
+      segments.length > 0
+        ? segments
+        : [{ id: rampSegmentId(), sourceOffsetUs: "0", rate: clip.playbackRate }];
+    setSpeedRamp(clip, [
+      ...base,
+      {
+        id: rampSegmentId(),
+        sourceOffsetUs: offsetAtPlayhead.toString(),
+        rate: half,
+      },
+    ]);
+  });
+  actions.appendChild(add);
+
+  if (segments.length > 0) {
+    const clear = document.createElement("button");
+    clear.className = "mini";
+    clear.id = "btn-clear-ramp";
+    clear.textContent = "Clear ramp";
+    clear.title = "Back to one rate for the whole clip";
+    clear.addEventListener("click", () => setSpeedRamp(clip, null));
+    actions.appendChild(clear);
+  }
+
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+const rampSegmentId = (): string => `seg-${crypto.randomUUID().slice(0, 8)}`;
+
+/**
+ * Set or clear a ramp, rippling the clips after it exactly as a constant
+ * retime does — a ramp changes the clip's length for the same reason and the
+ * reducer refuses a collision the same way.
+ */
+function setSpeedRamp(
+  clip: TimelineClip,
+  ramp: SpeedRamp | null,
+): void {
+  const loc = locateClip(clip.id);
+  if (!loc) return;
+  const sourceSpan = BigInt(clip.sourceOutUs) - BigInt(clip.sourceInUs);
+  const newDuration =
+    ramp === null
+      ? sourceSpan
+      : BigInt(rampTimelineDurationUs(ramp, clip.sourceInUs, clip.sourceOutUs));
+  const ripple = planRippleTrim(loc.track, clip.id, newDuration.toString());
+
+  session.beginGesture();
+  const movesFirst = newDuration > BigInt(clip.timelineDurationUs);
+  const applyMoves = (): void => {
+    for (const move of ripple.moves) {
+      commit(
+        buildMoveClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: move.clipId,
+          targetTrackId: loc.track.id,
+          timelineStartUs: move.timelineStartUs,
+        }),
+      );
+    }
+  };
+  if (movesFirst) applyMoves();
+  const ramped = commit(
+    buildSetClipSpeedRamp(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: clip.id,
+      ramp,
+    }),
+  );
+  if (ramped && !movesFirst) applyMoves();
+  session.endGesture();
+  updateUI();
 }
 
 function setClipSpeed(
@@ -6182,9 +6380,14 @@ function syncAudioMonitors(): void {
 
     // A retimed clip plays its source faster or slower; the element's own rate
     // does the resampling, so monitoring matches the exported mixdown (which
-    // resamples the decoded buffer the same way, pitch and all).
-    el.playbackRate =
-      loc.clip.playbackRate.numerator / loc.clip.playbackRate.denominator;
+    // resamples the decoded buffer the same way, pitch and all). A ramped clip
+    // has one rate per segment and the element holds only one, so the rate is
+    // re-read at the playhead each tick and changes as a boundary is crossed.
+    const rate = rateAtClipOffset(
+      loc.clip,
+      BigInt(playback.currentTimeUs) - BigInt(loc.clip.timelineStartUs),
+    );
+    el.playbackRate = rate.numerator / rate.denominator;
 
     // Resync the element clock only when it has drifted (or just started /
     // was seeked); small drift is left alone so playback stays smooth.
@@ -8318,30 +8521,21 @@ async function renderAndEncodeAudio(
   for (const clip of plan.audioClips) {
     const buffer = decodedByAsset.get(clip.assetId);
     if (!buffer) continue;
-    const source = offline.createBufferSource();
-    source.buffer = buffer;
-    // Same chain as live monitoring, driven by the same effect stack.
+    // Same chain as live monitoring, driven by the same effect stack. One chain
+    // per clip even when the clip is ramped: gain, pan and the fade curve
+    // belong to the whole clip, and only the source nodes are per segment.
     const chain = buildAudioChain(offline);
     applyAudioEffectsToChain(chain, clip.effects);
     chain.gain.gain.value = 10 ** ((clip.gainDb + makeupGainDb(clip.effects)) / 20);
     chain.pan.pan.value = Math.max(-1, Math.min(1, clip.pan));
-    source.connect(chain.low);
     chain.pan.connect(offline.destination);
 
-    // A retimed clip resamples its source, pitch and all — the same varispeed
-    // the live monitor applies via HTMLMediaElement.playbackRate. Pitch-
-    // preserving time-stretch is a different device and is not implemented.
-    source.playbackRate.value =
-      clip.playbackRate.numerator / clip.playbackRate.denominator;
-
     const startSec = Number(clip.timelineStartUs) / 1_000_000;
-    const offsetSec = Number(clip.sourceInUs) / 1_000_000;
+    // How long the clip occupies the timeline. The fade curve spans this, while
+    // each source node below is started with a *source* duration.
+    const clipDurationSec = Number(clip.timelineDurationUs) / 1_000_000;
     const sourceSpanSec =
       (Number(clip.sourceOutUs) - Number(clip.sourceInUs)) / 1_000_000;
-    // How long the clip occupies the timeline, which is the source span divided
-    // by the rate — `start(when, offset, duration)` takes the *source* duration,
-    // so it gets the span, while the fade curve spans the timeline duration.
-    const clipDurationSec = Number(clip.timelineDurationUs) / 1_000_000;
     if (sourceSpanSec <= 0 || clipDurationSec <= 0) continue;
 
     // Fades ride on top of the clip's static gain as a value curve over the
@@ -8363,9 +8557,28 @@ async function renderAndEncodeAudio(
       chain.gain.gain.setValueCurveAtTime(curve, startSec, clipDurationSec);
     }
 
-    // The third argument is measured in source time, so it is the untimed span
-    // — the rate above decides how much timeline that covers.
-    source.start(startSec, offsetSec, sourceSpanSec);
+    // One source node per speed span — a single node carries a single rate, so
+    // a ramped clip cannot be one node. An unramped clip yields exactly one
+    // span covering the whole thing, which is what this always did.
+    //
+    // A retimed span resamples its source, pitch and all: the same varispeed
+    // the live monitor applies via HTMLMediaElement.playbackRate. Pitch-
+    // preserving time-stretch is a different device and is not implemented.
+    for (const span of clip.spans) {
+      const node = offline.createBufferSource();
+      node.buffer = buffer;
+      node.connect(chain.low);
+      node.playbackRate.value = span.rate.numerator / span.rate.denominator;
+      const spanSourceSec = Number(span.sourceDurationUs) / 1_000_000;
+      if (spanSourceSec <= 0) continue;
+      // The third argument is measured in source time, so it is the untimed
+      // span — the rate above decides how much timeline that covers.
+      node.start(
+        startSec + Number(span.timelineOffsetUs) / 1_000_000,
+        Number(span.sourceOffsetUs) / 1_000_000,
+        spanSourceSec,
+      );
+    }
   }
 
   const rendered = await offline.startRendering();

@@ -5,6 +5,7 @@ import { effectInstanceSchema } from "./effects.js";
 import { clipMasksSchema } from "./masks.js";
 import { clipMarkersSchema } from "./markers.js";
 import { assetKeywordRangesSchema, assetKeywordsSchema } from "./keywords.js";
+import { speedRampSchema } from "./speed-ramp.js";
 import { blendModeSchema } from "./blend.js";
 import {
   audioGainDbSchema,
@@ -85,6 +86,10 @@ export const timelineClipSchema = z
     // Optional preserves byte-equivalent parsing of schema-v1 projects. New
     // animation commands will materialize the array only when first used.
     animations: animationTracksSchema.optional(),
+    // A ramp supersedes the constant `playbackRate`, which the reducer pins to
+    // 1/1 whenever one is set — one behaviour keeps one spelling. Optional for
+    // the same reason as every field below: pre-ramp projects parse unchanged.
+    speedRamp: speedRampSchema.optional(),
     // Same reasoning again: absent on every project written before blend modes,
     // and absent rather than "normal" on a clip nobody has changed, so the
     // default composite costs no bytes and no migration.

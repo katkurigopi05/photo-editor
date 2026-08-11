@@ -109,7 +109,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Bézier keyframe interpolation | all pro | ◐ | five named easings; no editable curve — step A1 |
 | Motion tracking | Resolve, Premiere | ✗ | step A2 |
 | Stabilisation | Resolve, Premiere, FCP | ✗ | step A3 |
-| Speed ramps (keyframed speed) | all pro | ◐ | constant per-clip rate only — step A4 |
+| Speed ramps (keyframed speed) | all pro | ✓ | stepped rational segments; smooth curves deferred — step A4 |
 | Optical-flow retiming | Resolve, Premiere, FCP | ✗ | step A5 |
 | Titles and lower thirds as templates | all | ✗ | step A6 |
 | Green screen / chroma key | all pro | ◐ | colour-key background removal exists; no spill suppression or matte controls — step A7 |
@@ -206,8 +206,11 @@ session, **M** a few sessions, **L** a phase.
    `timeline.overwrite_clip` are the destination half, chosen from an "Add as"
    control in the timeline toolbar. Insert ripples its own track only. See
    `docs/phases/three-point-editing.md`.
-6. **A4 · Speed ramps** — **M**. Keyframed rate rather than one constant, which
-   the schema's rational rate already accommodates.
+6. ~~**A4 · Speed ramps**~~ — done. `timeline.set_clip_speed_ramp` carries a
+   list of constant rational segments anchored in source time; stepped rather
+   than interpolated, so every source instant stays exactly computable. Smooth
+   curves are deferred with the reason recorded. See
+   `docs/phases/speed-ramps.md`.
 7. **L1 · Blend modes and adjustment layers** — **M**. Blend modes are done (see
    `docs/phases/blend-modes.md`); adjustment layers are the remaining half — a
    clip that carries only effects and applies them to everything beneath it.

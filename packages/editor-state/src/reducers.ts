@@ -2,6 +2,7 @@ import {
   animationTrackSchema,
   effectParamsSchemas,
   isAssetCompatibleWithTrack,
+  rampTimelineDurationUs,
   transitionsFitClip,
   type AnimationKeyframe,
   type AnimationTrack,
@@ -250,6 +251,8 @@ export function applyForward(
       return setClipBlendMode(project, command);
     case "timeline.set_clip_speed":
       return setClipSpeed(project, command);
+    case "timeline.set_clip_speed_ramp":
+      return setClipSpeedRamp(project, command);
     case "timeline.add_marker":
       return addMarker(project, command);
     case "timeline.update_marker":
@@ -2777,6 +2780,154 @@ function setClipAudioPan(
  * previous duration verbatim rather than recomputing it: recomputing would
  * repeat the truncation and undo would not restore the original bytes.
  */
+/**
+ * The two ways a retime can be refused, shared by the constant-rate command and
+ * the ramp: a clip that grows can collide with the one after it, and a clip
+ * that shrinks can strand a keyframe past its own end — the rule trimming
+ * already enforces.
+ */
+function retimeError(
+  clip: TimelineClip,
+  track: Track,
+  newDuration: bigint,
+  path: Array<string | number>,
+): CommandError | null {
+  const start = toBig(clip.timelineStartUs);
+  if (newDuration > toBig(clip.timelineDurationUs)) {
+    const conflict = findOverlapConflict(
+      track.clips,
+      start,
+      start + newDuration,
+      clip.transitionIn,
+      clip.id,
+    );
+    if (conflict) {
+      return makeError(
+        "OVERLAP",
+        `the retimed clip overlaps existing clip ${conflict.id}`,
+        path,
+        { conflictClipId: conflict.id },
+      );
+    }
+  }
+  const stranded = clip.animations
+    ?.flatMap((t) => t.keyframes)
+    .find((keyframe) => toBig(keyframe.timeUs) > newDuration);
+  if (stranded !== undefined) {
+    return makeError(
+      "OUT_OF_BOUNDS",
+      `retimed duration ${newDuration} would strand keyframe ${stranded.id} at ${stranded.timeUs}`,
+      path,
+      {
+        keyframeId: stranded.id,
+        keyframeTimeUs: stranded.timeUs,
+        durationUs: newDuration.toString(),
+      },
+    );
+  }
+  return null;
+}
+
+/**
+ * Set or clear a clip's speed ramp.
+ *
+ * The duration becomes the sum of each segment's own stretch, so a ramp resizes
+ * the clip exactly as a constant retime does, and is refused for the same two
+ * reasons.
+ *
+ * Setting a ramp pins `playbackRate` back to 1/1. The ramp is the complete
+ * description of the clip's speed, and leaving a non-unit constant rate beside
+ * it would silently scale every segment — as well as giving one behaviour two
+ * spellings, which canonical JSON cannot tell apart from two different projects.
+ */
+function setClipSpeedRamp(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.set_clip_speed_ramp" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, ramp } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  const sourceSpan = toBig(clip.sourceOutUs) - toBig(clip.sourceInUs);
+  if (ramp !== null) {
+    // Every boundary has to name a source instant the clip actually owns. One
+    // at or past the end would describe no frames at all.
+    const past = ramp.find((s) => toBig(s.sourceOffsetUs) >= sourceSpan);
+    if (past !== undefined) {
+      return {
+        ok: false,
+        error: makeError(
+          "OUT_OF_BOUNDS",
+          `segment ${past.id} starts at ${past.sourceOffsetUs}, at or past the clip's ${sourceSpan} of source`,
+          ["payload", "ramp"],
+          { segmentId: past.id, sourceSpanUs: sourceSpan.toString() },
+        ),
+      };
+    }
+  }
+
+  const newDuration =
+    ramp === null
+      ? sourceSpan
+      : toBig(rampTimelineDurationUs(ramp, clip.sourceInUs, clip.sourceOutUs));
+  if (newDuration <= 0n) {
+    return {
+      ok: false,
+      error: makeError(
+        "INVALID_TIME_RANGE",
+        "the ramped clip would have no duration",
+        ["payload", "ramp"],
+      ),
+    };
+  }
+  const refusal = retimeError(clip, location.track, newDuration, [
+    "payload",
+    "ramp",
+  ]);
+  if (refusal) return { ok: false, error: refusal };
+
+  const prevUpdatedAt = project.updatedAt;
+  const { speedRamp: _dropped, ...rest } = clip;
+  const newClip: TimelineClip = {
+    ...rest,
+    playbackRate: { numerator: 1, denominator: 1 },
+    timelineDurationUs: newDuration.toString(),
+    ...(ramp === null ? {} : { speedRamp: structuredClone(ramp) }),
+  };
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_speed_ramp",
+      payload: {
+        sequenceId,
+        clipId,
+        speedRamp: clip.speedRamp ? structuredClone(clip.speedRamp) : null,
+        playbackRate: clip.playbackRate,
+        timelineDurationUs: clip.timelineDurationUs,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
 function setClipSpeed(
   projectOrNull: Project | null,
   command: Extract<ProjectCommand, { commandType: "timeline.set_clip_speed" }>,
@@ -2792,6 +2943,21 @@ function setClipSpeed(
   const { project } = resolved;
   const { sequence, location } = resolved.resolved;
   const clip = location.clip;
+
+  // A ramp and a constant rate are two descriptions of one clip's speed, and
+  // only one may be live. Refused rather than quietly discarding the ramp:
+  // clearing it is a command of its own, and saying so beats losing work the
+  // person cannot see they have lost.
+  if (clip.speedRamp !== undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "VALIDATION_ERROR",
+        `clip ${clipId} has a speed ramp; clear it with set_clip_speed_ramp before setting a constant rate`,
+        ["payload", "playbackRate"],
+      ),
+    };
+  }
 
   const sourceSpan = toBig(clip.sourceOutUs) - toBig(clip.sourceInUs);
   const newDuration =
@@ -3675,6 +3841,30 @@ export function applyInverse(
         ...clip,
         audioPan: pan,
       }));
+    }
+    case "internal.set_clip_speed_ramp": {
+      const {
+        sequenceId,
+        clipId,
+        speedRamp,
+        playbackRate,
+        timelineDurationUs,
+        restoreUpdatedAt,
+      } = inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => {
+        // Dropped and re-added rather than assigned: restoring "there was no
+        // ramp" has to remove the member, which is a different project from one
+        // carrying an empty one.
+        const { speedRamp: _dropped, ...rest } = clip;
+        return {
+          ...rest,
+          playbackRate,
+          timelineDurationUs,
+          ...(speedRamp === null
+            ? {}
+            : { speedRamp: structuredClone(speedRamp) }),
+        } as TimelineClip;
+      });
     }
     case "internal.set_clip_speed": {
       const {

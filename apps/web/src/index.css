@@ -2411,3 +2411,51 @@ select {
   padding-inline: 8px;
   font-size: 10px;
 }
+
+/* ---- speed ramp ---- */
+/* The segment rows are a three-column grid rather than a flex row: the "from"
+   times are tabular and should align down the list, which they cannot do if
+   each row sizes itself to its own content. */
+.ramp {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ramp-list {
+  display: grid;
+  gap: 4px;
+}
+.ramp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+}
+.ramp-at {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ramp-rate {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+.ramp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ramp-drop:hover:not(:disabled),
+.ramp-drop:focus-visible:not(:disabled) {
+  color: var(--danger, #e5534b);
+}
+.ramp-actions button:disabled,
+.ramp-drop:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

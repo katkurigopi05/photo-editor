@@ -31,6 +31,7 @@ export {
   buildSetClipBlendMode,
   buildSetClipAudioPan,
   buildSetClipSpeed,
+  buildSetClipSpeedRamp,
   buildAddMarker,
   buildUpdateMarker,
   buildRemoveMarker,
