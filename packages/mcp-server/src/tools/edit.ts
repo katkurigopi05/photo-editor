@@ -17,6 +17,9 @@ import {
   setClipAudioPanPayloadSchema,
   setAssetRatingPayloadSchema,
   setAssetKeywordsPayloadSchema,
+  addKeywordRangePayloadSchema,
+  updateKeywordRangePayloadSchema,
+  removeKeywordRangePayloadSchema,
   setClipSpeedPayloadSchema,
   addMarkerPayloadSchema,
   updateMarkerPayloadSchema,
@@ -111,6 +114,37 @@ const COMMAND_TOOLS: CommandTool[] = [
       "single-spaced — because a command that rewrote its own payload would " +
       "not replay to the bytes it recorded.",
     schema: setAssetKeywordsPayloadSchema,
+  },
+  {
+    name: "add_keyword_range",
+    commandType: "asset.add_keyword_range",
+    title: "Keyword part of an asset",
+    description:
+      "Tag a portion of an asset with one keyword — Final Cut's keyword " +
+      "range. Bounds are source-local microseconds in the asset's own " +
+      "coordinate space, half-open, and must fit its duration; media with no " +
+      "duration cannot be ranged. The keyword obeys the same normalization " +
+      "rule as the asset-level list.",
+    schema: addKeywordRangePayloadSchema,
+  },
+  {
+    name: "update_keyword_range",
+    commandType: "asset.update_keyword_range",
+    title: "Change a keyword range",
+    description:
+      "Move a range's bounds or change its keyword. Every field but the id " +
+      "is optional; omitted ones keep their stored value, and the merged " +
+      "range must still run forwards and fit the media.",
+    schema: updateKeywordRangePayloadSchema,
+  },
+  {
+    name: "remove_keyword_range",
+    commandType: "asset.remove_keyword_range",
+    title: "Remove a keyword range",
+    description:
+      "Delete one keyword range from an asset. The asset's own keyword list " +
+      "is untouched — the two are independent.",
+    schema: removeKeywordRangePayloadSchema,
   },
   {
     name: "add_clip",

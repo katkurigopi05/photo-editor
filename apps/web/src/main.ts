@@ -16,6 +16,8 @@ import {
   buildSetClipAudioPan,
   buildSetAssetRating,
   buildSetAssetKeywords,
+  buildAddKeywordRange,
+  buildRemoveKeywordRange,
   buildSetClipSpeed,
   buildAddMarker,
   buildUpdateMarker,
@@ -739,6 +741,7 @@ let mediaSearch = "";
 type MediaFilter = "all" | "favorites" | "rejected" | "unrated";
 let mediaFilter: MediaFilter = "all";
 let mediaKeyword = "";
+
 
 /**
  * Saved views: a named search + keyword + rating filter.
@@ -5046,14 +5049,21 @@ function matchesMediaFilters(asset: MediaAsset): boolean {
   const query = mediaSearch.trim().toLowerCase();
   // Search covers keywords as well as the name: typing "interview" should find
   // the shots tagged that way, not only a file that happens to be called it.
+  // Range keywords count the same — a shot with an interview *in* it is a shot
+  // someone searching for "interview" is looking for.
   if (
     query &&
     !assetName(asset).toLowerCase().includes(query) &&
-    !(asset.keywords ?? []).some((keyword) => keyword.includes(query))
+    !(asset.keywords ?? []).some((keyword) => keyword.includes(query)) &&
+    !rangeKeywords(asset).some((keyword) => keyword.includes(query))
   ) {
     return false;
   }
-  if (mediaKeyword && !(asset.keywords ?? []).includes(mediaKeyword)) {
+  if (
+    mediaKeyword &&
+    !(asset.keywords ?? []).includes(mediaKeyword) &&
+    !rangeKeywords(asset).includes(mediaKeyword)
+  ) {
     return false;
   }
   if (mediaFilter === "favorites") return asset.rating === "favorite";
@@ -5089,6 +5099,54 @@ function editKeywords(asset: MediaAsset): void {
       keywords: [...seen].sort(),
     }),
   );
+}
+
+/**
+ * Tag a span of an asset with one keyword, saved with the project.
+ *
+ * A prompt for the same reason `editKeywords` uses one, and normalization at
+ * the same boundary: the schema refuses an unnormalized keyword rather than
+ * fixing it, so "Good Take" has to become "good take" here or the command is
+ * rejected.
+ *
+ * The bounds come from the slider pair, already clamped to the asset and
+ * already at least a millisecond apart, so the reducer's OUT_OF_BOUNDS and the
+ * schema's empty-range rule should both be unreachable from this path — they
+ * still exist for the MCP surface and for anything a future UI does.
+ */
+function keywordCurrentRange(
+  asset: MediaAsset,
+  startUs: number,
+  endUs: number,
+): void {
+  const entered = window.prompt(
+    `Keyword for ${formatTime(String(startUs))} – ${formatTime(String(endUs))} of ${assetName(asset)}`,
+    "",
+  );
+  if (entered === null) return;
+  const keyword = normalizeKeyword(entered);
+  if (!keyword) {
+    toast("That is not a keyword.");
+    return;
+  }
+  const ok = commit(
+    buildAddKeywordRange(nextCtx(), {
+      assetId: asset.id,
+      range: {
+        id: `range-${crypto.randomUUID().slice(0, 8)}`,
+        keyword,
+        startUs: String(startUs),
+        endUs: String(endUs),
+      },
+    }),
+  );
+  if (ok) toast(`Tagged "${keyword}" over that range.`);
+}
+
+/** Every keyword used by a range on this asset, deduplicated — what the chips
+ * and the filters read. */
+function rangeKeywords(asset: MediaAsset): string[] {
+  return [...new Set((asset.keywordRanges ?? []).map((r) => r.keyword))];
 }
 
 /**
@@ -5184,19 +5242,33 @@ function openRangeEditor(asset: MediaAsset, item: HTMLElement): void {
     browserRanges.delete(asset.id);
     renderMedia();
   });
-  actions.append(apply, clear);
+
+  // Keywording the span happens here rather than in its own editor: the
+  // transient range and the persisted one are the same gesture — "this bit,
+  // right here" — and the sliders are already open and already pointed at it.
+  const keywordIt = document.createElement("button");
+  keywordIt.className = "mini";
+  keywordIt.textContent = "Keyword this range";
+  keywordIt.title = "Tag this part of the shot, saved with the project";
+  keywordIt.addEventListener("click", () => {
+    keywordCurrentRange(asset, Math.round(inUs), Math.round(outUs));
+  });
+  actions.append(apply, clear, keywordIt);
 
   refresh();
   editor.append(readout, inRow, outRow, actions);
   item.appendChild(editor);
 }
 
-/** Every keyword in the project, for the filter list. */
+/** Every keyword in the project, for the filter list. Range keywords are in
+ * here too: the picker lists what the project actually has, and a keyword that
+ * only ever named a range is still one of them. */
 function allKeywords(): string[] {
   const seen = new Set<string>();
   for (const asset of session.getProject()?.assets ?? []) {
     if (removedAssets.has(asset.id)) continue;
     for (const keyword of asset.keywords ?? []) seen.add(keyword);
+    for (const keyword of rangeKeywords(asset)) seen.add(keyword);
   }
   return [...seen].sort();
 }
@@ -5373,6 +5445,67 @@ function renderMedia(): void {
       meta.appendChild(chips);
     }
 
+    // Keyword ranges: the parts of this shot someone has already named.
+    //
+    // Clicking one *loads it as the browser range* rather than filtering by it,
+    // which is the whole point of having tagged it — "the good take" becomes
+    // the next thing added, in one click. Filtering by a range keyword is what
+    // the picker and the search box are for, and both now reach these.
+    let rangeRow: HTMLElement | null = null;
+    if ((asset.keywordRanges ?? []).length > 0) {
+      const ranges = document.createElement("div");
+      ranges.className = "media-ranges";
+      for (const kr of asset.keywordRanges ?? []) {
+        const chip = document.createElement("span");
+        chip.className = "media-range-chip";
+        chip.dataset.rangeId = kr.id;
+        chip.dataset.startUs = kr.startUs;
+        chip.dataset.endUs = kr.endUs;
+
+        const use = document.createElement("button");
+        use.className = "media-range-use";
+        use.textContent = `${kr.keyword} ${formatTime(kr.startUs)}–${formatTime(kr.endUs)}`;
+        // The label truncates in a narrow bin, so the title carries it whole.
+        use.title = `${kr.keyword}  ${formatTime(kr.startUs)}–${formatTime(kr.endUs)} — use this range for the next add`;
+        use.setAttribute(
+          "aria-label",
+          `Use keyword range ${kr.keyword} of ${assetName(asset)}`,
+        );
+        use.addEventListener("click", (event) => {
+          event.stopPropagation();
+          browserRanges.set(asset.id, { inUs: kr.startUs, outUs: kr.endUs });
+          renderMedia();
+          toast(`Range set from "${kr.keyword}".`);
+        });
+
+        const drop = document.createElement("button");
+        drop.className = "media-range-drop";
+        drop.textContent = "✕";
+        drop.title = `Remove the "${kr.keyword}" range`;
+        drop.setAttribute(
+          "aria-label",
+          `Remove keyword range ${kr.keyword} from ${assetName(asset)}`,
+        );
+        drop.addEventListener("click", (event) => {
+          event.stopPropagation();
+          commit(
+            buildRemoveKeywordRange(nextCtx(), {
+              assetId: asset.id,
+              rangeId: kr.id,
+            }),
+          );
+        });
+
+        chip.append(use, drop);
+        ranges.appendChild(chip);
+      }
+      // Appended to the item, not to `meta`: the meta column is about 54px in a
+      // 264px sidebar, which truncates "good take" to "good ta…". The chips get
+      // their own full-width row instead, the same escape the range editor
+      // below already makes.
+      rangeRow = ranges;
+    }
+
     // The row's buttons live in one group: three loose flex children were
     // enough to squeeze the name down to "mot…" in a narrow sidebar.
     const actions = document.createElement("div");
@@ -5424,6 +5557,7 @@ function renderMedia(): void {
     );
     actions.append(tag, remove);
     el.append(thumb, meta, add, actions, rating);
+    if (rangeRow) el.appendChild(rangeRow);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,

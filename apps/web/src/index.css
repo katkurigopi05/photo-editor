@@ -689,7 +689,73 @@ body {
 }
 .media-range-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+/* Keyword ranges: persisted, unlike the transient browser range above, so they
+   carry the accent rather than the muted grey the asset-level chips use. The
+   pair reads as one chip — a label that loads the range and a drop that
+   removes it — so the border lives on the wrapper, not on each button. */
+/* Its own full-width row, like the range editor: the meta column is ~54px in a
+   264px sidebar, so a chip placed inside it either truncated to "go…" or
+   propped the column open and collapsed the filename to "m…". Both were
+   visible only in a screenshot. */
+.media-ranges {
+  flex-basis: 100%;
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 2px;
+  min-width: 0;
+}
+.media-item:has(.media-ranges) {
+  flex-wrap: wrap;
+}
+.media-range-chip {
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--line));
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--panel-3, var(--panel-2));
+}
+.media-range-chip:hover {
+  border-color: var(--accent);
+}
+.media-range-use,
+.media-range-drop {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+/* Truncate rather than wrap: a chip that wraps becomes a tall vertical pill in
+   a 264px sidebar, which is what the first screenshot of this feature showed.
+   The full text stays reachable as the title. */
+.media-range-use {
+  padding: 1px 4px 1px 7px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.media-range-drop {
+  padding: 1px 6px 1px 3px;
+  flex: none;
+}
+.media-range-use:hover,
+.media-range-use:focus-visible {
+  color: var(--accent);
+}
+.media-range-drop:hover,
+.media-range-drop:focus-visible {
+  color: var(--danger, #e5534b);
 }
 /* The item is a row; an editor inside it has to break out of that flow or it
    is squeezed beside the thumbnail. */

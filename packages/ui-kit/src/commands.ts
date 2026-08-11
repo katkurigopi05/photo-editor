@@ -6,6 +6,9 @@ import type {
   AssetRegisterCommand,
   SetAssetRatingCommand,
   SetAssetKeywordsCommand,
+  AddKeywordRangeCommand,
+  UpdateKeywordRangeCommand,
+  RemoveKeywordRangeCommand,
   CreateSequenceCommand,
   DeleteClipCommand,
   MoveClipCommand,
@@ -80,6 +83,23 @@ export const buildSetAssetKeywords = (
   ctx: CommandContext,
   payload: SetAssetKeywordsCommand["payload"],
 ): SetAssetKeywordsCommand => envelope(ctx, "asset.set_keywords", payload);
+
+export const buildAddKeywordRange = (
+  ctx: CommandContext,
+  payload: AddKeywordRangeCommand["payload"],
+): AddKeywordRangeCommand => envelope(ctx, "asset.add_keyword_range", payload);
+
+export const buildUpdateKeywordRange = (
+  ctx: CommandContext,
+  payload: UpdateKeywordRangeCommand["payload"],
+): UpdateKeywordRangeCommand =>
+  envelope(ctx, "asset.update_keyword_range", payload);
+
+export const buildRemoveKeywordRange = (
+  ctx: CommandContext,
+  payload: RemoveKeywordRangeCommand["payload"],
+): RemoveKeywordRangeCommand =>
+  envelope(ctx, "asset.remove_keyword_range", payload);
 
 export const buildCreateSequence = (
   ctx: CommandContext,

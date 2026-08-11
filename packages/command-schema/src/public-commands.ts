@@ -4,6 +4,8 @@ import {
   audioPanSchema,
   assetRatingSchema,
   assetKeywordsSchema,
+  assetKeywordRangeSchema,
+  keywordSchema,
   animationKeyframeSchema,
   animationPropertySchema,
   animationTracksSchema,
@@ -101,6 +103,57 @@ export const setAssetKeywordsPayloadSchema = z
 export const setAssetKeywordsCommandSchema = command(
   "asset.set_keywords",
   setAssetKeywordsPayloadSchema,
+);
+
+// --- asset keyword ranges ---------------------------------------------------
+//
+// Add/update/remove rather than the whole-list shape `asset.set_keywords` uses.
+// The list here is a set of objects a person builds up one at a time over a long
+// take, not a handful of strings replaced in one gesture, so naming the range
+// keeps the operation log readable — "moved the good take" instead of "set
+// eleven ranges". The inverse still carries the whole list, which is what keeps
+// undo exact.
+
+export const addKeywordRangePayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    range: assetKeywordRangeSchema,
+  })
+  .strict();
+
+export const addKeywordRangeCommandSchema = command(
+  "asset.add_keyword_range",
+  addKeywordRangePayloadSchema,
+);
+
+/** Every field but the id is optional: this is a patch. The reducer checks the
+ * *merged* range, since a payload carrying only one bound cannot be judged on
+ * its own. */
+export const updateKeywordRangePayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    rangeId: z.string().min(1),
+    keyword: keywordSchema.optional(),
+    startUs: microsecondStringSchema.optional(),
+    endUs: microsecondStringSchema.optional(),
+  })
+  .strict();
+
+export const updateKeywordRangeCommandSchema = command(
+  "asset.update_keyword_range",
+  updateKeywordRangePayloadSchema,
+);
+
+export const removeKeywordRangePayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    rangeId: z.string().min(1),
+  })
+  .strict();
+
+export const removeKeywordRangeCommandSchema = command(
+  "asset.remove_keyword_range",
+  removeKeywordRangePayloadSchema,
 );
 
 // --- timeline.create_sequence ----------------------------------------------
@@ -553,6 +606,9 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   assetRegisterCommandSchema,
   setAssetRatingCommandSchema,
   setAssetKeywordsCommandSchema,
+  addKeywordRangeCommandSchema,
+  updateKeywordRangeCommandSchema,
+  removeKeywordRangeCommandSchema,
   createSequenceCommandSchema,
   addTrackCommandSchema,
   addClipCommandSchema,
@@ -588,6 +644,15 @@ export type AssetRegisterCommand = z.infer<typeof assetRegisterCommandSchema>;
 export type SetAssetRatingCommand = z.infer<typeof setAssetRatingCommandSchema>;
 export type SetAssetKeywordsCommand = z.infer<
   typeof setAssetKeywordsCommandSchema
+>;
+export type AddKeywordRangeCommand = z.infer<
+  typeof addKeywordRangeCommandSchema
+>;
+export type UpdateKeywordRangeCommand = z.infer<
+  typeof updateKeywordRangeCommandSchema
+>;
+export type RemoveKeywordRangeCommand = z.infer<
+  typeof removeKeywordRangeCommandSchema
 >;
 export type CreateSequenceCommand = z.infer<typeof createSequenceCommandSchema>;
 export type AddTrackCommand = z.infer<typeof addTrackCommandSchema>;
@@ -638,6 +703,9 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "asset.register",
   "asset.set_rating",
   "asset.set_keywords",
+  "asset.add_keyword_range",
+  "asset.update_keyword_range",
+  "asset.remove_keyword_range",
   "timeline.create_sequence",
   "timeline.add_track",
   "timeline.add_clip",

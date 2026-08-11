@@ -5,6 +5,7 @@ import {
   transitionsFitClip,
   type AnimationKeyframe,
   type AnimationTrack,
+  type AssetKeywordRange,
   type AssetRating,
   type ClipMarker,
   type ClipMask,
@@ -211,6 +212,12 @@ export function applyForward(
       return setAssetRating(project, command);
     case "asset.set_keywords":
       return setAssetKeywords(project, command);
+    case "asset.add_keyword_range":
+      return addKeywordRange(project, command);
+    case "asset.update_keyword_range":
+      return updateKeywordRange(project, command);
+    case "asset.remove_keyword_range":
+      return removeKeywordRange(project, command);
     case "timeline.create_sequence":
       return createSequence(project, command);
     case "timeline.add_track":
@@ -420,6 +427,288 @@ function setAssetKeywords(
         restoreUpdatedAt: prevUpdatedAt,
       },
     },
+  };
+}
+
+// --- keyword ranges ---------------------------------------------------------
+//
+// A keyword over part of an asset, in the asset's own coordinate space. Two
+// rules the schema cannot enforce, because neither is visible from inside a
+// single payload:
+//
+//   1. a range must fit the media it describes, which needs the asset's
+//      duration;
+//   2. an *update* carrying one bound must still leave a forward range, which
+//      needs the bound it did not carry.
+//
+// Both live here, alongside OVERLAP and the other cross-field invariants.
+
+/** Ranges are stored sorted — by start, then keyword, then id — so two orders
+ * of the same set are one project. An empty list removes the member. */
+function withAssetKeywordRanges(
+  asset: MediaAsset,
+  ranges: AssetKeywordRange[] | null,
+): MediaAsset {
+  if (ranges === null || ranges.length === 0) {
+    const { keywordRanges: _dropped, ...rest } = asset;
+    return rest as MediaAsset;
+  }
+  const ordered = [...ranges].sort((a, b) => {
+    const left = toBig(a.startUs);
+    const right = toBig(b.startUs);
+    if (left !== right) return left < right ? -1 : 1;
+    if (a.keyword !== b.keyword) return a.keyword < b.keyword ? -1 : 1;
+    return compareIds(a.id, b.id);
+  });
+  return { ...asset, keywordRanges: ordered };
+}
+
+function keywordRangeInverse(
+  assetId: string,
+  asset: MediaAsset,
+  restoreUpdatedAt: string,
+): ProjectOperation["inverse"] {
+  return {
+    commandType: "internal.set_asset_keyword_ranges",
+    payload: {
+      assetId,
+      keywordRanges: asset.keywordRanges
+        ? structuredClone(asset.keywordRanges)
+        : null,
+      restoreUpdatedAt,
+    },
+  };
+}
+
+/**
+ * A range has to fit inside the media. Anything past the end would be
+ * unreachable, and would survive every trim as a fact about footage that does
+ * not exist.
+ *
+ * Media with no duration — a still — has nothing to range over at all, so it is
+ * refused rather than treated as zero-length, which would produce the same
+ * error with a far more confusing message.
+ */
+function keywordRangeBoundsError(
+  asset: MediaAsset,
+  startUs: string,
+  endUs: string,
+  path: Array<string | number>,
+): CommandError | null {
+  const durationUs = asset.metadata.durationUs;
+  if (durationUs === undefined) {
+    return makeError(
+      "OUT_OF_BOUNDS",
+      `asset ${asset.id} has no duration to range over`,
+      path,
+    );
+  }
+  // End is exclusive, so ending exactly at the duration is the whole shot.
+  if (toBig(endUs) > toBig(durationUs)) {
+    return makeError(
+      "OUT_OF_BOUNDS",
+      `range ${startUs}–${endUs} falls outside the asset's ${durationUs} duration`,
+      path,
+    );
+  }
+  return null;
+}
+
+/** Resolve the asset a keyword-range command names, or the error saying it is
+ * not there. */
+function resolveAssetForRange(
+  projectOrNull: Project | null,
+  baseVersion: number,
+  assetId: string,
+):
+  | { ok: true; project: Project; asset: MediaAsset }
+  | { ok: false; error: CommandError } {
+  const pre = requireLiveProject(projectOrNull, baseVersion);
+  if (!pre.ok) return pre;
+  const asset = findAsset(pre.project, assetId);
+  if (asset === undefined) {
+    return {
+      ok: false,
+      error: makeError("ASSET_NOT_FOUND", `asset ${assetId} not found`, [
+        "payload",
+        "assetId",
+      ]),
+    };
+  }
+  return { ok: true, project: pre.project, asset };
+}
+
+/** Commit a new range list onto one asset, bumping version and `updatedAt`. */
+function commitKeywordRanges(
+  project: Project,
+  assetId: string,
+  ranges: AssetKeywordRange[],
+  createdAt: string,
+): Project {
+  return {
+    ...project,
+    assets: project.assets.map((candidate) =>
+      candidate.id === assetId
+        ? withAssetKeywordRanges(candidate, ranges)
+        : candidate,
+    ),
+    updatedAt: createdAt,
+    currentVersion: project.currentVersion + 1,
+  };
+}
+
+function addKeywordRange(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "asset.add_keyword_range" }>,
+): ForwardResult {
+  const { assetId, range } = command.payload;
+  const resolved = resolveAssetForRange(
+    projectOrNull,
+    command.baseVersion,
+    assetId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project, asset } = resolved;
+
+  const existing = asset.keywordRanges ?? [];
+  if (existing.some((r) => r.id === range.id)) {
+    return {
+      ok: false,
+      error: makeError(
+        "DUPLICATE_ID",
+        `keyword range ${range.id} already exists`,
+        ["payload", "range", "id"],
+      ),
+    };
+  }
+  const boundsError = keywordRangeBoundsError(
+    asset,
+    range.startUs,
+    range.endUs,
+    ["payload", "range"],
+  );
+  if (boundsError) return { ok: false, error: boundsError };
+
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: commitKeywordRanges(
+      project,
+      assetId,
+      [...existing, structuredClone(range)],
+      command.createdAt,
+    ),
+    inverse: keywordRangeInverse(assetId, asset, prevUpdatedAt),
+  };
+}
+
+function updateKeywordRange(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "asset.update_keyword_range" }
+  >,
+): ForwardResult {
+  const { assetId, rangeId, keyword, startUs, endUs } = command.payload;
+  const resolved = resolveAssetForRange(
+    projectOrNull,
+    command.baseVersion,
+    assetId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project, asset } = resolved;
+
+  const existing = asset.keywordRanges ?? [];
+  const target = existing.find((r) => r.id === rangeId);
+  if (target === undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "KEYWORD_RANGE_NOT_FOUND",
+        `keyword range ${rangeId} not found`,
+        ["payload", "rangeId"],
+      ),
+    };
+  }
+
+  const updated: AssetKeywordRange = {
+    ...target,
+    ...(keyword === undefined ? {} : { keyword }),
+    ...(startUs === undefined ? {} : { startUs }),
+    ...(endUs === undefined ? {} : { endUs }),
+  };
+
+  // The merged range, not the payload: a patch carrying only `endUs` is judged
+  // against the `startUs` already stored.
+  if (toBig(updated.endUs) <= toBig(updated.startUs)) {
+    return {
+      ok: false,
+      error: makeError(
+        "INVALID_TIME_RANGE",
+        `range would end at ${updated.endUs}, at or before its start ${updated.startUs}`,
+        ["payload", "endUs"],
+      ),
+    };
+  }
+  const boundsError = keywordRangeBoundsError(
+    asset,
+    updated.startUs,
+    updated.endUs,
+    ["payload"],
+  );
+  if (boundsError) return { ok: false, error: boundsError };
+
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: commitKeywordRanges(
+      project,
+      assetId,
+      existing.map((r) => (r.id === rangeId ? updated : r)),
+      command.createdAt,
+    ),
+    inverse: keywordRangeInverse(assetId, asset, prevUpdatedAt),
+  };
+}
+
+function removeKeywordRange(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "asset.remove_keyword_range" }
+  >,
+): ForwardResult {
+  const { assetId, rangeId } = command.payload;
+  const resolved = resolveAssetForRange(
+    projectOrNull,
+    command.baseVersion,
+    assetId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project, asset } = resolved;
+
+  const existing = asset.keywordRanges ?? [];
+  if (!existing.some((r) => r.id === rangeId)) {
+    return {
+      ok: false,
+      error: makeError(
+        "KEYWORD_RANGE_NOT_FOUND",
+        `keyword range ${rangeId} not found`,
+        ["payload", "rangeId"],
+      ),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: commitKeywordRanges(
+      project,
+      assetId,
+      existing.filter((r) => r.id !== rangeId),
+      command.createdAt,
+    ),
+    inverse: keywordRangeInverse(assetId, asset, prevUpdatedAt),
   };
 }
 
@@ -2723,6 +3012,19 @@ export function applyInverse(
         assets: p.assets.map((asset) =>
           asset.id === assetId
             ? withAssetKeywords(asset, keywords ?? [])
+            : asset,
+        ),
+        updatedAt: restoreUpdatedAt,
+      };
+    }
+    case "internal.set_asset_keyword_ranges": {
+      const p = requireProject(project);
+      const { assetId, keywordRanges, restoreUpdatedAt } = inverse.payload;
+      return {
+        ...p,
+        assets: p.assets.map((asset) =>
+          asset.id === assetId
+            ? withAssetKeywordRanges(asset, keywordRanges)
             : asset,
         ),
         updatedAt: restoreUpdatedAt,

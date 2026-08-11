@@ -133,7 +133,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Feature | Ref | Us | Note |
 | --- | --- | --- | --- |
 | Ratings, keywords, search, saved views | FCP, Lightroom, Capture One | ✓ | |
-| Keyword ranges (part of a clip) | FCP | ✗ | step M2, next in line |
+| Keyword ranges (part of a clip) | FCP | ✓ | tagged from the range editor; step M2 |
 | Persistent catalogue across projects | Lightroom, Capture One | ✗ | step M3 |
 | Proxy / optimised media | all pro | ✓ | 540p proxies, built on import, exports read the original |
 | Relink missing media | all pro | ✗ | checksums exist, the flow does not — step M5 |
@@ -196,8 +196,11 @@ session, **M** a few sessions, **L** a phase.
 
 ### Next — the editing model catches up
 
-4. **M2 · Keyword ranges** — **S**. A persisted range object plus a command;
-   browser ranges and keywords both exist already.
+4. ~~**M2 · Keyword ranges**~~ — done. A persisted range object in source-local
+   microseconds, add/update/remove commands and their MCP tools, tagging from
+   inside the range editor, and chips that load a range back for the next add.
+   Search and the keyword picker both reach range keywords. See
+   `docs/phases/keyword-ranges.md`.
 5. **T1 · Three-point editing (insert / overwrite / append)** — **M**. The
    browser range is the source half; these are the destination half.
 6. **A4 · Speed ramps** — **M**. Keyframed rate rather than one constant, which

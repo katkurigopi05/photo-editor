@@ -52,10 +52,13 @@ produced instead of inferring it from pixel width.
 
 ## Not built
 
-Keyword *ranges* — a keyword over part of a clip — still need a persisted range
-object rather than this transient one, which is a schema and a command, not a
-slider. Also absent: in/out set from the keyboard (I and O) while scrubbing a
-preview of the browser item, and multiple ranges per asset.
+~~Keyword *ranges*~~ — built since, as the persisted object this transient one
+could not be. The editor here gained a "Keyword this range" button, because the
+two are one gesture; see [keyword-ranges.md](keyword-ranges.md).
+
+Still absent: in/out set from the keyboard (I and O) while scrubbing a preview
+of the browser item, and multiple *transient* ranges per asset — a persisted
+range is now the way to keep more than one.
 
 ## A layout regression the screenshot caught
 

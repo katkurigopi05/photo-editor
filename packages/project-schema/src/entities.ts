@@ -4,7 +4,7 @@ import { transitionSchema } from "./transitions.js";
 import { effectInstanceSchema } from "./effects.js";
 import { clipMasksSchema } from "./masks.js";
 import { clipMarkersSchema } from "./markers.js";
-import { assetKeywordsSchema } from "./keywords.js";
+import { assetKeywordRangesSchema, assetKeywordsSchema } from "./keywords.js";
 import { blendModeSchema } from "./blend.js";
 import {
   audioGainDbSchema,
@@ -53,6 +53,10 @@ export const mediaAssetSchema = z
     // Optional like `rating`, and for the same reason: an asset registered
     // before keywords existed must parse byte-for-byte identically.
     keywords: assetKeywordsSchema.optional(),
+    // Optional for the same reason again: an asset keyworded before ranges
+    // existed must parse byte-for-byte identically. Absent rather than `[]`,
+    // which canonical JSON treats as a different project.
+    keywordRanges: assetKeywordRangesSchema.optional(),
     createdAt: isoInstantSchema,
   })
   .strict();

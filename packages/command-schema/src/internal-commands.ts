@@ -4,6 +4,7 @@ import {
   audioPanSchema,
   assetRatingSchema,
   assetKeywordsSchema,
+  assetKeywordRangesSchema,
   animationTracksSchema,
   transitionSchema,
   transitionSideSchema,
@@ -75,6 +76,20 @@ export const setAssetKeywordsInverseSchema = internal(
     .object({
       assetId: z.string().min(1),
       keywords: assetKeywordsSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
+/** One inverse for all three range commands: it restores the asset's whole
+ * list. `null` restores an asset that had no `keywordRanges` member — which is
+ * a different project from one holding an empty array. */
+export const setAssetKeywordRangesInverseSchema = internal(
+  "internal.set_asset_keyword_ranges",
+  z
+    .object({
+      assetId: z.string().min(1),
+      keywordRanges: assetKeywordRangesSchema.nullable(),
       restoreUpdatedAt: isoInstantSchema,
     })
     .strict(),
@@ -349,6 +364,7 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   removeAssetInverseSchema,
   setAssetRatingInverseSchema,
   setAssetKeywordsInverseSchema,
+  setAssetKeywordRangesInverseSchema,
   removeSequenceInverseSchema,
   removeTrackInverseSchema,
   removeClipInverseSchema,
