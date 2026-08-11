@@ -95,6 +95,28 @@ export const setAssetKeywordRangesInverseSchema = internal(
     .strict(),
 );
 
+/**
+ * Restore a track's whole clip list.
+ *
+ * The inverse of insert and overwrite, which rearrange an unbounded number of
+ * clips in one gesture: a ripple moves everything downstream, an overwrite may
+ * trim two clips, delete three and split a fourth. Carrying the list entire is
+ * the same bargain masks and markers strike — exact undo without a
+ * reconstruction rule per case — and a track's clips are small compared with
+ * the media they point at.
+ */
+export const setTrackClipsInverseSchema = internal(
+  "internal.set_track_clips",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      trackId: z.string().min(1),
+      clips: z.array(timelineClipSchema),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 export const removeSequenceInverseSchema = internal(
   "internal.remove_sequence",
   z
@@ -365,6 +387,7 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   setAssetRatingInverseSchema,
   setAssetKeywordsInverseSchema,
   setAssetKeywordRangesInverseSchema,
+  setTrackClipsInverseSchema,
   removeSequenceInverseSchema,
   removeTrackInverseSchema,
   removeClipInverseSchema,

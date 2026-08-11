@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   addClipPayloadSchema,
+  insertClipPayloadSchema,
+  overwriteClipPayloadSchema,
   addEffectPayloadSchema,
   addKeyframePayloadSchema,
   addTrackPayloadSchema,
@@ -154,6 +156,31 @@ const COMMAND_TOOLS: CommandTool[] = [
       "Place a clip on a track. Timeline duration is derived from the source " +
       "range and playback rate, so it is not supplied here.",
     schema: addClipPayloadSchema,
+  },
+  {
+    name: "insert_clip",
+    commandType: "timeline.insert_clip",
+    title: "Insert a clip, rippling what follows",
+    description:
+      "Place a clip at its timelineStartUs and push everything at or after " +
+      "that point later by the clip's duration. Only the clip's own track " +
+      "ripples; other tracks stay where they are. If the point falls inside " +
+      "an existing clip, that clip is cut in two and splitClipId names the " +
+      "second half — without it the command is refused rather than guessing " +
+      "an id.",
+    schema: insertClipPayloadSchema,
+  },
+  {
+    name: "overwrite_clip",
+    commandType: "timeline.overwrite_clip",
+    title: "Overwrite whatever a span covers",
+    description:
+      "Place a clip at its timelineStartUs, replacing what its span covers: " +
+      "clips wholly inside are removed, clips crossing either edge are " +
+      "trimmed back (a clip crossing the end has its source advanced so it " +
+      "does not repeat covered frames), and a clip containing the whole span " +
+      "is cut in two — supply splitClipId for that case.",
+    schema: overwriteClipPayloadSchema,
   },
   {
     name: "move_clip",

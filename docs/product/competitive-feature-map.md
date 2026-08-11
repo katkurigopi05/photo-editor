@@ -63,7 +63,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Compound clips / nested sequences | all pro | ✗ | step T3 |
 | Multicam editing | Premiere, Resolve, FCP | ✗ | needs sync + angle switching; step T7 |
 | Roles / lanes / track groups | FCP, Premiere | ✗ | step T4 |
-| Three-point editing, insert/overwrite | all pro | ✗ | browser range exists; the edit modes do not — step T1 |
+| Three-point editing, insert/overwrite | all pro | ✓ | append, insert and overwrite from the bin; step T1 |
 | J/K/L and keyboard-first trimming | all pro | ✗ | step T2 |
 | Snapping | all | ✓ | |
 | Markers | all | ✓ | timeline-level markers still missing |
@@ -201,8 +201,11 @@ session, **M** a few sessions, **L** a phase.
    inside the range editor, and chips that load a range back for the next add.
    Search and the keyword picker both reach range keywords. See
    `docs/phases/keyword-ranges.md`.
-5. **T1 · Three-point editing (insert / overwrite / append)** — **M**. The
-   browser range is the source half; these are the destination half.
+5. ~~**T1 · Three-point editing (insert / overwrite / append)**~~ — done. The
+   browser range was the source half; `timeline.insert_clip` and
+   `timeline.overwrite_clip` are the destination half, chosen from an "Add as"
+   control in the timeline toolbar. Insert ripples its own track only. See
+   `docs/phases/three-point-editing.md`.
 6. **A4 · Speed ramps** — **M**. Keyframed rate rather than one constant, which
    the schema's rational rate already accommodates.
 7. **L1 · Blend modes and adjustment layers** — **M**. Blend modes are done (see

@@ -219,6 +219,56 @@ export const addClipCommandSchema = command(
   addClipPayloadSchema,
 );
 
+// --- three-point editing: insert and overwrite ------------------------------
+//
+// `add_clip` places a clip where nothing is, and refuses with OVERLAP when
+// something is. These two say what to do about the something: insert pushes it
+// later, overwrite replaces it. Together with the browser range — which is the
+// source half — they are three-point editing: source in, source out and a
+// destination, with the fourth point derived.
+//
+// One command each rather than a UI-composed run of move/trim/delete, because
+// rippling five clips has to be *one* undo. The inverse restores the whole
+// track for the same reason masks and markers carry their whole list: exact
+// undo of an arbitrary rearrangement, without a reconstruction rule per case.
+//
+// `splitClipId` names the second half when the edit lands mid-clip and that
+// clip has to be cut in two. It is supplied rather than generated because
+// reducers never invent identity — the same rule the rest of the engine keeps.
+// When no split is needed it is ignored; when one is needed and it is absent,
+// the command is refused rather than guessing.
+
+const threePointPayloadShape = {
+  sequenceId: z.string().min(1),
+  trackId: z.string().min(1),
+  clip: clipInputSchema,
+  splitClipId: z.string().min(1).optional(),
+};
+
+/** Place a clip at its `timelineStartUs`, pushing everything at or after that
+ * point later by the clip's duration. Only on the clip's own track: rippling
+ * every track is the magnetic timeline, which is a separate decision. */
+export const insertClipPayloadSchema = z
+  .object(threePointPayloadShape)
+  .strict();
+
+export const insertClipCommandSchema = command(
+  "timeline.insert_clip",
+  insertClipPayloadSchema,
+);
+
+/** Place a clip at its `timelineStartUs`, replacing whatever the span covers:
+ * clips inside it go, clips across either edge are trimmed back, and a clip
+ * spanning the whole span is cut in two around it. */
+export const overwriteClipPayloadSchema = z
+  .object(threePointPayloadShape)
+  .strict();
+
+export const overwriteClipCommandSchema = command(
+  "timeline.overwrite_clip",
+  overwriteClipPayloadSchema,
+);
+
 // --- timeline.move_clip -----------------------------------------------------
 
 export const moveClipPayloadSchema = z
@@ -612,6 +662,8 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   createSequenceCommandSchema,
   addTrackCommandSchema,
   addClipCommandSchema,
+  insertClipCommandSchema,
+  overwriteClipCommandSchema,
   moveClipCommandSchema,
   trimClipCommandSchema,
   deleteClipCommandSchema,
@@ -657,6 +709,8 @@ export type RemoveKeywordRangeCommand = z.infer<
 export type CreateSequenceCommand = z.infer<typeof createSequenceCommandSchema>;
 export type AddTrackCommand = z.infer<typeof addTrackCommandSchema>;
 export type AddClipCommand = z.infer<typeof addClipCommandSchema>;
+export type InsertClipCommand = z.infer<typeof insertClipCommandSchema>;
+export type OverwriteClipCommand = z.infer<typeof overwriteClipCommandSchema>;
 export type MoveClipCommand = z.infer<typeof moveClipCommandSchema>;
 export type TrimClipCommand = z.infer<typeof trimClipCommandSchema>;
 export type DeleteClipCommand = z.infer<typeof deleteClipCommandSchema>;
@@ -709,6 +763,8 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.create_sequence",
   "timeline.add_track",
   "timeline.add_clip",
+  "timeline.insert_clip",
+  "timeline.overwrite_clip",
   "timeline.move_clip",
   "timeline.trim_clip",
   "timeline.delete_clip",

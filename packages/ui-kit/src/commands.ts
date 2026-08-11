@@ -1,5 +1,7 @@
 import type {
   AddClipCommand,
+  InsertClipCommand,
+  OverwriteClipCommand,
   AddEffectCommand,
   AddKeyframeCommand,
   AddTrackCommand,
@@ -83,6 +85,16 @@ export const buildSetAssetKeywords = (
   ctx: CommandContext,
   payload: SetAssetKeywordsCommand["payload"],
 ): SetAssetKeywordsCommand => envelope(ctx, "asset.set_keywords", payload);
+
+export const buildInsertClip = (
+  ctx: CommandContext,
+  payload: InsertClipCommand["payload"],
+): InsertClipCommand => envelope(ctx, "timeline.insert_clip", payload);
+
+export const buildOverwriteClip = (
+  ctx: CommandContext,
+  payload: OverwriteClipCommand["payload"],
+): OverwriteClipCommand => envelope(ctx, "timeline.overwrite_clip", payload);
 
 export const buildAddKeywordRange = (
   ctx: CommandContext,

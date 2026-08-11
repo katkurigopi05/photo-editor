@@ -17,6 +17,8 @@ import {
   buildSetAssetRating,
   buildSetAssetKeywords,
   buildAddKeywordRange,
+  buildInsertClip,
+  buildOverwriteClip,
   buildRemoveKeywordRange,
   buildSetClipSpeed,
   buildAddMarker,
@@ -742,6 +744,15 @@ type MediaFilter = "all" | "favorites" | "rejected" | "unrated";
 let mediaFilter: MediaFilter = "all";
 let mediaKeyword = "";
 
+/**
+ * Where an add from the bin lands, and what happens to what is already there —
+ * the destination half of three-point editing.
+ *
+ * Session state, not project state: it is a way of working, not a fact about
+ * the edit. Nothing about it changes what would be rendered, and the commands
+ * it chooses between record what actually happened.
+ */
+let editMode: "append" | "insert" | "overwrite" = "append";
 
 /**
  * Saved views: a named search + keyword + rating filter.
@@ -1650,6 +1661,25 @@ async function addVectorShape(preset: VectorShapePreset): Promise<void> {
   toast(`${preset.label} cartoon added — animate it in the Inspector`);
 }
 
+/**
+ * Add a clip, in whichever of the three destinations the toolbar is set to.
+ *
+ * This is the destination half of three-point editing. The source half is
+ * already decided by the time we get here: `range` is the browser range, so in
+ * and out are chosen; the mode decides where it lands and what happens to what
+ * is already there.
+ *
+ * - **Append** puts it after the last clip on the track — the original
+ *   behaviour, and still the default, because it is what adding from the bin
+ *   means when you are assembling in order.
+ * - **Insert** puts it at the playhead and pushes the rest later.
+ * - **Overwrite** puts it at the playhead and replaces what it covers.
+ *
+ * Insert and overwrite each go through one command, so a ripple across five
+ * clips is one undo and an agent gets the same edit through MCP. `splitClipId`
+ * is supplied every time: the reducer ignores it unless the edit lands mid-clip,
+ * and predicting that here would duplicate the reducer's own arithmetic.
+ */
 function addAssetToTimeline(
   assetId: string,
   kind: MediaAsset["kind"],
@@ -1663,21 +1693,36 @@ function addAssetToTimeline(
     preferredTrackId ?? (kind === "audio" ? AUDIO_TRACK : VIDEO_TRACK);
   const track = seq.tracks.find((t) => t.id === trackId);
   if (!track) return;
-  const startUs = trackEndUs(track).toString();
   const clipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+  const clip = {
+    id: clipId,
+    assetId,
+    timelineStartUs:
+      editMode === "append"
+        ? trackEndUs(track).toString()
+        : playback.currentTimeUs,
+    sourceInUs: range?.inUs ?? "0",
+    sourceOutUs: range?.outUs ?? durationUs,
+    playbackRate: { numerator: 1, denominator: 1 } as const,
+  };
+  const payload = {
+    sequenceId: SEQUENCE_ID,
+    trackId,
+    clip,
+    splitClipId: `clip-${crypto.randomUUID().slice(0, 8)}`,
+  };
   const added = commit(
-    buildAddClip(nextCtx(), {
-      sequenceId: SEQUENCE_ID,
-      trackId,
-      clip: {
-        id: clipId,
-        assetId,
-        timelineStartUs: startUs,
-        sourceInUs: range?.inUs ?? "0",
-        sourceOutUs: range?.outUs ?? durationUs,
-        playbackRate: { numerator: 1, denominator: 1 },
-      },
-    }),
+    editMode === "insert"
+      ? buildInsertClip(nextCtx(), payload)
+      : editMode === "overwrite"
+        ? buildOverwriteClip(nextCtx(), payload)
+        : // Append has nothing to ripple or replace, so it stays the plain add
+          // it always was — and `add_clip` takes no splitClipId.
+          buildAddClip(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            trackId,
+            clip,
+          }),
   );
   if (added) selectClip(clipId);
 }
@@ -2970,8 +3015,11 @@ function renderTimeline(): void {
           : ""
       }`;
       // The clip's own span, exposed so a test can assert what a browser range
-      // actually produced rather than inferring it from pixel width.
+      // actually produced rather than inferring it from pixel width. The start
+      // is here for the same reason: a ripple is a change of position, and
+      // reading it off `style.left` would be reading the zoom level back.
       el.dataset.durationUs = clip.timelineDurationUs;
+      el.dataset.startUs = clip.timelineStartUs;
       el.style.left = `${usToPixels(clip.timelineStartUs, zoom)}px`;
       const clipWidth = Math.max(24, usToPixels(clip.timelineDurationUs, zoom));
       el.style.width = `${clipWidth}px`;
@@ -7951,6 +7999,9 @@ function bindEvents(): void {
   $("media-search").addEventListener("input", () => {
     mediaSearch = $<HTMLInputElement>("media-search").value;
     renderMedia();
+  });
+  $("edit-mode").addEventListener("change", () => {
+    editMode = $<HTMLSelectElement>("edit-mode").value as typeof editMode;
   });
   $("media-keyword").addEventListener("change", () => {
     mediaKeyword = $<HTMLSelectElement>("media-keyword").value;

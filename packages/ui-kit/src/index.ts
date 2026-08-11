@@ -11,6 +11,8 @@ export {
   buildRegisterAsset,
   buildSetAssetRating,
   buildSetAssetKeywords,
+  buildInsertClip,
+  buildOverwriteClip,
   buildAddKeywordRange,
   buildUpdateKeywordRange,
   buildRemoveKeywordRange,

@@ -442,6 +442,16 @@
           >
             ⇤ Ripple Delete
           </button>
+          <label class="edit-mode"
+            >Add as
+            <select id="edit-mode" aria-label="Add mode">
+              <option value="append">Append — after the last clip</option>
+              <option value="insert">Insert — at the playhead, ripple</option>
+              <option value="overwrite">
+                Overwrite — at the playhead, replace
+              </option>
+            </select>
+          </label>
           <span class="spacer"></span>
           <label class="zoom"
             >Zoom
