@@ -170,3 +170,35 @@ test("preview quality can be pinned, and the report follows", async ({
   await page.waitForTimeout(500);
   await expect(page.getByLabel("Preview quality")).toHaveValue("low");
 });
+
+test("grading through the lookup table matches grading directly", async ({
+  page,
+}) => {
+  // An adjustment layer's stack is collapsed into a 3D colour table, because it
+  // regrades the live canvas every frame and cannot cache. A media clip's stack
+  // is not — it grades at its own resolution and caches the result. So the two
+  // paths run different code, and this is the check that they agree.
+  //
+  // Same Look, same footage, same frame: once carried by the clip itself, once
+  // by an adjustment layer above an untouched clip.
+  await importMedia(page, SOURCE);
+  await setMode(page, "video");
+  await page.locator(".clip").first().click();
+  await page.waitForTimeout(400);
+  await applyLook(page, "Cinematic");
+  const direct = await previewSignature(page);
+
+  // Start again and put the identical Look on an adjustment layer instead.
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await importMedia(page, SOURCE);
+  await setMode(page, "video");
+  await addAdjustment(page);
+  await applyLook(page, "Cinematic");
+  const viaLut = await previewSignature(page);
+
+  // Not byte-identical: a 33-cube interpolates, and the layer composites over
+  // the clip rather than being burned into it. Close is the claim — far apart
+  // would mean the table is wrong and everyone's grades shifted.
+  expect(signatureDistance(direct, viaLut)).toBeLessThan(6);
+});

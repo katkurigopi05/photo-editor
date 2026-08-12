@@ -92,6 +92,56 @@ The setting is machine-personal, like the theme and saved views, so it lives in
   grade *does*, the report states the current level, pinning works, and the
   preference survives a reload.
 
+## Making the work smaller, not just rarer
+
+Auto-scaling lowers resolution when a machine struggles. The complementary move
+is to need fewer operations at that resolution, and for grading there is a large
+one available.
+
+A stack made only of **pointwise** effects — ones whose answer for a pixel
+depends on that pixel's colour and nothing else — is a pure function from RGB to
+RGB. It can therefore be sampled once into a 33³ colour table and applied by
+interpolation. Eight adjustments over a megapixel is eight million pixel
+operations; the same eight over the cube is under three hundred thousand, after
+which each image pixel costs one lookup. The cost stops depending on how many
+effects are in the stack.
+
+This is used on the adjustment-layer path, which is the one that cannot cache.
+
+**The table is built by running the very same grading code**, so nothing is
+reimplemented and nothing can drift — a change to an effect changes the cube it
+produces, automatically. Two guards decide when it is safe:
+
+- every effect must be in `POINTWISE_GRADING_TYPES`. Presence (clarity, texture,
+  dehaze) and Noise Reduction are excluded because they read a pixel's
+  neighbours, which no colour table can encode;
+- no effect may be masked, because a mask makes the result depend on *where* a
+  pixel is.
+
+Below two effects the table is skipped: one pointwise effect costs a single pass
+either way, and building a cube for it would add work to save none.
+
+33 samples per axis rather than 32, so the last sample lands exactly on 255.
+With an even size the top of the range falls between samples and pure white
+drifts — visible as a tint in a blown highlight, which a test pins.
+
+Interpolation is trilinear, not nearest: 33 samples are about eight levels
+apart, and a gradient stepping in eights is obvious on a sky.
+
+### What it costs in accuracy
+
+A table is an approximation, and the tests say how much. A gentle cross-channel
+grade matches the direct path within 2/255; a harsh, clipping one within 4/255,
+because interpolation error concentrates where the function bends most sharply.
+Under 2%, below what an eye resolves — but not zero, and the test says 4 rather
+than pretending otherwise.
+
+The strongest check is in the e2e and not the unit tests: the same Look is
+applied once to a clip (direct path, cached) and once to an adjustment layer
+above an untouched clip (table path, uncached), and the two pictures are
+compared. Those are genuinely different code paths, so agreement between them is
+evidence rather than tautology.
+
 ## Not built
 
 - **Adapting anything but preview grading.** Decode, export and the raster

@@ -246,6 +246,9 @@ import {
   IDENTITY_CURVE,
   type CurvePoint,
   type CurveSet,
+  applyLut3d,
+  cubeImageToLut,
+  identityCubeImage,
 } from "@director/raster-tools";
 import {
   biasSubjectMask,
@@ -3212,6 +3215,30 @@ function runsAsPixels(fx: EffectInstance): boolean {
   );
 }
 
+/**
+ * Grading effects whose output for a pixel depends on that pixel alone.
+ *
+ * A stack made only of these is a pure function from RGB to RGB, so it can be
+ * sampled once into a 3D table and applied by lookup — see `lut3d`. The two
+ * grading effects missing from this list are the two that read a pixel's
+ * neighbours: Presence (clarity, texture, dehaze) works on local contrast, and
+ * Noise Reduction is a spatial filter by definition. A table cannot represent
+ * either, so a stack containing one takes the direct path.
+ *
+ * `isPointwise` in raster-tools exists to check a claim like this by
+ * experiment rather than assertion.
+ */
+const POINTWISE_GRADING_TYPES: ReadonlySet<string> = new Set([
+  "color.white_balance",
+  "color.levels",
+  "color.tone_curve",
+  "color.curves",
+  "color.vibrance",
+  "light.tone",
+  "color.hsl_mixer",
+  "color.color_grading",
+]);
+
 const GRADING_TYPES: ReadonlySet<string> = new Set([
   "color.white_balance",
   "color.levels",
@@ -3444,6 +3471,25 @@ function grade(
  * frame, and often on every repaint of the same frame — so a cache would either
  * return a stale grade or grow without bound. This is that path.
  */
+/**
+ * Can this stack be collapsed into a 3D table?
+ *
+ * Only when every effect is pointwise and none is masked — a mask makes the
+ * result depend on *where* a pixel is, which is precisely what a colour table
+ * cannot encode.
+ *
+ * Two effects is the floor. One pointwise effect costs a single pass either
+ * way, and building a table for it would add ~36k evaluations to save nothing.
+ */
+function isLutable(
+  gradingFx: readonly EffectInstance[],
+  masks: readonly ClipMask[],
+): boolean {
+  if (gradingFx.length < 2) return false;
+  if (masks.length > 0 && gradingFx.some((fx) => fx.maskId)) return false;
+  return gradingFx.every((fx) => POINTWISE_GRADING_TYPES.has(fx.type));
+}
+
 function gradeUncached(
   source: CanvasImageSource,
   width: number,
@@ -3457,6 +3503,21 @@ function gradeUncached(
   const octx = off.getContext("2d", { willReadFrequently: true })!;
   octx.drawImage(source, 0, 0, width, height);
   const image = octx.getImageData(0, 0, width, height);
+
+  // A pointwise stack costs one pass instead of one per effect: the chain is
+  // run once over a 33-cube of colours — about 36k pixels however many effects
+  // there are — and every image pixel then costs one interpolated lookup. The
+  // table is built by running the very same `gradeImage`, so the two paths
+  // cannot drift apart.
+  if (isLutable(gradingFx, masks)) {
+    let cube = identityCubeImage();
+    for (const fx of gradingFx) cube = gradeImage(cube, fx);
+    const lut = cubeImageToLut(cube);
+    const out = applyLut3d({ width, height, data: image.data }, lut);
+    image.data.set(out.data);
+    octx.putImageData(image, 0, 0);
+    return off;
+  }
 
   let raster: RasterImage = { width, height, data: image.data };
   // One rasterization per mask, however many effects reference it: turning
