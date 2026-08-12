@@ -161,7 +161,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Save / open a project file | all | ✗ | **the largest hole on this page** — step P1 |
 | Auto-save and crash recovery | all | ✗ | step P1 |
 | Desktop application | all | ✗ | Tauri shell, deferred by decision (cost) |
-| Undo history panel | all | ◐ | the log is listed; it cannot be navigated — step P2 |
+| Undo history panel | all | ✓ | one entry per gesture, click to travel — step P2 |
 | Customisable shortcuts | all pro | ✗ | step P3 |
 | Templates and presets | CapCut, Canva-likes, Lightroom | ◐ | Looks and motion presets ship; nothing is user-definable — step P4 |
 | GPU-accelerated rendering | all pro | ✗ | canvas 2D throughout; step P5, large |
@@ -219,8 +219,10 @@ session, **M** a few sessions, **L** a phase.
 8. ~~**C1 · Control-point curves**~~ — done. Monotone cubic (Fritsch–Carlson)
    so a curve never overshoots between its points, on the composite and on each
    channel, with a drag-to-shape editor. See `docs/phases/curves.md`.
-9. **P2 · Navigable history panel** — **S**. The log exists and replay works;
-   this is a UI over both.
+9. ~~**P2 · Navigable history panel**~~ — done. One entry per gesture rather
+   than per operation, named after the action, with the redo branch drawn and
+   clickable. Clicking steps Undo/Redo rather than jumping, so it cannot
+   disagree with the buttons. See `docs/phases/history-panel.md`.
 
 ### Later — bigger bets
 

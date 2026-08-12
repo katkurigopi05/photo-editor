@@ -142,6 +142,30 @@ export class EditorSession {
     return this.lastError;
   }
 
+  /**
+   * Gesture sizes on the undo side, oldest first.
+   *
+   * The history panel draws a step per gesture rather than per operation: a
+   * ripple delete is a delete plus a move for every clip after it, and listing
+   * those separately would describe the engine instead of what the person did.
+   * The number is how many operations the step covers, which is what a caller
+   * needs to name the step from the log.
+   */
+  undoStepSizes(): readonly number[] {
+    return [...this.undoSteps];
+  }
+
+  /**
+   * Gesture sizes on the redo side, **nearest first** — index 0 is what the
+   * next redo would restore.
+   *
+   * Nearest first because that is the order the panel draws them in going
+   * forward from the present, and because it is the order they come back.
+   */
+  redoStepSizes(): readonly number[] {
+    return [...this.redoSteps].reverse();
+  }
+
   canUndo(): boolean {
     return this.state.operationLog.length > this.baseline;
   }

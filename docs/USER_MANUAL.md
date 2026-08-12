@@ -60,6 +60,10 @@ when the system asks for reduced motion.
 
 ### Shared tools
 
+- History (left panel) lists every edit, one entry per action. Click any entry
+  to travel back to it; entries ahead of where you are stay listed, greyed, and
+  clicking one moves forward again. The highlighted entry is where the project
+  currently stands.
 - Save a project with Save (Cmd/Ctrl+S) and reopen it later with Open. The file
   holds the full edit history, so opening it restores the timeline exactly.
 - After the first save, Save writes straight back to the same file. Use Save as
@@ -454,6 +458,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-12:** The History panel is navigable — click an edit to go back to
+  it, and click a greyed one to go forward again. Entries are named after the
+  action and grouped so one entry is one Undo.
 - **2026-08-11:** Preview quality now scales itself by measuring real frames, so
   the editor settles at a level that suits the machine it is running on, and can
   be pinned to Auto, Low, Medium or High under Export → This device. Exports are

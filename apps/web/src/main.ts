@@ -5711,13 +5711,152 @@ function sliderControl(
 // ==========================================================================
 // History
 // ==========================================================================
+/** A command type as a person would name the action. Unlisted types fall back
+ * to their own name, tidied — a new command shows up readably rather than not
+ * at all, which is what a lookup with no fallback would do. */
+const HISTORY_LABELS: Readonly<Record<string, string>> = {
+  "asset.register": "Import media",
+  "asset.set_rating": "Rate media",
+  "asset.set_keywords": "Set keywords",
+  "asset.add_keyword_range": "Keyword a range",
+  "asset.update_keyword_range": "Change a keyword range",
+  "asset.remove_keyword_range": "Remove a keyword range",
+  "timeline.create_sequence": "Create sequence",
+  "timeline.add_track": "Add track",
+  "timeline.add_clip": "Add clip",
+  "timeline.insert_clip": "Insert clip",
+  "timeline.overwrite_clip": "Overwrite clip",
+  "timeline.move_clip": "Move clip",
+  "timeline.trim_clip": "Trim clip",
+  "timeline.delete_clip": "Delete clip",
+  "timeline.add_effect": "Add effect",
+  "timeline.update_effect_params": "Adjust effect",
+  "timeline.remove_effect": "Remove effect",
+  "timeline.reorder_effects": "Reorder effects",
+  "timeline.update_clip_effects": "Change effects",
+  "timeline.set_clip_audio_gain": "Set gain",
+  "timeline.set_clip_audio_pan": "Set pan",
+  "timeline.set_clip_blend_mode": "Set blend mode",
+  "timeline.set_clip_speed": "Set speed",
+  "timeline.set_clip_speed_ramp": "Set speed ramp",
+  "timeline.add_marker": "Add marker",
+  "timeline.update_marker": "Change marker",
+  "timeline.remove_marker": "Remove marker",
+  "timeline.add_mask": "Add mask",
+  "timeline.update_mask": "Change mask",
+  "timeline.remove_mask": "Remove mask",
+  "timeline.set_effect_mask": "Mask an effect",
+  "timeline.add_keyframe": "Add keyframe",
+  "timeline.update_keyframe": "Change keyframe",
+  "timeline.remove_keyframe": "Remove keyframe",
+  "timeline.update_clip_animations": "Change animation",
+  "timeline.set_clip_transition": "Set transition",
+};
+
+function historyLabel(commandType: string): string {
+  const known = HISTORY_LABELS[commandType];
+  if (known) return known;
+  const tail = commandType.split(".").pop() ?? commandType;
+  const words = tail.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** One entry in the panel: a whole gesture, named after what it did. */
+interface HistoryStep {
+  label: string;
+  /** Steps before the cursor are done; the rest are on the redo branch. */
+  done: boolean;
+}
+
+/**
+ * The history as a list of steps and a cursor within it.
+ *
+ * A step is a *gesture*, not an operation: ripple delete is a delete plus a
+ * move per clip after it, and adding an adjustment layer is a track, a move per
+ * clip, an asset and a clip. Listing those separately would describe the engine
+ * rather than what the person did — and would not match Undo, which already
+ * steps by gesture.
+ *
+ * A gesture is named after its *first* command. That is the one the person
+ * asked for; the rest are consequences of it.
+ */
+function historySteps(): HistoryStep[] {
+  const state = session.getState();
+  const log = state.operationLog;
+  const steps: HistoryStep[] = [];
+
+  let at = session.getBaseline();
+  for (const size of session.undoStepSizes()) {
+    const first = log[at];
+    steps.push({
+      label: first ? historyLabel(first.command.commandType) : "Edit",
+      done: true,
+    });
+    at += size;
+  }
+
+  // The redo branch, nearest first. Its operations are held in reverse order —
+  // the next to be redone is on top of the stack — so the run for a step is
+  // read backwards from the end.
+  const redo = state.redoStack;
+  let remaining = redo.length;
+  for (const size of session.redoStepSizes()) {
+    const first = redo[remaining - size];
+    steps.push({
+      label: first ? historyLabel(first.command.commandType) : "Edit",
+      done: false,
+    });
+    remaining -= size;
+  }
+  return steps;
+}
+
+/**
+ * Move the present to a given step by stepping Undo or Redo until it is there.
+ *
+ * Deliberately not a jump: replaying to an arbitrary point would be a second
+ * way of moving through history, and the two could disagree. Stepping reuses
+ * exactly the path Undo and Redo already take, so a click on an entry lands
+ * where pressing Undo that many times would.
+ */
+function goToHistoryStep(target: number): void {
+  const guard = session.undoStepSizes().length + session.redoStepSizes().length;
+  for (let i = 0; i <= guard; i += 1) {
+    const done = session.undoStepSizes().length;
+    if (done === target) break;
+    if (done > target) {
+      if (!session.undo()) break;
+    } else if (!session.redo()) break;
+  }
+  updateUI();
+}
+
 function renderHistory(): void {
   historyEl.innerHTML = "";
-  const ops = session.getState().operationLog;
-  ops.forEach((op, i) => {
-    const el = document.createElement("div");
-    el.className = `history-item${i === ops.length - 1 ? " current" : ""}`;
-    el.textContent = `${i + 1}. ${op.command.commandType}`;
+  const steps = historySteps();
+  if (steps.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "Edits appear here. Click one to go back to it.";
+    historyEl.appendChild(empty);
+    return;
+  }
+
+  const cursor = session.undoStepSizes().length;
+  steps.forEach((step, index) => {
+    const el = document.createElement("button");
+    // `current` marks the step the project is standing on, which is the last
+    // done one — not the last in the list, which is what the old panel assumed
+    // and which was wrong the moment anything was undone.
+    const isCurrent = index === cursor - 1;
+    el.className = `history-item${isCurrent ? " current" : ""}${step.done ? "" : " undone"}`;
+    el.textContent = `${index + 1}. ${step.label}`;
+    el.setAttribute("aria-current", isCurrent ? "step" : "false");
+    el.title = step.done
+      ? "Go back to just after this edit"
+      : "Redo forward to this edit";
+    // Clicking entry N means "leave N done", so the target is index + 1.
+    el.addEventListener("click", () => goToHistoryStep(index + 1));
     historyEl.appendChild(el);
   });
 }
