@@ -60,7 +60,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Multi-track timeline | all | ✓ | |
 | Ripple / roll / slip / slide trims | Premiere, Resolve, FCP | ◐ | ripple only; roll, slip and slide missing |
 | Magnetic timeline, connected clips | FCP | ◐ | per-track magnetic packing; connected clips not built — step M1 |
-| Compound clips / nested sequences | all pro | ◐ | make one, render and mix through it; no way to reopen or dissolve — step T3 |
+| Compound clips / nested sequences | all pro | ◐ | make one, render and mix through it, dissolve it back; no way to reopen and edit inside — step T3 |
 | Multicam editing | Premiere, Resolve, FCP | ✗ | needs sync + angle switching; step T7 |
 | Roles / lanes / track groups | FCP, Premiere | ✗ | step T4 |
 | Three-point editing, insert/overwrite | all pro | ✓ | append, insert and overwrite from the bin; step T1 |
@@ -227,9 +227,14 @@ session, **M** a few sessions, **L** a phase.
 ### Later — bigger bets
 
 10. ~~**T3 · Compound clips**~~ — mostly done. A sequence asset kind, deep
-    resolution with cycle refusal, audio mixed through nesting, and a Compound
-    button that carries effects across. Reopening and dissolving are not built.
-    See `docs/phases/compound-clips.md`.
+    resolution with cycle refusal, audio mixed through nesting, a Compound
+    button that carries effects across, and ⧈ Dissolve to put the contents back
+    — windowed to what a trimmed compound clip was playing, and refused rather
+    than approximated when the compound clip carries something acting on the
+    composite. Reopening to edit inside is not built: `activeSequence()` resolves
+    a hardcoded `SEQUENCE_ID` in 58 places in `main.ts`, and that constant
+    becoming session state is the prerequisite. See
+    `docs/phases/compound-clips.md`.
 11. **A2 · Motion tracking** and **A3 · Stabilisation** — **L** each. Both need
     real optical-flow work; both are the sort of thing a native pipeline does
     far better than canvas 2D.

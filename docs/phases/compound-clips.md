@@ -96,11 +96,65 @@ The whole run is one gesture, so it is one Undo.
   unchanged, a Look survives, and one Undo. The unchanged-picture check also
   asserts the frame has real variance, because two black frames are also
   "unchanged" — which is exactly how it could have passed while broken.
+- `packages/project-schema/test/dissolve.test.ts` — where each clip lands, what
+  a trim drops, cuts and re-sources, and each blocker. The offset was
+  mutation-checked: dropping `− fromUs` still passes every untrimmed case and
+  fails the front-trimmed one, which is the case that tells the two formulas
+  apart.
+- `apps/web/e2e/dissolve.spec.ts` — the round trip restores the clip count and
+  the original starts, the picture is unchanged, it is one Undo, a grade
+  survives coming back out, and a compound clip carrying an effect is refused in
+  words. The grade check was mutation-checked too — with the effects carry
+  disabled it fails.
+
+## Dissolving: the way back out
+
+Added 2026-08-12. Compounding shipped as a one-way door — a run of clips became
+one clip whose contents no part of the app could reach again, which is worse
+than not having shipped it.
+
+`dissolveCompound` reuses the fact the resolver and the audio plan already use,
+in the shape a *span* needs rather than an instant: the inner timeline's zero
+sits at (the clip's start − its source in). So a trimmed compound clip gives
+back only what it was playing. Clips outside the window are dropped, one the
+trim runs through is cut, and one clipped at the front has its `sourceInUs`
+advanced too — otherwise its length would be right and its content wrong, which
+is the failure that looks like nothing at all.
+
+One level. A compound clip inside a compound clip dissolves into that inner
+clip, not into its contents: unpacking an unknown depth under one press is a
+different and much larger action than the button implies.
+
+### Refusing rather than quietly changing the picture
+
+`dissolveBlockers` names every reason at once. Effects, animation, masks, a
+blend mode and retiming all act on the **composite**, and none has a per-clip
+equivalent — a blur over two overlapping layers is not a blur over each of them,
+and nothing done afterwards recovers the difference. Naming them one at a time
+would make the user discover the rules by repeated refusal.
+
+Trims and moves are deliberately *not* blockers, because windowing expresses
+them exactly.
+
+### The order is forced, and it is the opposite of compounding's
+
+The inner clips land where the compound clip is sitting, so the compound clip
+must go first or every add is an overlap. That loses compounding's safety net
+(delete only once the copy exists), so it is replaced by checking everything
+before writing anything: the blockers, and that each destination track has room.
+By the first dispatch there is nothing left to discover.
+
+A destination track that does not exist is created rather than treated as a
+refusal — a compound clip's audio may need a track the outer sequence lacks.
+
+The inner sequence and its asset are left in the project. Undo restores the
+compound clip, which still points at them; deleting them would make the gesture
+un-undoable. Orphan sequences therefore accumulate, which is the accepted cost.
 
 ## Not built
 
 - **Opening a compound clip to edit its contents.** The sequence exists and is
-  editable in principle; the app drives one sequence and has no way to switch.
-- **Uncompounding.** The inverse gesture — dissolve back into clips — is not
-  written.
+  editable in principle, but `activeSequence()` resolves a hardcoded
+  `SEQUENCE_ID` in 58 places in `main.ts` — the app drives one sequence and has
+  no way to switch. That constant becoming session state is the prerequisite.
 - **Renaming.** Every compound clip is called "Compound".
