@@ -477,6 +477,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-12:** Reviewed; no user-visible change. Internally the editor now
+  tracks *which* sequence it is showing instead of assuming there is only one.
+  Nothing yet moves it off the main sequence, so the editor behaves exactly as
+  before; this is the groundwork for opening a compound clip to edit inside it.
 - **2026-08-12:** ⧈ Dissolve puts a compound clip's contents back on the
   timeline. Compounding is no longer one-way.
 - **2026-08-12:** Tracks can be made magnetic with the 🧲 button on the track
