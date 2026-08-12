@@ -121,3 +121,121 @@ describe("audio clips in the export plan", () => {
     expect(plan(project)).toEqual(plan(project));
   });
 });
+
+describe("audio inside a compound clip", () => {
+  /** An inner sequence holding one audio clip, played by a compound clip in the
+   * outer one. */
+  function nested(compound: Partial<TimelineClip> = {}): Project {
+    const base = twoSecondProject();
+    const innerAudio = {
+      id: "inner-audio",
+      assetId: "asset-1",
+      trackId: "inner-audio-track",
+      timelineStartUs: "0",
+      timelineDurationUs: "2000000",
+      sourceInUs: "0",
+      sourceOutUs: "2000000",
+      playbackRate: { numerator: 1, denominator: 1 },
+      audioGainDb: 0,
+      audioPan: 0,
+      effects: [],
+    } as unknown as TimelineClip;
+
+    const inner = {
+      ...base.sequences[0]!,
+      id: "inner",
+      tracks: [
+        {
+          id: "inner-audio-track",
+          kind: "audio" as const,
+          name: "A1",
+          index: 0,
+          clips: [innerAudio],
+        },
+      ],
+    };
+
+    const compoundClip = {
+      id: "compound-clip",
+      assetId: "compound-asset",
+      trackId: base.sequences[0]!.tracks[0]!.id,
+      timelineStartUs: "500000",
+      timelineDurationUs: "2000000",
+      sourceInUs: "0",
+      sourceOutUs: "2000000",
+      playbackRate: { numerator: 1, denominator: 1 },
+      audioGainDb: 0,
+      audioPan: 0,
+      effects: [],
+      ...compound,
+    } as unknown as TimelineClip;
+
+    const outer = {
+      ...base.sequences[0]!,
+      tracks: base.sequences[0]!.tracks.map((track, i) =>
+        i === 0 ? { ...track, clips: [compoundClip] } : { ...track, clips: [] },
+      ),
+    };
+
+    return {
+      ...base,
+      assets: [
+        ...base.assets,
+        {
+          id: "compound-asset",
+          projectId: base.id,
+          kind: "sequence",
+          originalUri: "sequence:inner",
+          checksum: "1".repeat(64),
+          metadata: { fileSizeBytes: "0", durationUs: "2000000" },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      sequences: [outer, inner],
+    } as unknown as Project;
+  }
+
+  it("reaches the mixdown at all", () => {
+    // Walking only the outer sequence's own tracks would leave a compound
+    // clip's sound silent while its picture played.
+    const result = planExport(nested(), "sequence-1", mp4Preset);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.audioClips.map((c) => c.clipId)).toContain(
+      "inner-audio",
+    );
+  });
+
+  it("is placed where the compound clip sits, not where it sits inside", () => {
+    const result = planExport(nested(), "sequence-1", mp4Preset);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const inner = result.plan.audioClips.find(
+      (c) => c.clipId === "inner-audio",
+    );
+    // Inner clip at 0 inside, compound clip at 0.5s outside.
+    expect(inner?.timelineStartUs).toBe("500000");
+  });
+
+  it("is clipped to the part the compound clip actually plays", () => {
+    // Trimming a compound clip must silence the sound it no longer shows —
+    // otherwise the audio runs on under a picture that has stopped.
+    const result = planExport(
+      nested({
+        sourceInUs: "500000",
+        sourceOutUs: "1500000",
+        timelineDurationUs: "1000000",
+      }),
+      "sequence-1",
+      mp4Preset,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const inner = result.plan.audioClips.find(
+      (c) => c.clipId === "inner-audio",
+    );
+    expect(inner?.timelineDurationUs).toBe("1000000");
+    // Trimmed at the front, so it starts later in its own source too.
+    expect(inner?.sourceInUs).toBe("500000");
+  });
+});
