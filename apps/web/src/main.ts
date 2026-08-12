@@ -91,6 +91,7 @@ import {
 } from "./theme.js";
 import { layoutTextLines } from "./text-overlay.js";
 import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
+import type { JsonValue } from "@director/canonical-json";
 import { checksumBlob } from "./checksum.js";
 import {
   buildProjectFile,
@@ -224,6 +225,11 @@ import {
   type Mask,
   type Point,
   type RasterImage,
+  applyCurves,
+  curvePoint,
+  IDENTITY_CURVE,
+  type CurvePoint,
+  type CurveSet,
 } from "@director/raster-tools";
 import {
   biasSubjectMask,
@@ -301,6 +307,10 @@ interface EffectSpec {
   label: string;
   modes: Array<"video" | "photo">;
   params: ParamSpec[];
+  /** Defaults for an effect whose params are not a list of scalars — a curve is
+   * four arrays of points, which no slider can describe. When present this is
+   * the whole params object the effect is created with. */
+  defaults?: Record<string, JsonValue>;
   /** Audio effects are applied by the mixer and belong to the Audio section of
    * the inspector, not to the visual effects palette. */
   surface?: "audio";
@@ -368,6 +378,23 @@ const EFFECTS: EffectSpec[] = [
       range("whitePoint", "Whites", 0, 1, 0.01, 1),
       range("gamma", "Gamma", 0.1, 4, 0.05, 1),
     ],
+  },
+  {
+    type: "color.curves",
+    label: "Curves",
+    modes: ["video", "photo"],
+    // No slider params: a curve is edited by dragging its points, so the
+    // Inspector renders a canvas for this type instead of a parameter list.
+    params: [],
+    // All four channels start as the diagonal, which is the identity — an
+    // absent curve and an identity curve would render the same and store
+    // differently, so the schema requires all four to be present.
+    defaults: {
+      rgb: IDENTITY_CURVE.map((p) => ({ x: p.x, y: p.y })),
+      red: IDENTITY_CURVE.map((p) => ({ x: p.x, y: p.y })),
+      green: IDENTITY_CURVE.map((p) => ({ x: p.x, y: p.y })),
+      blue: IDENTITY_CURVE.map((p) => ({ x: p.x, y: p.y })),
+    },
   },
   {
     type: "color.tone_curve",
@@ -705,10 +732,12 @@ const visualEffects = (): EffectSpec[] =>
 const audioEffects = (): EffectSpec[] =>
   EFFECTS.filter((spec) => spec.surface === "audio");
 
-function defaultParams(
-  spec: EffectSpec,
-): Record<string, number | string | boolean> {
-  const out: Record<string, number | string | boolean> = {};
+function defaultParams(spec: EffectSpec): Record<string, JsonValue> {
+  // A spec with non-scalar params supplies the whole object: building it from
+  // an empty `params` list would produce `{}`, which the effect's own schema
+  // rejects — the effect would simply never be added, with no visible reason.
+  if (spec.defaults) return structuredClone(spec.defaults);
+  const out: Record<string, JsonValue> = {};
   for (const p of spec.params) out[p.name] = p.def;
   return out;
 }
@@ -1404,6 +1433,265 @@ function activeSequence(): Sequence | undefined {
 
 function findAsset(id: string): MediaAsset | undefined {
   return session.getProject()?.assets.find((a) => a.id === id);
+}
+
+/**
+ * The four curves an effect carries, each falling back to the identity curve.
+ *
+ * Read defensively rather than trusted: the params are validated on the way
+ * into state, but this also runs against effects being edited live and against
+ * anything an older project happens to hold.
+ */
+/** Which of a curve effect's four channels the editor is showing. Session
+ * state: it is a way of looking at the effect, not part of it. */
+const curveChannel = new Map<string, keyof CurveSet>();
+
+/** How close a click must be to grab an existing point, in canvas pixels. */
+const CURVE_GRAB_PX = 10;
+
+/**
+ * The curve editor: a square, the curve, and its points.
+ *
+ * Drag a point to move it, click empty space to add one, double-click or
+ * right-click a point to remove it. The two endpoints can move vertically but
+ * not horizontally — the schema anchors them at x = 0 and x = 1 so the curve is
+ * defined across the whole range, and letting them slide inward would leave the
+ * ends undefined.
+ *
+ * Committed on release rather than on every pointer move: a drag is one edit,
+ * and one command per mouse sample would bury the operation log and make Undo
+ * step back through a gesture pixel by pixel.
+ */
+function curveEditor(clip: TimelineClip, fx: EffectInstance): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "curve-editor";
+
+  const channel = curveChannel.get(fx.id) ?? "rgb";
+  const tabs = document.createElement("div");
+  tabs.className = "curve-tabs";
+  const CHANNELS: Array<[keyof CurveSet, string]> = [
+    ["rgb", "RGB"],
+    ["red", "R"],
+    ["green", "G"],
+    ["blue", "B"],
+  ];
+  for (const [key, label] of CHANNELS) {
+    const tab = document.createElement("button");
+    tab.className = `mini curve-tab curve-tab-${key}`;
+    tab.textContent = label;
+    tab.setAttribute("aria-pressed", String(key === channel));
+    tab.setAttribute("aria-label", `${label} curve`);
+    tab.addEventListener("click", () => {
+      curveChannel.set(fx.id, key);
+      renderInspector();
+    });
+    tabs.appendChild(tab);
+  }
+  wrap.appendChild(tabs);
+
+  const size = 220;
+  const canvas = document.createElement("canvas");
+  canvas.className = "curve-canvas";
+  canvas.width = size;
+  canvas.height = size;
+  canvas.setAttribute("role", "application");
+  canvas.setAttribute("aria-label", `${channel} curve editor`);
+  wrap.appendChild(canvas);
+
+  const set = curveSetOf(fx);
+  let points = [...set[channel]].map((p) => ({ ...p }));
+
+  const toCanvas = (p: CurvePoint) => ({
+    x: p.x * size,
+    y: (1 - p.y) * size,
+  });
+
+  const draw = (): void => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const styles = getComputedStyle(document.documentElement);
+    const line = styles.getPropertyValue("--line").trim() || "#8884";
+    const accent = styles.getPropertyValue("--accent").trim() || "#7c5cff";
+    const text = styles.getPropertyValue("--text").trim() || "#eee";
+
+    ctx.clearRect(0, 0, size, size);
+    // A quarter grid: enough to judge where a point sits, few enough not to
+    // compete with the curve.
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i += 1) {
+      const at = (i / 4) * size;
+      ctx.beginPath();
+      ctx.moveTo(at, 0);
+      ctx.lineTo(at, size);
+      ctx.moveTo(0, at);
+      ctx.lineTo(size, at);
+      ctx.stroke();
+    }
+    // The identity, so a change is visible as a departure from it.
+    ctx.strokeStyle = line;
+    ctx.beginPath();
+    ctx.moveTo(0, size);
+    ctx.lineTo(size, 0);
+    ctx.stroke();
+
+    ctx.strokeStyle = channel === "rgb" ? text : accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let px = 0; px <= size; px += 1) {
+      const y = (1 - curvePoint(points, px / size)) * size;
+      if (px === 0) ctx.moveTo(px, y);
+      else ctx.lineTo(px, y);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = accent;
+    for (const p of points) {
+      const c = toCanvas(p);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  const commitPoints = (): void => {
+    commit(
+      buildUpdateEffectParams(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        effectId: fx.id,
+        // The params object is JSON by construction — the curve is an array of
+        // {x, y} numbers — so this narrows rather than widens.
+        params: {
+          ...(fx.params as Record<string, JsonValue>),
+          [channel]: points.map((p) => ({ x: p.x, y: p.y })),
+        },
+      }),
+    );
+  };
+
+  const positionOf = (event: PointerEvent | MouseEvent): CurvePoint => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, 1 - (event.clientY - rect.top) / rect.height)),
+    };
+  };
+
+  const nearestIndex = (at: CurvePoint): number => {
+    const rect = canvas.getBoundingClientRect();
+    let best = -1;
+    let bestDistance = Infinity;
+    points.forEach((p, index) => {
+      const dx = (p.x - at.x) * rect.width;
+      const dy = (p.y - at.y) * rect.height;
+      const distance = Math.hypot(dx, dy);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    });
+    return bestDistance <= CURVE_GRAB_PX ? best : -1;
+  };
+
+  let dragging = -1;
+  canvas.addEventListener("pointerdown", (event) => {
+    const at = positionOf(event);
+    let index = nearestIndex(at);
+    if (index === -1) {
+      // A click in open space adds a point there, which is how a curve is
+      // shaped without a separate "add" mode.
+      const insertAt = points.findIndex((p) => p.x > at.x);
+      index = insertAt === -1 ? points.length : insertAt;
+      points.splice(index, 0, at);
+    }
+    dragging = index;
+    canvas.setPointerCapture(event.pointerId);
+    draw();
+  });
+
+  canvas.addEventListener("pointermove", (event) => {
+    if (dragging < 0) return;
+    const at = positionOf(event);
+    const isEnd = dragging === 0 || dragging === points.length - 1;
+    const previous = points[dragging - 1];
+    const next = points[dragging + 1];
+    // Endpoints keep their x so the curve stays anchored across the range;
+    // inner points are held strictly between their neighbours, because two
+    // points sharing an x is a curve with no defined value there.
+    const EPSILON = 0.001;
+    const x = isEnd
+      ? points[dragging]!.x
+      : Math.max(
+          (previous?.x ?? 0) + EPSILON,
+          Math.min((next?.x ?? 1) - EPSILON, at.x),
+        );
+    points[dragging] = { x, y: at.y };
+    draw();
+  });
+
+  const endDrag = (): void => {
+    if (dragging < 0) return;
+    dragging = -1;
+    commitPoints();
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+
+  const removeAt = (event: MouseEvent): void => {
+    event.preventDefault();
+    const index = nearestIndex(positionOf(event));
+    // The endpoints are structural: removing one would leave the curve
+    // undefined at that end, which the schema refuses anyway.
+    if (index <= 0 || index >= points.length - 1) return;
+    points.splice(index, 1);
+    draw();
+    commitPoints();
+  };
+  canvas.addEventListener("dblclick", removeAt);
+  canvas.addEventListener("contextmenu", removeAt);
+
+  const reset = document.createElement("button");
+  reset.className = "mini";
+  reset.textContent = "Reset channel";
+  reset.addEventListener("click", () => {
+    points = [...IDENTITY_CURVE].map((p) => ({ ...p }));
+    draw();
+    commitPoints();
+  });
+  wrap.appendChild(reset);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "Drag to shape, click to add a point, double-click one to remove it. The " +
+    "two ends move up and down only.";
+  wrap.appendChild(hint);
+
+  draw();
+  return wrap;
+}
+
+function curveSetOf(effect: EffectInstance): CurveSet {
+  const params = effect.params as Record<string, unknown>;
+  const read = (name: string): CurvePoint[] => {
+    const raw = params[name];
+    if (!Array.isArray(raw) || raw.length < 2) return [...IDENTITY_CURVE];
+    const points = raw.filter(
+      (p): p is CurvePoint =>
+        typeof p === "object" &&
+        p !== null &&
+        typeof (p as CurvePoint).x === "number" &&
+        typeof (p as CurvePoint).y === "number",
+    );
+    return points.length >= 2 ? points : [...IDENTITY_CURVE];
+  };
+  return {
+    rgb: read("rgb"),
+    red: read("red"),
+    green: read("green"),
+    blue: read("blue"),
+  };
 }
 
 function getParamNumber(
@@ -2829,6 +3117,7 @@ const GRADING_TYPES: ReadonlySet<string> = new Set([
   "color.white_balance",
   "color.levels",
   "color.tone_curve",
+  "color.curves",
   "color.vibrance",
   "light.tone",
   "color.hsl_mixer",
@@ -2952,6 +3241,9 @@ function gradeImage(image: RasterImage, fx: EffectInstance): RasterImage {
       getParamNumber(fx, "whitePoint", 1),
       getParamNumber(fx, "gamma", 1),
     );
+  }
+  if (fx.type === "color.curves") {
+    return applyCurves(image, curveSetOf(fx));
   }
   if (fx.type === "color.tone_curve") {
     return toneCurve(
@@ -5040,7 +5332,11 @@ function appendEffectRows(
     header.append(name, remove);
     container.appendChild(header);
 
-    if (spec) {
+    // A curve has no scalar parameters to slide — it is edited by dragging its
+    // points — so this type renders its own control instead of a param list.
+    if (fx.type === "color.curves") {
+      container.appendChild(curveEditor(clip, fx));
+    } else if (spec) {
       for (const p of spec.params) {
         container.appendChild(paramControl(clip.id, fx, spec, p));
       }

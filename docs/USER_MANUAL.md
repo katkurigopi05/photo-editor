@@ -118,6 +118,12 @@ when the system asks for reduced motion.
   crop/reframe, rotate, flip, artistic treatments, text, and background removal.
 - Colour grading, available in Photo and Video mode: White Balance, Levels,
   Tone Curve, and Vibrance.
+- Curves gives a control-point curve on the composite (RGB) or on the Red, Green
+  or Blue channel on its own. Drag the line to shape it, click empty space to
+  add a point, and double-click a point to remove it; the two ends move up and
+  down but not sideways. Reset channel returns the selected channel to the
+  diagonal. The curve never overshoots between the points you place, so a
+  highlight will not gain a halo it was not given.
 - Lightroom-style panels: Tone (Light), Colour Mixer (HSL), Colour Grading,
   Presence (Clarity, Texture, Dehaze), and Noise Reduction.
 - Masks: confine any visual effect to part of the frame. Add a Radial, Linear,
@@ -428,6 +434,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-11:** Added Curves — a control-point curve on the composite or on
+  any single channel, replacing nothing: the three-band Tone Curve stays.
 - **2026-08-11:** Added adjustment layers — ＋ Adjustment in the timeline
   toolbar adds a layer whose effects apply to every clip beneath it.
 - **2026-08-11:** Added speed ramps — one clip can change speed partway through,

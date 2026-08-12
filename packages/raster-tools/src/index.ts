@@ -10,6 +10,15 @@ export {
 } from "./types.js";
 
 export {
+  type CurvePoint,
+  type CurveSet,
+  IDENTITY_CURVE,
+  curvePoint,
+  buildCurveLut,
+  applyCurves,
+} from "./curves.js";
+
+export {
   type Point,
   polygonMask,
   floodFillMask,

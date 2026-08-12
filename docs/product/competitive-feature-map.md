@@ -76,7 +76,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Feature | Ref | Us | Note |
 | --- | --- | --- | --- |
 | Primary correction (exposure, contrast, white balance) | all | ✓ | |
-| Curves (RGB and per-channel) | all | ◐ | three-band tone curve only; control-point curve is step C1 |
+| Curves (RGB and per-channel) | all | ✓ | monotone-cubic control points, composite and per channel — step C1 |
 | Colour wheels / three-way grading | Resolve, FCP, Premiere | ✓ | |
 | HSL / colour mixer | Lightroom, Resolve | ✓ | |
 | Scopes: waveform, vectorscope, histogram | Resolve, Premiere, Capture One | ✓ | all three, off by default |
@@ -216,8 +216,9 @@ session, **M** a few sessions, **L** a phase.
    half, modelled as an asset kind so a clip carrying one stays an ordinary
    clip. A `reorder_tracks` command is the remaining gap — "＋ Adjustment" makes
    room by moving clips down. See `docs/phases/adjustment-layers.md`.
-8. **C1 · Control-point curves** — **S**. Named as missing in the Lightroom
-   reference note since it was written.
+8. ~~**C1 · Control-point curves**~~ — done. Monotone cubic (Fritsch–Carlson)
+   so a curve never overshoots between its points, on the composite and on each
+   channel, with a drag-to-shape editor. See `docs/phases/curves.md`.
 9. **P2 · Navigable history panel** — **S**. The log exists and replay works;
    this is a UI over both.
 
