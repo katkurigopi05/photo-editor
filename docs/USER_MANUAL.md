@@ -248,6 +248,10 @@ Features:
 - Trim handles on each clip edge change the in/out point. Hold Shift while
   trimming to ripple: later clips on the track shift by the same amount.
 - Ripple Delete removes the selection and closes the gap behind it.
+- ⧉ Compound turns the selected clips into a single clip that plays them. Their
+  effects, animations, speed and blend mode come along, and the whole thing is
+  one Undo. Useful when a run of clips has become one thing you want to move,
+  trim or grade together.
 - Shift-click or Cmd/Ctrl-click selects several clips. Effects, Looks, Delete
   and Ripple Delete all apply to every selected clip, and each apply is a single
   Undo step however many clips and effects it touched. The Inspector still edits
@@ -459,6 +463,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-12:** Added compound clips — select a run of clips and press ⧉
+  Compound to replace them with one clip that plays them all.
 - **2026-08-12:** Export can write VP9 and AV1 into WebM as well as H.264 into
   MP4. The Video codec list shows what this browser can actually encode at the
   chosen size; anything it cannot is listed with the reason rather than hidden.

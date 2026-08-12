@@ -41,6 +41,7 @@ import {
   planRippleTrim,
   usToPixels,
   type CommandContext,
+  buildUpdateClipEffects,
 } from "@director/ui-kit";
 import {
   createPlaybackState,
@@ -1816,6 +1817,31 @@ function locateClip(clipId: string | null): ClipLocation | null {
   return null;
 }
 
+/**
+ * Find a clip in *any* sequence, not only the one being edited.
+ *
+ * Deep resolution returns clips from inside compound clips, and those live in
+ * another sequence — so looking them up with `locateClip` finds nothing and the
+ * renderer silently draws a black frame. That is exactly what happened: the
+ * compound clip was correct in state, the resolver returned its contents, and
+ * the draw loop dropped every one of them on the floor.
+ *
+ * Only the render paths use this. Selection and the inspector deliberately keep
+ * to `locateClip`, because a clip you cannot see on this timeline is not one
+ * you can select or edit here.
+ */
+function locateClipAnywhere(clipId: string | null): ClipLocation | null {
+  const here = locateClip(clipId);
+  if (here || !clipId) return here;
+  for (const sequence of session.getProject()?.sequences ?? []) {
+    for (const track of sequence.tracks) {
+      const clip = track.clips.find((c) => c.id === clipId);
+      if (clip) return { clip, track };
+    }
+  }
+  return null;
+}
+
 function trackEndUs(track: Track): bigint {
   let end = 0n;
   for (const c of track.clips) {
@@ -2220,6 +2246,205 @@ function addAssetToTimeline(
   if (added) selectClip(clipId);
 }
 
+/**
+ * Turn the selected clips into one compound clip.
+ *
+ * The selection moves into a new sequence and is replaced by a single clip that
+ * plays it — Final Cut's compound clip, Premiere's nested sequence. Useful when
+ * a run of clips has become one thing you want to move, retime or grade as a
+ * unit.
+ *
+ * Built from existing commands inside one gesture, so it is one Undo. There is
+ * no cross-sequence move command, so each clip is added to the inner sequence
+ * and deleted from the outer one.
+ *
+ * `add_clip` deliberately takes no effects, animations, speed or blend mode —
+ * those exist only through their own commands — so each is carried across
+ * afterwards with the atomic "set the whole thing" command that owns it.
+ * Without that, compounding would silently discard a grade, which is the kind of
+ * loss someone notices much later and cannot undo their way out of.
+ */
+async function makeCompoundClip(): Promise<void> {
+  const seq = activeSequence();
+  const clipIds = selectionClipIds();
+  if (!seq || clipIds.length === 0) {
+    toast("Select the clips to compound first.", true);
+    return;
+  }
+
+  const located = clipIds
+    .map((id) => locateClip(id))
+    .filter((l): l is NonNullable<typeof l> => l !== null);
+  if (located.length === 0) return;
+
+  // The compound clip occupies the span the selection covered.
+  const startUs = located.reduce(
+    (min, l) =>
+      BigInt(l.clip.timelineStartUs) < min ? BigInt(l.clip.timelineStartUs) : min,
+    BigInt(located[0]!.clip.timelineStartUs),
+  );
+  const endUs = located.reduce((max, l) => {
+    const end =
+      BigInt(l.clip.timelineStartUs) + BigInt(l.clip.timelineDurationUs);
+    return end > max ? end : max;
+  }, 0n);
+  const spanUs = endUs - startUs;
+  if (spanUs <= 0n) return;
+
+  const innerId = `sequence-${crypto.randomUUID().slice(0, 8)}`;
+  const innerVideo = `video-${crypto.randomUUID().slice(0, 8)}`;
+  const innerAudio = `audio-${crypto.randomUUID().slice(0, 8)}`;
+  const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  const compoundClipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+  const checksum = await checksumBlob(
+    new Blob([new TextEncoder().encode(`compound:${innerId}`)]),
+  );
+  assetNames.set(assetId, "Compound clip");
+
+  session.beginGesture();
+  const built = commit(
+    buildCreateSequence(nextCtx(), {
+      sequence: {
+        id: innerId,
+        name: "Compound",
+        width: seq.width,
+        height: seq.height,
+        frameRate: seq.frameRate,
+      },
+    }),
+  );
+  if (!built) {
+    session.endGesture();
+    return;
+  }
+  for (const [id, kind] of [
+    [innerVideo, "video"],
+    [innerAudio, "audio"],
+  ] as const) {
+    commit(
+      buildAddTrack(nextCtx(), {
+        sequenceId: innerId,
+        track: { id, kind, name: kind === "video" ? "V1" : "A1", index: kind === "video" ? 0 : 1 },
+      }),
+    );
+  }
+
+  for (const loc of located) {
+    const clip = loc.clip;
+    const innerClipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+    const placed = commit(
+      buildAddClip(nextCtx(), {
+        sequenceId: innerId,
+        trackId: loc.track.kind === "audio" ? innerAudio : innerVideo,
+        clip: {
+          id: innerClipId,
+          assetId: clip.assetId,
+          // Rebased so the selection starts at zero inside.
+          timelineStartUs: (BigInt(clip.timelineStartUs) - startUs).toString(),
+          sourceInUs: clip.sourceInUs,
+          sourceOutUs: clip.sourceOutUs,
+          playbackRate: { numerator: 1, denominator: 1 },
+        },
+      }),
+    );
+    // Deleting the original only after its copy exists. Skipping the delete on
+    // failure leaves the clip where it was, which is recoverable; deleting it
+    // anyway would lose the clip entirely.
+    if (!placed) {
+      const why = session.getLastError();
+      toast(
+        `Could not move ${clip.id} into the compound: ${why?.message ?? "unknown"}`,
+        true,
+      );
+      continue;
+    }
+
+    // Carry across what add_clip does not take. Each of these is the command
+    // that owns that part of a clip, so the copy goes through the engine rather
+    // than around it.
+    if (clip.effects.length > 0) {
+      commit(
+        buildUpdateClipEffects(nextCtx(), {
+          sequenceId: innerId,
+          clipId: innerClipId,
+          effects: structuredClone(clip.effects),
+        }),
+      );
+    }
+    if ((clip.animations ?? []).length > 0) {
+      commit(
+        buildUpdateClipAnimations(nextCtx(), {
+          sequenceId: innerId,
+          clipId: innerClipId,
+          animations: structuredClone(clip.animations ?? []),
+        }),
+      );
+    }
+    if (clip.blendMode !== undefined) {
+      commit(
+        buildSetClipBlendMode(nextCtx(), {
+          sequenceId: innerId,
+          clipId: innerClipId,
+          blendMode: clip.blendMode,
+        }),
+      );
+    }
+    if (
+      clip.playbackRate.numerator !== 1 ||
+      clip.playbackRate.denominator !== 1
+    ) {
+      commit(
+        buildSetClipSpeed(nextCtx(), {
+          sequenceId: innerId,
+          clipId: innerClipId,
+          playbackRate: clip.playbackRate,
+        }),
+      );
+    }
+
+    commit(
+      buildDeleteClip(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+      }),
+    );
+  }
+
+  const registered = commit(
+    buildRegisterAsset(nextCtx(), {
+      asset: {
+        id: assetId,
+        projectId: PROJECT_ID,
+        kind: "sequence",
+        originalUri: `sequence:${innerId}`,
+        checksum,
+        metadata: { fileSizeBytes: "0", durationUs: spanUs.toString() },
+        createdAt: new Date().toISOString(),
+      },
+    }),
+  );
+  if (registered) {
+    commit(
+      buildAddClip(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        trackId: located[0]!.track.id,
+        clip: {
+          id: compoundClipId,
+          assetId,
+          timelineStartUs: startUs.toString(),
+          sourceInUs: "0",
+          sourceOutUs: spanUs.toString(),
+          playbackRate: { numerator: 1, denominator: 1 },
+        },
+      }),
+    );
+  }
+  session.endGesture();
+  selectedClipIds.clear();
+  selectClip(compoundClipId);
+  toast("Compound clip made — its contents live in their own sequence.");
+}
+
 /** Remove a clip from the timeline via the command engine (undoable). */
 function deleteClip(clipId: string): void {
   if (selectedClipId === clipId) selectedClipId = null;
@@ -2289,7 +2514,7 @@ function drawPreview(): void {
   // an adjustment layer read the canvas and find everything beneath it already
   // painted and nothing above it painted yet.
   for (const layer of [...visual].reverse()) {
-    const loc = locateClip(layer.clipId);
+    const loc = locateClipAnywhere(layer.clipId);
     if (loc) {
       paintLayer(
         cctx,
@@ -7244,7 +7469,7 @@ function syncAudioMonitors(): void {
     // element that is actually being heard.
     const el = mediaCache.get(assetUri(asset));
     if (!(el instanceof HTMLMediaElement)) continue;
-    const loc = locateClip(layer.clipId);
+    const loc = locateClipAnywhere(layer.clipId);
     if (!loc) continue;
 
     const route = audioRouteFor(el);
@@ -9090,6 +9315,7 @@ function bindEvents(): void {
   document
     .getElementById("system-capabilities")
     ?.addEventListener("toggle", renderCapabilities);
+  $("btn-make-compound").addEventListener("click", () => void makeCompoundClip());
   $("btn-add-adjustment").addEventListener(
     "click",
     () => void addAdjustmentLayer(),
@@ -9372,7 +9598,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   out.height = Math.round(sh);
   const octx = out.getContext("2d")!;
   for (const layer of [...visual].reverse()) {
-    const loc = locateClip(layer.clipId);
+    const loc = locateClipAnywhere(layer.clipId);
     if (!loc) continue;
     const layerAsset = findAsset(loc.clip.assetId);
     const layerMedia = layerAsset
@@ -9759,7 +9985,7 @@ async function runVideoExport(
           return a && a.kind !== "audio";
         });
         for (const layer of [...visual].reverse()) {
-          const loc = locateClip(layer.clipId);
+          const loc = locateClipAnywhere(layer.clipId);
           if (!loc) continue;
           const asset = findAsset(loc.clip.assetId);
           const media = asset ? mediaFor(asset) : undefined;
@@ -10256,7 +10482,7 @@ async function runGifExport(): Promise<void> {
       });
       offCtx.clearRect(0, 0, off.width, off.height);
       for (const layer of [...visual].reverse()) {
-        const loc = locateClip(layer.clipId);
+        const loc = locateClipAnywhere(layer.clipId);
         if (!loc) continue;
         const asset = findAsset(loc.clip.assetId);
         const media = asset ? mediaFor(asset) : undefined;
