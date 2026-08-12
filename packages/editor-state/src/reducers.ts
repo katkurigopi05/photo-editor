@@ -1,6 +1,7 @@
 import {
   animationTrackSchema,
   effectParamsSchemas,
+  compoundCycle,
   isAssetCompatibleWithTrack,
   rampTimelineDurationUs,
   transitionsFitClip,
@@ -1279,6 +1280,57 @@ function addTrack(
   };
 }
 
+/**
+ * Would placing this clip make a sequence contain itself?
+ *
+ * Checked by building the project the command *would* produce and asking the
+ * graph, rather than by reasoning about the edge being added: a ring can close
+ * several levels away, where neither clip on its own looks self-referential.
+ *
+ * Resolution bounds its own recursion too, but that is a last line. A project
+ * holding a cycle is broken, and the engine's job is to make broken states
+ * unreachable rather than survivable.
+ */
+function compoundCycleError(
+  project: Project,
+  sequenceId: string,
+  trackId: string,
+  clip: { id: string; assetId: string },
+): CommandError | null {
+  const asset = findAsset(project, clip.assetId);
+  if (asset === undefined || asset.kind !== "sequence") return null;
+
+  const candidate: Project = {
+    ...project,
+    sequences: project.sequences.map((sequence) =>
+      sequence.id !== sequenceId
+        ? sequence
+        : {
+            ...sequence,
+            tracks: sequence.tracks.map((track) =>
+              track.id !== trackId
+                ? track
+                : {
+                    ...track,
+                    clips: [
+                      ...track.clips,
+                      { ...(clip as unknown as TimelineClip) },
+                    ],
+                  },
+            ),
+          },
+    ),
+  };
+  const ring = compoundCycle(candidate, sequenceId);
+  if (ring === null) return null;
+  return makeError(
+    "VALIDATION_ERROR",
+    `this would make a sequence contain itself: ${ring}`,
+    ["payload", "clip", "assetId"],
+    { cycle: ring },
+  );
+}
+
 function addClip(
   projectOrNull: Project | null,
   command: Extract<ProjectCommand, { commandType: "timeline.add_clip" }>,
@@ -1349,6 +1401,9 @@ function addClip(
     ["payload", "clip"],
   );
   if (rangeError) return { ok: false, error: rangeError };
+
+  const cycle = compoundCycleError(project, sequence.id, track.id, clip);
+  if (cycle) return { ok: false, error: cycle };
 
   const durationUs = (
     toBig(clip.sourceOutUs) - toBig(clip.sourceInUs)

@@ -7,7 +7,7 @@ import {
 import {
   frameToStartTimeUs,
   framesInDuration,
-  resolveAtTime,
+  resolveAtTimeDeep,
   resolveAudioFades,
   sequenceDurationUs,
   type ActiveClip,
@@ -173,7 +173,8 @@ export function planVideoFrames(
     requests.push({
       frameIndex,
       timelineTimeUs,
-      layers: resolveAtTime(sequence, timelineTimeUs),
+      // Deep, so a compound clip contributes the media inside it.
+      layers: resolveAtTimeDeep(project, sequence.id, timelineTimeUs),
     });
   }
   return requests;

@@ -57,6 +57,7 @@ import {
   audioEnvelopeGain,
   audioEnvelopeCurve,
   type PlaybackState,
+  resolveAtTimeDeep,
 } from "@director/playback-controller";
 import {
   browserPresetUnsupportedReason,
@@ -2258,7 +2259,13 @@ function drawPreview(): void {
   cctx.clearRect(0, 0, cw, ch);
 
   const seq = activeSequence();
-  const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
+  // Deep: a compound clip plays a whole sequence, and what the viewer must see
+  // is the media inside it, positioned in this timeline.
+  const previewProject = session.getProject();
+  const layers =
+    seq && previewProject
+      ? resolveAtTimeDeep(previewProject, seq.id, playback.currentTimeUs)
+      : [];
   const visual = layers.filter((l) => {
     const a = findAsset(l.assetId);
     return a && a.kind !== "audio";
@@ -9330,7 +9337,11 @@ function downloadBlob(blob: Blob, filename: string): void {
  * awaits the frame the way the GIF and MP4 loops already do. */
 async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   const seq = activeSequence();
-  const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
+  const exportProject = session.getProject();
+  const layers =
+    seq && exportProject
+      ? resolveAtTimeDeep(exportProject, seq.id, playback.currentTimeUs)
+      : [];
   const visual = layers.filter((l) => {
     const a = findAsset(l.assetId);
     return a && a.kind !== "audio";
@@ -10132,7 +10143,10 @@ function gifStatusText(): string {
 
 /** Output size: the source frame's aspect at the chosen width. */
 function gifOutputSize(seq: Sequence): { width: number; height: number } | null {
-  const visual = resolveAtTime(seq, "0").filter((l) => {
+  const sizeProject = session.getProject();
+  const visual = (
+    sizeProject ? resolveAtTimeDeep(sizeProject, seq.id, "0") : []
+  ).filter((l) => {
     const a = findAsset(l.assetId);
     return a && a.kind !== "audio";
   });
@@ -10233,7 +10247,10 @@ async function runGifExport(): Promise<void> {
 
     for (let i = 0; i < frameCount; i++) {
       const timeUs = frameToStartTimeUs(i, { numerator: fps, denominator: 1 });
-      const visual = resolveAtTime(seq, timeUs).filter((l) => {
+      const gifProject = session.getProject();
+      const visual = (
+        gifProject ? resolveAtTimeDeep(gifProject, seq.id, timeUs) : []
+      ).filter((l) => {
         const a = findAsset(l.assetId);
         return a && a.kind !== "audio";
       });
