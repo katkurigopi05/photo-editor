@@ -390,10 +390,13 @@ The editor adapts to the device it finds rather than assuming one:
 - Where a capability is missing the reason is stated along with what still
   works. A browser without WebCodecs cannot write MP4 or build proxies, but
   image and GIF export are unaffected.
-- Preview grading runs within a pixel budget chosen from the machine, so a
-  high-resolution display does not make the same project slower to preview than
-  a smaller one would. **Exports are never budgeted** — a render is always full
-  resolution and full quality, whatever machine produced it.
+- Preview quality scales itself to the machine. It starts from what the device
+  reports and then adjusts by measuring real frames: a slower machine settles
+  lower so editing stays responsive, a faster one climbs so it is not held back.
+  Set **Preview quality** under Export → This device to Auto, Low, Medium or
+  High if you would rather choose; the setting is remembered on this machine.
+- **Exports are never scaled** — a render is always full resolution and full
+  quality, whatever machine produced it and however busy it was.
 - Large video is proxied at 540p on import, so editing stays responsive on
   modest hardware; exports still read the original.
 
@@ -451,10 +454,11 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
-- **2026-08-11:** Preview grading now runs within a pixel budget chosen from the
-  device, so a high-resolution display no longer makes previewing the same
-  project slower. Exports are unaffected and remain full resolution. Export now
-  shows a **This device** report of what is and is not available here.
+- **2026-08-11:** Preview quality now scales itself by measuring real frames, so
+  the editor settles at a level that suits the machine it is running on, and can
+  be pinned to Auto, Low, Medium or High under Export → This device. Exports are
+  unaffected and remain full resolution. Export also shows a **This device**
+  report of what is and is not available here.
 - **2026-08-11:** Added Curves — a control-point curve on the composite or on
   any single channel, replacing nothing: the three-band Tone Curve stays.
 - **2026-08-11:** Added adjustment layers — ＋ Adjustment in the timeline

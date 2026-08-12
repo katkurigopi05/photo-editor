@@ -136,3 +136,37 @@ test("the preview grade is bounded, and the report says so", async ({
   await report.locator("summary").click();
   await expect(report).toContainText("exports always render at full resolution");
 });
+
+test("preview quality can be pinned, and the report follows", async ({
+  page,
+}) => {
+  // Auto-scaling measures the machine, but a person may want to overrule it:
+  // grading a still deserves the best preview the machine can manage, and a
+  // laptop on battery may want the opposite. The setting is machine-personal,
+  // so it persists across a reload rather than living in the project.
+  await importMedia(page, SOURCE);
+  await setMode(page, "video");
+  await addAdjustment(page);
+  await applyLook(page, "Cinematic");
+  const auto = await previewSignature(page);
+
+  await page.click("#btn-export");
+  await page.waitForTimeout(500);
+  await page.locator("#system-capabilities summary").click();
+  await expect(page.locator("#system-capabilities")).toContainText("auto");
+
+  await page.getByLabel("Preview quality").selectOption("low");
+  await page.waitForTimeout(800);
+  await expect(page.locator("#system-capabilities")).toContainText("fixed at low");
+
+  // Pinning changes how many pixels the grade runs on, not what it does — the
+  // picture must still be the graded one, not the ungraded one.
+  const pinned = await previewSignature(page);
+  expect(signatureDistance(auto, pinned)).toBeLessThan(6);
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  await page.click("#btn-export");
+  await page.waitForTimeout(500);
+  await expect(page.getByLabel("Preview quality")).toHaveValue("low");
+});

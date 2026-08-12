@@ -98,6 +98,16 @@ import {
   previewGradeBudgetPx,
   readEnvironment,
 } from "./capabilities.js";
+import {
+  budgetForLevel,
+  createAdaptiveState,
+  describeQuality,
+  isQualityPreference,
+  levelForPreference,
+  observeFrame,
+  QUALITY_LADDER,
+  type QualityPreference,
+} from "./adaptive-quality.js";
 import { checksumBlob } from "./checksum.js";
 import {
   buildProjectFile,
@@ -785,7 +795,46 @@ let mediaFilter: MediaFilter = "all";
 /** Read once: the environment does not change while the app is open, and
  * re-reading it per frame would be a syscall in the render loop. */
 const ENVIRONMENT = readEnvironment();
-const PREVIEW_GRADE_BUDGET_PX = previewGradeBudgetPx(ENVIRONMENT);
+const QUALITY_PREF_KEY = "director-preview-quality";
+
+/** What the user asked for. Machine-personal like the theme and saved views, so
+ * it lives in localStorage rather than in the project. */
+let qualityPreference: QualityPreference = ((): QualityPreference => {
+  const stored = localStorage.getItem(QUALITY_PREF_KEY);
+  return isQualityPreference(stored) ? stored : "auto";
+})();
+
+/**
+ * Auto-scaling state.
+ *
+ * The device's own report picks the opening rung — the nearest to what its
+ * cores suggest — and measurement takes over from there. A guess makes a better
+ * first frame than the middle of the ladder; it makes a far worse tenth frame
+ * than a measurement does.
+ */
+let adaptiveQuality = createAdaptiveState(
+  ((): number => {
+    const hint = previewGradeBudgetPx(ENVIRONMENT);
+    let best = 0;
+    QUALITY_LADDER.forEach((px, index) => {
+      if (Math.abs(px - hint) < Math.abs(QUALITY_LADDER[best]! - hint)) {
+        best = index;
+      }
+    });
+    return best;
+  })(),
+);
+
+/** Set by the adjustment-layer path when it actually did pixel work, so only
+ * frames that exercised the budget are used to judge it — a frame with nothing
+ * to grade is fast for reasons that say nothing about the machine. */
+let gradedThisFrame = false;
+
+/** The pixel budget in force for preview grading right now. */
+function previewBudget(): number {
+  const pinned = levelForPreference(qualityPreference);
+  return budgetForLevel(pinned ?? adaptiveQuality.level);
+}
 
 let mediaKeyword = "";
 
@@ -2195,6 +2244,13 @@ function drawPreview(): void {
     return;
   }
 
+  // Timed so auto-scaling has something real to judge. Only the layer painting
+  // is measured: the scope pass below and the canvas resize above are not what
+  // the budget controls, and including them would make the controller chase
+  // costs it cannot change.
+  const paintedAt = performance.now();
+  gradedThisFrame = false;
+
   // Resolve order is track order, ascending by index, and this reverses it —
   // so the *lowest* index is painted last and ends up on top. That is what lets
   // an adjustment layer read the canvas and find everything beneath it already
@@ -2209,10 +2265,20 @@ function drawPreview(): void {
         clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
         cw,
         ch,
-        PREVIEW_GRADE_BUDGET_PX,
+        previewBudget(),
       );
     }
   }
+  // Only frames that actually graded are evidence about this machine, and only
+  // while auto is in force — a pinned preference is an instruction, not a
+  // hypothesis to be revised.
+  if (gradedThisFrame && qualityPreference === "auto") {
+    adaptiveQuality = observeFrame(
+      adaptiveQuality,
+      performance.now() - paintedAt,
+    );
+  }
+
   // Measured after everything is painted, so a scope reads exactly what the
   // viewer is looking at rather than an intermediate state.
   drawScope();
@@ -2540,6 +2606,7 @@ function drawAdjustmentLayer(
   if (!bctx) return;
   bctx.drawImage(ctx.canvas, 0, 0, cw, ch, 0, 0, graded.width, graded.height);
 
+  gradedThisFrame = true;
   const adjusted =
     gradingFx.length > 0
       ? gradeUncached(
@@ -8725,16 +8792,40 @@ function bindEvents(): void {
   $("btn-delete").addEventListener("click", () => deleteSelection(false));
   $("btn-ripple-delete").addEventListener("click", () => deleteSelection(true));
 
-  // Filled once: the capability report is a fact about the machine, not about
-  // the project, so it never needs re-rendering.
+  // The static half of the report never changes; the quality line does, so it
+  // is refreshed each time the panel is opened rather than left stale.
   const capabilitiesBody = document.getElementById("system-capabilities-body");
+  const qualityLine = document.createElement("p");
+  const renderCapabilities = (): void => {
+    qualityLine.textContent = describeQuality(adaptiveQuality, qualityPreference);
+  };
   if (capabilitiesBody) {
     for (const line of describeCapabilities(ENVIRONMENT)) {
       const p = document.createElement("p");
       p.textContent = line;
       capabilitiesBody.appendChild(p);
     }
+    capabilitiesBody.appendChild(qualityLine);
+    renderCapabilities();
   }
+  const qualitySelect = document.getElementById(
+    "preview-quality",
+  ) as HTMLSelectElement | null;
+  if (qualitySelect) {
+    qualitySelect.value = qualityPreference;
+    qualitySelect.addEventListener("change", () => {
+      if (!isQualityPreference(qualitySelect.value)) return;
+      qualityPreference = qualitySelect.value;
+      localStorage.setItem(QUALITY_PREF_KEY, qualityPreference);
+      // Back to auto means measuring again from where it is, not from the
+      // original guess: the machine has not changed, only the instruction.
+      renderCapabilities();
+      drawPreview();
+    });
+  }
+  document
+    .getElementById("system-capabilities")
+    ?.addEventListener("toggle", renderCapabilities);
   $("btn-add-adjustment").addEventListener(
     "click",
     () => void addAdjustmentLayer(),
