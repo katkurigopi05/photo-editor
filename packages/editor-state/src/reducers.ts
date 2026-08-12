@@ -2,6 +2,7 @@ import {
   animationTrackSchema,
   effectParamsSchemas,
   compoundCycle,
+  normalizeTrack,
   isAssetCompatibleWithTrack,
   rampTimelineDurationUs,
   transitionsFitClip,
@@ -228,6 +229,8 @@ export function applyForward(
       return createSequence(project, command);
     case "timeline.add_track":
       return addTrack(project, command);
+    case "timeline.set_track_magnetic":
+      return setTrackMagnetic(project, command);
     case "timeline.add_clip":
       return addClip(project, command);
     case "timeline.move_clip":
@@ -1331,6 +1334,84 @@ function compoundCycleError(
   );
 }
 
+/**
+ * Mark a track magnetic, or ordinary again.
+ *
+ * Turning it on packs the track at once — `replaceTrack` applies the invariant
+ * — so the effect is visible immediately rather than at the next edit. Turning
+ * it off leaves the clips where the packing put them: un-packing would have to
+ * invent gaps that no longer exist anywhere in the project.
+ *
+ * The inverse therefore carries the clip positions as well as the flag. Undo
+ * has to put the gaps back, and they cannot be derived from a packed track.
+ */
+function setTrackMagnetic(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.set_track_magnetic" }
+  >,
+): ForwardResult {
+  const pre = requireLiveProject(projectOrNull, command.baseVersion);
+  if (!pre.ok) return pre;
+  const project = pre.project;
+  const { sequenceId, trackId, magnetic } = command.payload;
+
+  const sequence = findSequence(project, sequenceId);
+  if (sequence === undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "SEQUENCE_NOT_FOUND",
+        `sequence ${sequenceId} not found`,
+        ["payload", "sequenceId"],
+      ),
+    };
+  }
+  const track = sequence.tracks.find((t) => t.id === trackId);
+  if (track === undefined) {
+    return {
+      ok: false,
+      error: makeError("TRACK_NOT_FOUND", `track ${trackId} not found`, [
+        "payload",
+        "trackId",
+      ]),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  const previousMagnetic = track.magnetic ?? null;
+  const previousClips = structuredClone([...track.clips]);
+
+  // Absent rather than `false` when turned off: an untouched track carries no
+  // member, and canonical JSON treats the two as different projects.
+  const { magnetic: _dropped, ...rest } = track;
+  const nextTrack: Track = magnetic ? { ...rest, magnetic: true } : { ...rest };
+  const nextSequence = replaceTrack(sequence, nextTrack);
+
+  return {
+    ok: true,
+    project: {
+      ...project,
+      sequences: project.sequences.map((s) =>
+        s.id === sequenceId ? nextSequence : s,
+      ),
+      updatedAt: command.createdAt,
+      currentVersion: project.currentVersion + 1,
+    },
+    inverse: {
+      commandType: "internal.set_track_magnetic",
+      payload: {
+        sequenceId,
+        trackId,
+        magnetic: previousMagnetic,
+        clips: previousClips,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
 function addClip(
   projectOrNull: Project | null,
   command: Extract<ProjectCommand, { commandType: "timeline.add_clip" }>,
@@ -1593,7 +1674,14 @@ function moveClip(
   });
 
   const prevUpdatedAt = project.updatedAt;
-  const nextSequence: Sequence = { ...sequence, tracks: nextTracks };
+  // Moving is the one edit that rewrites tracks without going through
+  // `replaceTrack` — it may touch two of them at once — so the magnetic
+  // invariant is applied here explicitly. On a magnetic track this is what
+  // turns "drop it past its neighbour" into "reorder".
+  const nextSequence: Sequence = {
+    ...sequence,
+    tracks: nextTracks.map(normalizeTrack),
+  };
   const next: Project = {
     ...project,
     sequences: replaceSequence(project, nextSequence),
@@ -3602,10 +3690,26 @@ function validateSourceRange(
   return null;
 }
 
+/**
+ * Write a track back into its sequence, applying the magnetic invariant.
+ *
+ * Every command that changes a track's clips goes through here, so packing here
+ * makes "a magnetic track has no gaps and no overlaps" true by construction
+ * rather than by each command remembering to maintain it. Add, delete, move,
+ * trim, retime, insert, overwrite and the compound edits all inherit it without
+ * knowing it exists.
+ *
+ * `normalizeTrack` is a no-op on an ordinary track and returns the same object
+ * when a magnetic one is already packed, so this costs nothing where it does
+ * not apply.
+ */
 function replaceTrack(sequence: Sequence, track: Track): Sequence {
+  const normalized = normalizeTrack(track);
   return {
     ...sequence,
-    tracks: sequence.tracks.map((t) => (t.id === track.id ? track : t)),
+    tracks: sequence.tracks.map((t) =>
+      t.id === normalized.id ? normalized : t,
+    ),
   };
 }
 
@@ -3638,6 +3742,39 @@ export function applyInverse(
           asset.id === assetId
             ? withAssetKeywords(asset, keywords ?? [])
             : asset,
+        ),
+        updatedAt: restoreUpdatedAt,
+      };
+    }
+    case "internal.set_track_magnetic": {
+      const p = requireProject(project);
+      const { sequenceId, trackId, magnetic, clips, restoreUpdatedAt } =
+        inverse.payload;
+      const sequence = findSequence(p, sequenceId);
+      if (sequence === undefined) {
+        throw new Error(`inverse references missing sequence ${sequenceId}`);
+      }
+      const track = sequence.tracks.find((t) => t.id === trackId);
+      if (track === undefined) {
+        throw new Error(`inverse references missing track ${trackId}`);
+      }
+      const { magnetic: _dropped, ...rest } = track;
+      // Restored directly rather than through replaceTrack: that applies the
+      // invariant, which is precisely what undo is trying to reverse.
+      const restored: Track = {
+        ...rest,
+        ...(magnetic === null ? {} : { magnetic }),
+        clips: structuredClone([...clips]),
+      };
+      return {
+        ...p,
+        sequences: p.sequences.map((s) =>
+          s.id === sequenceId
+            ? {
+                ...s,
+                tracks: s.tracks.map((t) => (t.id === trackId ? restored : t)),
+              }
+            : s,
         ),
         updatedAt: restoreUpdatedAt,
       };
@@ -4031,6 +4168,15 @@ function mustSequence(project: Project, sequenceId: string): Sequence {
   return seq;
 }
 
+/**
+ * Rewrite one track, applying the magnetic invariant.
+ *
+ * Safe to normalize on the undo path too: any state that was committed to a
+ * magnetic track was packed when it was written, so packing it again is a
+ * no-op. The one inverse that genuinely restores an *unpacked* track —
+ * `internal.set_track_magnetic`, which puts back the gaps the flag closed —
+ * deliberately bypasses this and writes the track directly.
+ */
 function mapTrack(
   sequence: Sequence,
   trackId: string,
@@ -4038,7 +4184,9 @@ function mapTrack(
 ): Sequence {
   return {
     ...sequence,
-    tracks: sequence.tracks.map((t) => (t.id === trackId ? fn(t) : t)),
+    tracks: sequence.tracks.map((t) =>
+      t.id === trackId ? normalizeTrack(fn(t)) : t,
+    ),
   };
 }
 

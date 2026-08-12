@@ -206,6 +206,21 @@ export const clipInputSchema = timelineClipSchema
   .extend({ playbackRate: clipPlaybackRateSchema })
   .strict();
 
+/** Mark a track magnetic, or ordinary again. A magnetic track keeps its clips
+ * packed end to end; an ordinary one allows gaps exactly as before. */
+export const setTrackMagneticPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    trackId: z.string().min(1),
+    magnetic: z.boolean(),
+  })
+  .strict();
+
+export const setTrackMagneticCommandSchema = command(
+  "timeline.set_track_magnetic",
+  setTrackMagneticPayloadSchema,
+);
+
 export const addClipPayloadSchema = z
   .object({
     sequenceId: z.string().min(1),
@@ -683,6 +698,7 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   removeKeywordRangeCommandSchema,
   createSequenceCommandSchema,
   addTrackCommandSchema,
+  setTrackMagneticCommandSchema,
   addClipCommandSchema,
   insertClipCommandSchema,
   overwriteClipCommandSchema,
@@ -731,6 +747,9 @@ export type RemoveKeywordRangeCommand = z.infer<
 >;
 export type CreateSequenceCommand = z.infer<typeof createSequenceCommandSchema>;
 export type AddTrackCommand = z.infer<typeof addTrackCommandSchema>;
+export type SetTrackMagneticCommand = z.infer<
+  typeof setTrackMagneticCommandSchema
+>;
 export type AddClipCommand = z.infer<typeof addClipCommandSchema>;
 export type InsertClipCommand = z.infer<typeof insertClipCommandSchema>;
 export type OverwriteClipCommand = z.infer<typeof overwriteClipCommandSchema>;
@@ -788,6 +807,7 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "asset.remove_keyword_range",
   "timeline.create_sequence",
   "timeline.add_track",
+  "timeline.set_track_magnetic",
   "timeline.add_clip",
   "timeline.insert_clip",
   "timeline.overwrite_clip",
