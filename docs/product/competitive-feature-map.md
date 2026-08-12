@@ -67,7 +67,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | J/K/L and keyboard-first trimming | all pro | ✗ | step T2 |
 | Snapping | all | ✓ | |
 | Markers | all | ✓ | timeline-level markers still missing |
-| Adjustment layers | Premiere, Resolve | ✗ | step T5 |
+| Adjustment layers | Premiere, Resolve | ✓ | see step L1 |
 | Auto-save / project recovery | all | ✗ | step P1, and the highest-value item on this page |
 | Multiple sequences per project | all pro | ◐ | schema allows it; the UI drives one |
 
@@ -93,7 +93,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | --- | --- | --- | --- |
 | Layers with blend modes | Photoshop, Affinity, GIMP | ✓ | all sixteen W3C modes, per clip |
 | Layer groups, clipping masks | Photoshop, Affinity | ✗ | step L2 |
-| Non-destructive adjustment layers | Photoshop, Affinity, Capture One | ✗ | step L1 |
+| Non-destructive adjustment layers | Photoshop, Affinity, Capture One | ✓ | a clip whose effects apply to everything beneath — step L1 |
 | Masks with feather and composition | all | ✓ | |
 | AI subject / sky selection | Photoshop, Lightroom | ◐ | U²-Net background removal ships; masks cannot yet reference it — step L3 |
 | Text with typography controls | all | ◐ | burned-in captions only: no font choice, tracking or leading — step L4 |
@@ -211,9 +211,11 @@ session, **M** a few sessions, **L** a phase.
    than interpolated, so every source instant stays exactly computable. Smooth
    curves are deferred with the reason recorded. See
    `docs/phases/speed-ramps.md`.
-7. **L1 · Blend modes and adjustment layers** — **M**. Blend modes are done (see
-   `docs/phases/blend-modes.md`); adjustment layers are the remaining half — a
-   clip that carries only effects and applies them to everything beneath it.
+7. ~~**L1 · Blend modes and adjustment layers**~~ — done. Blend modes shipped
+   earlier (see `docs/phases/blend-modes.md`); adjustment layers are the other
+   half, modelled as an asset kind so a clip carrying one stays an ordinary
+   clip. A `reorder_tracks` command is the remaining gap — "＋ Adjustment" makes
+   room by moving clips down. See `docs/phases/adjustment-layers.md`.
 8. **C1 · Control-point curves** — **S**. Named as missing in the Lightroom
    reference note since it was written.
 9. **P2 · Navigable history panel** — **S**. The log exists and replay works;

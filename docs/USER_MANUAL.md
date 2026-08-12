@@ -76,6 +76,12 @@ when the system asks for reduced motion.
   renamed file still matches.
 - Unsaved work is snapshotted every 15 seconds; if the tab closes unexpectedly,
   the next start offers to restore it.
+- Adjustment layers apply effects to everything beneath them. Press ＋
+  Adjustment in the timeline toolbar: a layer is added on the top track, and any
+  clips already there move down one track to make room, as a single Undo. Give
+  the layer a Look or effects and they grade every clip below it. Its opacity,
+  blend mode and fades all work, so a half-opacity adjustment layer is half the
+  grade.
 - Blend mode (Inspector) decides how a clip combines with what is beneath it:
   Multiply darkens, Screen brightens, Overlay does both from the midpoint, and
   the rest of the standard modes are there too. Earlier tracks draw on top, so
@@ -248,6 +254,9 @@ Features:
   its sections and later clips ripple, exactly as a single speed change does, and
   the whole ramp is one Undo. Audio is resampled with the picture, so a slowed
   section drops in pitch.
+- ＋ Adjustment adds a layer that grades every clip beneath it instead of
+  carrying a picture of its own. It spans the whole sequence by default, and can
+  be trimmed, moved and faded like any other clip.
 - Add as (timeline toolbar) decides where media from the bin lands:
   **Append** puts it after the last clip on the track, **Insert** puts it at the
   playhead and pushes everything after it later, and **Overwrite** puts it at the
@@ -419,6 +428,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-11:** Added adjustment layers — ＋ Adjustment in the timeline
+  toolbar adds a layer whose effects apply to every clip beneath it.
 - **2026-08-11:** Added speed ramps — one clip can change speed partway through,
   set from ＋ Speed change at playhead under Speed. The speed steps between
   sections rather than easing between them.

@@ -1018,11 +1018,19 @@ async function discardProxies(): Promise<void> {
   toast("Proxies deleted — editing the originals.");
 }
 
-/** Assets whose bytes are not available in this session. */
+/**
+ * Assets whose bytes are not available in this session.
+ *
+ * An adjustment layer has no bytes by definition, so it is never "missing" and
+ * can never be relinked. Without this it would sit in the bin under a Relink
+ * prompt and keep the "1 file missing" bar up for the life of the project.
+ */
 function offlineAssets(): MediaAsset[] {
   return (session.getProject()?.assets ?? []).filter(
     (asset) =>
-      !removedAssets.has(asset.id) && !mediaCache.has(assetUri(asset)),
+      !removedAssets.has(asset.id) &&
+      asset.kind !== "adjustment" &&
+      !mediaCache.has(assetUri(asset)),
   );
 }
 
@@ -1667,6 +1675,111 @@ async function addVectorShape(preset: VectorShapePreset): Promise<void> {
 }
 
 /**
+ * Add an adjustment layer: a clip with no picture of its own, whose effects
+ * apply to everything beneath it.
+ *
+ * It has to end up *above* the clips it adjusts, and the lowest track index is
+ * the one that paints on top — so the top track is where it goes. When that
+ * track already holds clips, they are moved down onto a new track first, which
+ * is why this is a run of commands rather than one: a track is added beneath,
+ * the top track's clips move onto it, and the adjustment takes the vacated top.
+ *
+ * The whole run is one gesture, so it is one Undo, and the picture is unchanged
+ * by the move itself — the clips were the only visual content and they still
+ * composite in the same order.
+ */
+async function addAdjustmentLayer(): Promise<void> {
+  const seq = activeSequence();
+  if (!seq) return;
+  const videoTracks = seq.tracks.filter((t) => t.kind === "video");
+  const top = videoTracks[0];
+  if (!top) return;
+
+  const spanUs = sequenceDurationUs(seq);
+  if (BigInt(spanUs) <= 0n) {
+    toast("Add some media first — an adjustment layer needs something to adjust.", true);
+    return;
+  }
+
+  const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  const clipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+  const newTrackId = `video-${crypto.randomUUID().slice(0, 8)}`;
+  // No file behind it, so there is nothing to checksum. A constant stands in,
+  // and `mediaHints` leaves adjustment assets out of the save entirely.
+  const checksum = await checksumBlob(new Blob([new TextEncoder().encode("adjustment")]));
+  assetNames.set(assetId, "Adjustment layer");
+
+  session.beginGesture();
+  if (top.clips.length > 0) {
+    const added = commit(
+      buildAddTrack(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        track: {
+          id: newTrackId,
+          kind: "video",
+          name: `Video ${seq.tracks.length}`,
+          index: seq.tracks.length,
+        },
+      }),
+    );
+    if (!added) {
+      session.endGesture();
+      return;
+    }
+    for (const clip of top.clips) {
+      commit(
+        buildMoveClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          targetTrackId: newTrackId,
+          timelineStartUs: clip.timelineStartUs,
+        }),
+      );
+    }
+  }
+
+  const registered = commit(
+    buildRegisterAsset(nextCtx(), {
+      asset: {
+        id: assetId,
+        projectId: PROJECT_ID,
+        kind: "adjustment",
+        originalUri: "adjustment:",
+        checksum,
+        metadata: {
+          fileSizeBytes: "0",
+          // Nominal and long: a clip trims what it needs out of it, and the
+          // reducer only asks that the source range fits inside.
+          durationUs: "3600000000",
+        },
+        createdAt: new Date().toISOString(),
+      },
+    }),
+  );
+  if (registered) {
+    // Spanning everything by default, because an adjustment layer that covered
+    // part of the cut would look like it had simply failed on the rest.
+    commit(
+      buildAddClip(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        trackId: top.id,
+        clip: {
+          id: clipId,
+          assetId,
+          timelineStartUs: "0",
+          sourceInUs: "0",
+          sourceOutUs: spanUs,
+          playbackRate: { numerator: 1, denominator: 1 },
+        },
+      }),
+    );
+  }
+  session.endGesture();
+  selectClip(clipId);
+  toast("Adjustment layer added — its effects apply to everything beneath it.");
+}
+
+/**
  * Add a clip, in whichever of the three destinations the toolbar is set to.
  *
  * This is the destination half of three-point editing. The source half is
@@ -1783,11 +1896,14 @@ function drawPreview(): void {
     return;
   }
 
-  // Paint highest track index last (on top): resolve order is track order.
+  // Resolve order is track order, ascending by index, and this reverses it —
+  // so the *lowest* index is painted last and ends up on top. That is what lets
+  // an adjustment layer read the canvas and find everything beneath it already
+  // painted and nothing above it painted yet.
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
     if (loc) {
-      drawLayer(
+      paintLayer(
         cctx,
         loc.clip,
         layer.sourceTimeUs,
@@ -2030,6 +2146,98 @@ function redrawWhenFrameReady(video: HTMLVideoElement): void {
   }
   video.addEventListener("seeked", settle, { once: true });
   video.addEventListener("loadeddata", settle, { once: true });
+}
+
+/**
+ * Draw an adjustment layer: apply the clip's effects to what is already on the
+ * canvas, rather than to media of its own.
+ *
+ * This works because of the order the render loop already paints in. Layers are
+ * drawn beneath-first — the last track first, the first track last — so by the
+ * time an adjustment layer's turn comes, everything below it is on the canvas
+ * and nothing above it is. Reading the canvas back at that moment *is* "the
+ * composite of everything beneath", with no separate accumulation buffer and no
+ * second pass.
+ *
+ * The layer's own opacity, transition ramp and blend mode still apply, to the
+ * adjusted copy on its way back down. That is what makes a half-opacity
+ * adjustment layer mean "half the grade" and a Multiply one mean "darken by the
+ * grade", rather than either being a special case.
+ *
+ * A CSS-filter effect and a pixel effect both work, by the same split
+ * `drawLayer` uses: pixels through `gradeUncached`, filters through
+ * `ctx.filter`.
+ */
+/**
+ * Paint one resolved layer, whichever kind it is.
+ *
+ * Every render path goes through here — preview, MP4 and GIF — so an adjustment
+ * layer cannot work in one and be missing from another. That is the same reason
+ * `drawLayer` was shared in the first place, and it is why the blend-mode e2e
+ * measures an exported file rather than the preview canvas.
+ */
+function paintLayer(
+  ctx: CanvasRenderingContext2D,
+  clip: TimelineClip,
+  sourceTimeUs: string,
+  localTimeUs: string,
+  cw: number,
+  ch: number,
+): void {
+  if (findAsset(clip.assetId)?.kind === "adjustment") {
+    drawAdjustmentLayer(ctx, clip, localTimeUs, cw, ch);
+    return;
+  }
+  drawLayer(ctx, clip, sourceTimeUs, localTimeUs, cw, ch);
+}
+
+function drawAdjustmentLayer(
+  ctx: CanvasRenderingContext2D,
+  clip: TimelineClip,
+  localTimeUs: string,
+  cw: number,
+  ch: number,
+): void {
+  if (cw <= 0 || ch <= 0) return;
+  // Before/After compare shows the untouched picture, so an adjustment layer
+  // contributes nothing while it is held — the same rule drawLayer follows.
+  if (compareShowOriginal) return;
+
+  const gradingFx = clip.effects.filter((e) => e.enabled && runsAsPixels(e));
+  const staticTransform = previewTransform(clip);
+  const filter = staticTransform.filter;
+  if (gradingFx.length === 0 && filter === "") return;
+
+  // Opacity is read the same way a media clip reads it, so an animated Opacity
+  // keyframe ramps the grade in exactly as it would ramp a picture in.
+  const transform = composeCanvasLayerTransform(
+    staticTransform,
+    resolveLayerAnimationTransform(clip, localTimeUs),
+    cw,
+    ch,
+  );
+
+  // Snapshot what is beneath. Reading the canvas is the whole mechanism, so it
+  // is done once per layer rather than per effect.
+  const beneath = document.createElement("canvas");
+  beneath.width = cw;
+  beneath.height = ch;
+  const bctx = beneath.getContext("2d", { willReadFrequently: true });
+  if (!bctx) return;
+  bctx.drawImage(ctx.canvas, 0, 0, cw, ch);
+
+  const adjusted =
+    gradingFx.length > 0
+      ? gradeUncached(beneath, cw, ch, gradingFx, clip.masks ?? [])
+      : beneath;
+
+  const transition = sampleClipTransition(clip, localTimeUs);
+  ctx.save();
+  ctx.globalAlpha = transform.alpha * transition.opacity;
+  ctx.filter = filter || "none";
+  ctx.globalCompositeOperation = compositeOperation(clip.blendMode ?? "normal");
+  ctx.drawImage(adjusted, 0, 0, cw, ch);
+  ctx.restore();
 }
 
 function drawLayer(
@@ -2824,6 +3032,34 @@ function grade(
   const cached = gradeCache.get(key);
   if (cached) return cached;
 
+  const off = gradeUncached(source, width, height, gradingFx, masks);
+
+  // Bounded like artCache: the cache exists for the repeated frames of one
+  // export and one slider drag, not for a whole session's history.
+  if (gradeCache.size > 12) {
+    const oldest = gradeCache.keys().next().value;
+    if (oldest !== undefined) gradeCache.delete(oldest);
+  }
+  gradeCache.set(key, off);
+  return off;
+}
+
+/**
+ * Run a grade with no cache at all.
+ *
+ * `grade()` keys its cache on the *source*, which works because a clip's media
+ * at a given source time is the same picture every time it is asked for. An
+ * adjustment layer's source is the live canvas — different pixels on every
+ * frame, and often on every repaint of the same frame — so a cache would either
+ * return a stale grade or grow without bound. This is that path.
+ */
+function gradeUncached(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  gradingFx: EffectInstance[],
+  masks: readonly ClipMask[],
+): HTMLCanvasElement {
   const off = document.createElement("canvas");
   off.width = width;
   off.height = height;
@@ -2855,14 +3091,6 @@ function grade(
 
   image.data.set(raster.data);
   octx.putImageData(image, 0, 0);
-
-  // Bounded like artCache: the cache exists for the repeated frames of one
-  // export and one slider drag, not for a whole session's history.
-  if (gradeCache.size > 12) {
-    const oldest = gradeCache.keys().next().value;
-    if (oldest !== undefined) gradeCache.delete(oldest);
-  }
-  gradeCache.set(key, off);
   return off;
 }
 
@@ -5561,7 +5789,12 @@ function renderMedia(): void {
   mediaListEl.innerHTML = "";
   mediaListEl.classList.toggle("grid", galleryGrid);
   const visible = (session.getProject()?.assets ?? []).filter(
-    (asset) => !removedAssets.has(asset.id) && matchesMediaFilters(asset),
+    (asset) =>
+      !removedAssets.has(asset.id) &&
+      // An adjustment layer is created on the timeline, not imported, and there
+      // is nothing to preview, rate, keyword or add from here.
+      asset.kind !== "adjustment" &&
+      matchesMediaFilters(asset),
   );
   const anyMedia = (session.getProject()?.assets ?? []).some(
     (asset) => !removedAssets.has(asset.id),
@@ -5841,17 +6074,32 @@ function removeAsset(assetId: string): void {
 // Saving and opening a project
 // ==========================================================================
 
-/** Media hints for the save file: enough to find each file again. */
+/**
+ * Media hints for the save file: enough to find each file again.
+ *
+ * Adjustment layers are left out. A hint exists so a missing file can be
+ * relinked by checksum, and an adjustment layer has no file — listing one would
+ * put an entry in the save that could never be matched to anything, and would
+ * show up in the bin's missing-media list on every reopen.
+ */
 function mediaHints(): MediaHint[] {
   return (session.getProject()?.assets ?? [])
     .filter((asset) => !removedAssets.has(asset.id))
-    .map((asset) => ({
-      assetId: asset.id,
-      name: assetName(asset),
-      checksum: asset.checksum,
-      fileSizeBytes: asset.metadata.fileSizeBytes,
-      kind: asset.kind,
-    }));
+    // flatMap rather than filter-then-map: the ternary narrows `kind` to the
+    // kinds a hint can carry, which a filter predicate does not.
+    .flatMap((asset) =>
+      asset.kind === "adjustment"
+        ? []
+        : [
+            {
+              assetId: asset.id,
+              name: assetName(asset),
+              checksum: asset.checksum,
+              fileSizeBytes: asset.metadata.fileSizeBytes,
+              kind: asset.kind,
+            },
+          ],
+    );
 }
 
 function currentProjectText(): string {
@@ -8149,6 +8397,10 @@ function bindEvents(): void {
   $("btn-delete").addEventListener("click", () => deleteSelection(false));
   $("btn-ripple-delete").addEventListener("click", () => deleteSelection(true));
 
+  $("btn-add-adjustment").addEventListener(
+    "click",
+    () => void addAdjustmentLayer(),
+  );
   $("btn-split").addEventListener("click", splitSelectedClip);
   $("btn-export").addEventListener("click", doExport);
 
@@ -8432,7 +8684,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
     if (layerMedia instanceof HTMLVideoElement) {
       await seekVideoFrame(layerMedia, Number(layer.sourceTimeUs) / 1_000_000);
     }
-    drawLayer(
+    paintLayer(
       octx,
       loc.clip,
       layer.sourceTimeUs,
@@ -8646,7 +8898,7 @@ export type VideoExportResult =
 type ExportProgress = (phase: string, done: number, total: number) => void;
 
 /** Real, working video export: renders every planned frame (effects baked
- * in, via the same drawLayer() used for live preview) to an offscreen
+ * in, via the same paintLayer() used for live preview) to an offscreen
  * canvas, encodes with the browser-native WebCodecs API, and muxes video and
  * (when present) a real audio mixdown into a downloadable MP4.
  *
@@ -8771,7 +9023,7 @@ async function runVideoExport(
           if (media instanceof HTMLVideoElement) {
             await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
           }
-          drawLayer(
+          paintLayer(
             offCtx,
             loc.clip,
             layer.sourceTimeUs,
@@ -9201,7 +9453,7 @@ async function runGifExport(): Promise<void> {
         if (media instanceof HTMLVideoElement) {
           await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
         }
-        drawLayer(
+        paintLayer(
           offCtx,
           loc.clip,
           layer.sourceTimeUs,
