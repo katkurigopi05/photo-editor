@@ -31,21 +31,39 @@ describe("browserPresetUnsupportedReason", () => {
     ).toBeNull();
   });
 
-  it("rejects a codec the browser path cannot encode", () => {
+  it("rejects a codec the browser path has no encoder for", () => {
+    // h265 and prores belong to the Rust engine: the browser path has no codec
+    // string and no muxer for either, so they are refused at the boundary
+    // rather than inside WebCodecs with an opaque message.
     const reason = browserPresetUnsupportedReason({
       ...base,
-      videoCodec: "av1",
+      videoCodec: "h265",
     });
-    expect(reason).toContain("av1");
+    expect(reason).toContain("h265");
   });
 
-  it("rejects a container the browser path cannot mux", () => {
-    // vp9/webm is a legitimate combination for the Rust engine, so this has to
-    // fail on browser capability rather than on codec/container compatibility.
+  it("accepts vp9 and av1 into webm, which the browser path now writes", () => {
+    // Both used to be refused here. They are attemptable now — whether a given
+    // build will really encode them is asked of that browser at export time,
+    // not decided by this list.
+    for (const videoCodec of ["vp9", "av1"] as const) {
+      expect(
+        browserPresetUnsupportedReason({
+          ...base,
+          videoCodec,
+          container: "webm",
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it("still rejects a codec in a container that cannot hold it", () => {
+    // vp9 in mp4 is bytes nothing will play; the codec and the container are
+    // chosen together for exactly this reason.
     const reason = browserPresetUnsupportedReason({
       ...base,
       videoCodec: "vp9",
-      container: "webm",
+      container: "mp4",
     });
     expect(reason).not.toBeNull();
     expect(reason).toContain("vp9");

@@ -22,6 +22,9 @@ export interface ExportFields {
   bitrateKbps: string;
   audioCodec: string;
   audioBitrateKbps: string;
+  /** The video codec chosen in the dialog. Optional so existing callers and
+   * saved fields keep meaning H.264. */
+  videoCodec?: "h264" | "vp9" | "av1";
 }
 
 export type PresetResult =
@@ -151,8 +154,13 @@ export function buildExportPreset(fields: ExportFields): PresetResult {
     width,
     height,
     frameRate,
-    videoCodec: "h264" as const,
-    container: "mp4" as const,
+    // The codec the encoder will really use, and the container that can hold
+    // it. Hardcoding h264/mp4 here while the encoder did something else would
+    // make the preset — which the summary reports and which callers read —
+    // describe a file that was never written.
+    videoCodec: fields.videoCodec ?? ("h264" as const),
+    container:
+      CODEC_CONTAINER[fields.videoCodec ?? "h264"] ?? ("mp4" as const),
     videoBitrateKbps,
     // Opus rather than AAC: it is what this path actually encodes with —
     // royalty-free and reliably software-encoded in every Chromium build,
@@ -215,4 +223,99 @@ export function h264CodecString(
   // Beyond the table, ask for the highest level rather than silently choosing
   // one that cannot carry the frame.
   return "avc1.420034";
+}
+
+/**
+ * A VP9 codec string whose level can carry the frame.
+ *
+ * Same reasoning as H.264: a level is a throughput contract, and one too low
+ * for the picture fails inside WebCodecs with an opaque message. VP9 states its
+ * levels in luma samples rather than macroblocks, so the arithmetic is on
+ * pixels directly.
+ *
+ * `vp09.PP.LL.DD` — profile 0 (8-bit 4:2:0, the universally decodable one),
+ * then level, then bit depth.
+ */
+export function vp9CodecString(
+  width: number,
+  height: number,
+  fps: number,
+): string {
+  const samples = width * height;
+  const samplesPerSecond = samples * fps;
+
+  // [level code, max luma samples per frame, max luma samples per second]
+  const LEVELS: ReadonlyArray<[number, number, number]> = [
+    [30, /* 3.0 */ 552_960, 8_294_400],
+    [31, /* 3.1 */ 983_040, 14_745_600],
+    [40, /* 4.0 */ 2_228_224, 33_423_360],
+    [41, /* 4.1 */ 2_228_224, 66_846_720],
+    [50, /* 5.0 */ 8_912_896, 133_693_440],
+    [51, /* 5.1 */ 8_912_896, 267_386_880],
+    [52, /* 5.2 */ 8_912_896, 534_773_760],
+    [60, /* 6.0 */ 35_651_584, 1_069_547_520],
+  ];
+
+  for (const [level, maxFrame, maxRate] of LEVELS) {
+    if (samples <= maxFrame && samplesPerSecond <= maxRate) {
+      return `vp09.00.${String(level).padStart(2, "0")}.08`;
+    }
+  }
+  return "vp09.00.60.08";
+}
+
+/**
+ * An AV1 codec string whose level can carry the frame.
+ *
+ * `av01.P.LLT.DD` — profile 0 (Main), level, tier, bit depth. Main tier (`M`)
+ * rather than High: High tier exists for very high bitrates and narrows the set
+ * of decoders willing to play the file, which is the same trade the H.264
+ * builder makes by staying on Constrained Baseline.
+ */
+export function av1CodecString(
+  width: number,
+  height: number,
+  fps: number,
+): string {
+  const samples = width * height;
+  const samplesPerSecond = samples * fps;
+
+  // [level index, max luma samples per frame, max luma samples per second]
+  const LEVELS: ReadonlyArray<[number, number, number]> = [
+    [4, /* 3.0 */ 1_115_712, 33_471_360],
+    [5, /* 3.1 */ 1_115_712, 50_207_040],
+    [8, /* 4.0 */ 2_228_224, 66_846_720],
+    [9, /* 4.1 */ 2_228_224, 133_693_440],
+    [12, /* 5.0 */ 8_912_896, 267_386_880],
+    [13, /* 5.1 */ 8_912_896, 534_773_760],
+    [14, /* 5.2 */ 8_912_896, 1_069_547_520],
+    [16, /* 6.0 */ 35_651_584, 1_069_547_520],
+  ];
+
+  for (const [level, maxFrame, maxRate] of LEVELS) {
+    if (samples <= maxFrame && samplesPerSecond <= maxRate) {
+      return `av01.0.${String(level).padStart(2, "0")}M.08`;
+    }
+  }
+  return "av01.0.16M.08";
+}
+
+/** Which container a codec is written into by the browser exporter. */
+export const CODEC_CONTAINER: Readonly<Record<string, "mp4" | "webm">> = {
+  h264: "mp4",
+  vp9: "webm",
+  av1: "webm",
+};
+
+/** The codec string builder for a codec the browser exporter can attempt. */
+export function codecStringFor(
+  codec: string,
+  width: number,
+  height: number,
+  fps: number,
+): string | null {
+  if (codec === "h264") return h264CodecString(width, height, fps);
+  if (codec === "vp9") return vp9CodecString(width, height, fps);
+  if (codec === "av1") return av1CodecString(width, height, fps);
+  return null;
 }

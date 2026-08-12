@@ -314,6 +314,7 @@ Export settings:
 | Resolution | 4K UHD, 1440p, 1080p, 720p, 480p, or Custom width and height |
 | Frame rate | 24, 25, 29.97, 30, 50, 59.94, 60 |
 | Quality | 40, 20, 12, 8, 4 Mbps, or a custom kbps value |
+| Video codec | H.264 (MP4), VP9 (WebM), AV1 (WebM) — whichever this browser can encode |
 | Audio | Opus at 96–256 kbps, or no audio |
 
 A custom width or height is rounded up to the next even number, because H.264
@@ -458,6 +459,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-12:** Export can write VP9 and AV1 into WebM as well as H.264 into
+  MP4. The Video codec list shows what this browser can actually encode at the
+  chosen size; anything it cannot is listed with the reason rather than hidden.
 - **2026-08-12:** The History panel is navigable — click an edit to go back to
   it, and click a greyed one to go forward again. Entries are named after the
   action and grouped so one entry is one Undo.

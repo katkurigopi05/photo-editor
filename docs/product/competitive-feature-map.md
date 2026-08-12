@@ -231,8 +231,9 @@ session, **M** a few sessions, **L** a phase.
 11. **A2 · Motion tracking** and **A3 · Stabilisation** — **L** each. Both need
     real optical-flow work; both are the sort of thing a native pipeline does
     far better than canvas 2D.
-12. **O1 · More codecs** — **M**, gated on what WebCodecs offers; the schema is
-    already wider than the encoder.
+12. ~~**O1 · More codecs**~~ — done. VP9 and AV1 into WebM beside H.264 into
+    MP4, with the set offered probed from the browser at the chosen size rather
+    than assumed. See `docs/phases/codecs.md`.
 13. **C4 · Raw development** — **L**. Exists in the Python track; bringing it to
     the web stack means a decoder and a colour pipeline.
 14. **M1 · Magnetic timeline** — **L**, and a decision before a task: it changes

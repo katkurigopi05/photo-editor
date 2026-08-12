@@ -76,6 +76,11 @@ import {
   FileSystemWritableFileStreamTarget,
 } from "mp4-muxer";
 import {
+  Muxer as WebmMuxer,
+  ArrayBufferTarget as WebmArrayBufferTarget,
+  FileSystemWritableFileStreamTarget as WebmFileStreamTarget,
+} from "webm-muxer";
+import {
   PRESETS,
   PRESET_LABELS,
   presetTokens,
@@ -108,6 +113,15 @@ import {
   QUALITY_LADDER,
   type QualityPreference,
 } from "./adaptive-quality.js";
+import {
+  ATTEMPTABLE_CODECS,
+  CODEC_LABELS,
+  describeCodecSupport,
+  offerable,
+  probeVideoCodecs,
+  type AttemptableCodec,
+  type CodecSupport,
+} from "./codec-support.js";
 import { checksumBlob } from "./checksum.js";
 import {
   buildProjectFile,
@@ -151,12 +165,13 @@ import type {
 } from "./checksum-worker.js";
 import {
   buildExportPreset,
-  h264CodecString,
   AUDIO_BITRATE_CHOICES,
   BITRATE_CHOICES,
   FRAME_RATE_CHOICES,
   RESOLUTION_CHOICES,
   type ExportFields,
+  CODEC_CONTAINER,
+  codecStringFor,
 } from "./export-preset.js";
 import {
   createExportSink,
@@ -798,6 +813,11 @@ let mediaFilter: MediaFilter = "all";
 /** Read once: the environment does not change while the app is open, and
  * re-reading it per frame would be a syscall in the render loop. */
 const ENVIRONMENT = readEnvironment();
+/** The video codec the export dialog is set to. Session state: it describes
+ * the next export, not the project. */
+let exportCodec: AttemptableCodec = "h264";
+let codecSupport: CodecSupport[] = [];
+
 const QUALITY_PREF_KEY = "director-preview-quality";
 
 /** What the user asked for. Machine-personal like the theme and saved views, so
@@ -8996,8 +9016,20 @@ function bindEvents(): void {
   // is refreshed each time the panel is opened rather than left stale.
   const capabilitiesBody = document.getElementById("system-capabilities-body");
   const qualityLine = document.createElement("p");
+  const codecLines = document.createElement("div");
   const renderCapabilities = (): void => {
-    qualityLine.textContent = describeQuality(adaptiveQuality, qualityPreference);
+    qualityLine.textContent = describeQuality(
+      adaptiveQuality,
+      qualityPreference,
+    );
+    // Codec support is known only once the export dialog has probed at the
+    // chosen size, so this fills in rather than being blank forever.
+    codecLines.innerHTML = "";
+    for (const line of describeCodecSupport(codecSupport)) {
+      const p = document.createElement("p");
+      p.textContent = line;
+      codecLines.appendChild(p);
+    }
   };
   if (capabilitiesBody) {
     for (const line of describeCapabilities(ENVIRONMENT)) {
@@ -9006,8 +9038,18 @@ function bindEvents(): void {
       capabilitiesBody.appendChild(p);
     }
     capabilitiesBody.appendChild(qualityLine);
+    capabilitiesBody.appendChild(codecLines);
     renderCapabilities();
   }
+  const codecSelect = document.getElementById(
+    "export-codec",
+  ) as HTMLSelectElement | null;
+  codecSelect?.addEventListener("change", () => {
+    if ((ATTEMPTABLE_CODECS as readonly string[]).includes(codecSelect.value)) {
+      exportCodec = codecSelect.value as AttemptableCodec;
+    }
+  });
+
   const qualitySelect = document.getElementById(
     "preview-quality",
   ) as HTMLSelectElement | null;
@@ -9574,9 +9616,25 @@ async function runVideoExport(
 
     // Where the file goes. Streaming writes straight to disk, so length is
     // bounded by the drive rather than by how much of an MP4 fits in a tab.
-    const sink = await createExportSink("export.mp4", {
-      StreamTargetCtor: FileSystemWritableFileStreamTarget,
-      BufferTargetCtor: ArrayBufferTarget,
+    // Which codec, and therefore which container and which muxer. VP9 and AV1
+    // cannot be written into MP4 by mp4-muxer, and a codec in a container that
+    // cannot hold it is a file nothing will play — so the two are chosen
+    // together rather than independently.
+    const chosenCodec: AttemptableCodec = ATTEMPTABLE_CODECS.includes(
+      exportCodec as AttemptableCodec,
+    )
+      ? (exportCodec as AttemptableCodec)
+      : "h264";
+    const container = CODEC_CONTAINER[chosenCodec] as "mp4" | "webm";
+    const isWebm = container === "webm";
+
+    const sink = await createExportSink(`export.${container}`, {
+      StreamTargetCtor: isWebm
+        ? (WebmFileStreamTarget as unknown as typeof FileSystemWritableFileStreamTarget)
+        : FileSystemWritableFileStreamTarget,
+      BufferTargetCtor: isWebm
+        ? (WebmArrayBufferTarget as unknown as typeof ArrayBufferTarget)
+        : ArrayBufferTarget,
       download: downloadBlob,
       // Already chosen, at the click, while the page still had the user
       // activation the picker demands.
@@ -9585,7 +9643,36 @@ async function runVideoExport(
 
     const withAudio =
       preset.audioCodec !== "none" && plan.audioClips.length > 0;
-    const muxer = new Muxer({
+    // One shape, two muxers. Their constructors agree closely enough that the
+    // difference is the codec tag and the fastStart option, which WebM has no
+    // equivalent of — it is seekable by construction.
+    const muxer = (
+      isWebm
+        ? new WebmMuxer({
+            target: sink.target as ConstructorParameters<
+              typeof WebmMuxer
+            >[0]["target"],
+            video: {
+              codec: chosenCodec === "av1" ? "V_AV1" : "V_VP9",
+              width: preset.width,
+              height: preset.height,
+              frameRate: fps,
+            },
+            ...(preset.audioCodec !== "none" && plan.audioClips.length > 0
+              ? {
+                  audio: {
+                    codec: "A_OPUS" as const,
+                    numberOfChannels: 2,
+                    sampleRate: preset.audioSampleRate,
+                  },
+                }
+              : {}),
+          })
+        : newMp4Muxer()
+    ) as Muxer<ArrayBufferTarget>;
+
+    function newMp4Muxer() {
+      return new Muxer({
       target: sink.target as ConstructorParameters<typeof Muxer>[0]["target"],
       video: { codec: "avc", width: preset.width, height: preset.height, frameRate: fps },
       ...(withAudio
@@ -9601,7 +9688,8 @@ async function runVideoExport(
       // exactly what streaming exists to avoid. Streamed files put their index
       // at the end — every player handles that for a local file.
       fastStart: sink.kind === "stream" ? false : "in-memory",
-    });
+      });
+    }
     const videoEncoder = new VideoEncoder({
       output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
       error: (err) => {
@@ -9611,7 +9699,7 @@ async function runVideoExport(
     // The level is derived from the picture, not hardcoded: a level too low for
     // the frame fails inside WebCodecs with an opaque message, and a level
     // needlessly high narrows the set of decoders that will play the file.
-    const codec = h264CodecString(preset.width, preset.height, fps);
+    const codec = codecStringFor(chosenCodec, preset.width, preset.height, fps)!;
     const config: VideoEncoderConfig = {
       codec,
       width: preset.width,
@@ -9737,7 +9825,8 @@ function readExportFields(): ExportFields {
         : $<HTMLSelectElement>("export-quality").value,
     audioCodec: $<HTMLSelectElement>("export-audio-codec").value,
     audioBitrateKbps: $<HTMLSelectElement>("export-audio-bitrate").value,
-  };
+      videoCodec: exportCodec,
+};
 }
 
 /** Fill the dialog's selects and wire the two "Custom…" reveals. */
@@ -9838,6 +9927,66 @@ function openExportModal(): void {
   $("btn-export-close").textContent = "Cancel";
   updateExportSummary();
   $("export-modal").classList.remove("hidden");
+  // Probed on open, at the size and rate actually chosen: support is a
+  // function of level, so a browser that encodes VP9 at 720p may refuse 4K.
+  // Asking at a nominal size would offer a codec that then failed at the click.
+  void refreshCodecOptions();
+}
+
+/**
+ * Fill the codec picker with what this browser will really encode.
+ *
+ * Unsupported codecs are listed and disabled with the reason attached rather
+ * than hidden: "AV1 is not offered here" is a different message from "AV1 does
+ * not exist", and only the first is true.
+ */
+async function refreshCodecOptions(): Promise<void> {
+  const select = document.getElementById(
+    "export-codec",
+  ) as HTMLSelectElement | null;
+  if (!select) return;
+  const built = buildExportPreset(readExportFields());
+  // An invalid field set has nothing to probe against; the summary already
+  // reports why, and the picker keeps whatever it last knew.
+  if (!built.ok) return;
+  const preset = built.preset;
+  const fps = preset.frameRate.numerator / preset.frameRate.denominator;
+  select.disabled = true;
+  codecSupport = await probeVideoCodecs(
+    preset.width,
+    preset.height,
+    fps,
+    preset.videoBitrateKbps,
+  );
+
+  const available = offerable(codecSupport);
+  // If the chosen codec is not available at this size, fall back to whatever
+  // is — silently keeping an impossible choice would fail at the click.
+  if (!available.some((r) => r.codec === exportCodec)) {
+    exportCodec = available[0]?.codec ?? "h264";
+  }
+  select.innerHTML = "";
+  for (const entry of codecSupport) {
+    const option = new Option(
+      entry.supported
+        ? CODEC_LABELS[entry.codec]
+        : `${CODEC_LABELS[entry.codec]} — unavailable here`,
+      entry.codec,
+    );
+    option.disabled = !entry.supported;
+    if (entry.reason) option.title = entry.reason;
+    option.selected = entry.codec === exportCodec;
+    select.appendChild(option);
+  }
+  select.disabled = available.length <= 1;
+  select.title =
+    available.length <= 1
+      ? "Only one codec is available in this browser at this size."
+      : "";
+  updateExportSummary();
+  document.getElementById("system-capabilities")?.dispatchEvent(
+    new Event("toggle"),
+  );
 }
 
 function closeExportModal(): void {
