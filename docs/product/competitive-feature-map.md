@@ -63,7 +63,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Compound clips / nested sequences | all pro | ✗ | step T3 |
 | Multicam editing | Premiere, Resolve, FCP | ✗ | needs sync + angle switching; step T7 |
 | Roles / lanes / track groups | FCP, Premiere | ✗ | step T4 |
-| Three-point editing, insert/overwrite | all pro | ✗ | browser range exists; the edit modes do not — step T1 |
+| Three-point editing, insert/overwrite | all pro | ✓ | append, insert and overwrite from the bin; step T1 |
 | J/K/L and keyboard-first trimming | all pro | ✗ | step T2 |
 | Snapping | all | ✓ | |
 | Markers | all | ✓ | timeline-level markers still missing |
@@ -91,7 +91,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 
 | Feature | Ref | Us | Note |
 | --- | --- | --- | --- |
-| Layers with blend modes | Photoshop, Affinity, GIMP | ✗ | tracks composite, but there are no blend modes at all — step L1 |
+| Layers with blend modes | Photoshop, Affinity, GIMP | ✓ | all sixteen W3C modes, per clip |
 | Layer groups, clipping masks | Photoshop, Affinity | ✗ | step L2 |
 | Non-destructive adjustment layers | Photoshop, Affinity, Capture One | ✗ | step L1 |
 | Masks with feather and composition | all | ✓ | |
@@ -109,7 +109,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Bézier keyframe interpolation | all pro | ◐ | five named easings; no editable curve — step A1 |
 | Motion tracking | Resolve, Premiere | ✗ | step A2 |
 | Stabilisation | Resolve, Premiere, FCP | ✗ | step A3 |
-| Speed ramps (keyframed speed) | all pro | ◐ | constant per-clip rate only — step A4 |
+| Speed ramps (keyframed speed) | all pro | ✓ | stepped rational segments; smooth curves deferred — step A4 |
 | Optical-flow retiming | Resolve, Premiere, FCP | ✗ | step A5 |
 | Titles and lower thirds as templates | all | ✗ | step A6 |
 | Green screen / chroma key | all pro | ◐ | colour-key background removal exists; no spill suppression or matte controls — step A7 |
@@ -133,7 +133,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Feature | Ref | Us | Note |
 | --- | --- | --- | --- |
 | Ratings, keywords, search, saved views | FCP, Lightroom, Capture One | ✓ | |
-| Keyword ranges (part of a clip) | FCP | ✗ | step M2, next in line |
+| Keyword ranges (part of a clip) | FCP | ✓ | tagged from the range editor; step M2 |
 | Persistent catalogue across projects | Lightroom, Capture One | ✗ | step M3 |
 | Proxy / optimised media | all pro | ✓ | 540p proxies, built on import, exports read the original |
 | Relink missing media | all pro | ✗ | checksums exist, the flow does not — step M5 |
@@ -196,14 +196,24 @@ session, **M** a few sessions, **L** a phase.
 
 ### Next — the editing model catches up
 
-4. **M2 · Keyword ranges** — **S**. A persisted range object plus a command;
-   browser ranges and keywords both exist already.
-5. **T1 · Three-point editing (insert / overwrite / append)** — **M**. The
-   browser range is the source half; these are the destination half.
-6. **A4 · Speed ramps** — **M**. Keyframed rate rather than one constant, which
-   the schema's rational rate already accommodates.
-7. **L1 · Blend modes and adjustment layers** — **M**. The single biggest photo
-   gap: everything composites with normal alpha today.
+4. ~~**M2 · Keyword ranges**~~ — done. A persisted range object in source-local
+   microseconds, add/update/remove commands and their MCP tools, tagging from
+   inside the range editor, and chips that load a range back for the next add.
+   Search and the keyword picker both reach range keywords. See
+   `docs/phases/keyword-ranges.md`.
+5. ~~**T1 · Three-point editing (insert / overwrite / append)**~~ — done. The
+   browser range was the source half; `timeline.insert_clip` and
+   `timeline.overwrite_clip` are the destination half, chosen from an "Add as"
+   control in the timeline toolbar. Insert ripples its own track only. See
+   `docs/phases/three-point-editing.md`.
+6. ~~**A4 · Speed ramps**~~ — done. `timeline.set_clip_speed_ramp` carries a
+   list of constant rational segments anchored in source time; stepped rather
+   than interpolated, so every source instant stays exactly computable. Smooth
+   curves are deferred with the reason recorded. See
+   `docs/phases/speed-ramps.md`.
+7. **L1 · Blend modes and adjustment layers** — **M**. Blend modes are done (see
+   `docs/phases/blend-modes.md`); adjustment layers are the remaining half — a
+   clip that carries only effects and applies them to everything beneath it.
 8. **C1 · Control-point curves** — **S**. Named as missing in the Lightroom
    reference note since it was written.
 9. **P2 · Navigable history panel** — **S**. The log exists and replay works;

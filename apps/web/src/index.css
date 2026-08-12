@@ -689,7 +689,73 @@ body {
 }
 .media-range-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+/* Keyword ranges: persisted, unlike the transient browser range above, so they
+   carry the accent rather than the muted grey the asset-level chips use. The
+   pair reads as one chip — a label that loads the range and a drop that
+   removes it — so the border lives on the wrapper, not on each button. */
+/* Its own full-width row, like the range editor: the meta column is ~54px in a
+   264px sidebar, so a chip placed inside it either truncated to "go…" or
+   propped the column open and collapsed the filename to "m…". Both were
+   visible only in a screenshot. */
+.media-ranges {
+  flex-basis: 100%;
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 2px;
+  min-width: 0;
+}
+.media-item:has(.media-ranges) {
+  flex-wrap: wrap;
+}
+.media-range-chip {
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--line));
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--panel-3, var(--panel-2));
+}
+.media-range-chip:hover {
+  border-color: var(--accent);
+}
+.media-range-use,
+.media-range-drop {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+/* Truncate rather than wrap: a chip that wraps becomes a tall vertical pill in
+   a 264px sidebar, which is what the first screenshot of this feature showed.
+   The full text stays reachable as the title. */
+.media-range-use {
+  padding: 1px 4px 1px 7px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.media-range-drop {
+  padding: 1px 6px 1px 3px;
+  flex: none;
+}
+.media-range-use:hover,
+.media-range-use:focus-visible {
+  color: var(--accent);
+}
+.media-range-drop:hover,
+.media-range-drop:focus-visible {
+  color: var(--danger, #e5534b);
 }
 /* The item is a row; an editor inside it has to break out of that flow or it
    is squeezed beside the thumbnail. */
@@ -2344,4 +2410,52 @@ select {
   margin-left: auto;
   padding-inline: 8px;
   font-size: 10px;
+}
+
+/* ---- speed ramp ---- */
+/* The segment rows are a three-column grid rather than a flex row: the "from"
+   times are tabular and should align down the list, which they cannot do if
+   each row sizes itself to its own content. */
+.ramp {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ramp-list {
+  display: grid;
+  gap: 4px;
+}
+.ramp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+}
+.ramp-at {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ramp-rate {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+.ramp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ramp-drop:hover:not(:disabled),
+.ramp-drop:focus-visible:not(:disabled) {
+  color: var(--danger, #e5534b);
+}
+.ramp-actions button:disabled,
+.ramp-drop:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }

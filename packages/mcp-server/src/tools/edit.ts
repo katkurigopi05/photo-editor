@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   addClipPayloadSchema,
+  insertClipPayloadSchema,
+  overwriteClipPayloadSchema,
   addEffectPayloadSchema,
   addKeyframePayloadSchema,
   addTrackPayloadSchema,
@@ -13,10 +15,15 @@ import {
   removeKeyframePayloadSchema,
   reorderEffectsPayloadSchema,
   setClipAudioGainPayloadSchema,
+  setClipBlendModePayloadSchema,
   setClipAudioPanPayloadSchema,
   setAssetRatingPayloadSchema,
   setAssetKeywordsPayloadSchema,
+  addKeywordRangePayloadSchema,
+  updateKeywordRangePayloadSchema,
+  removeKeywordRangePayloadSchema,
   setClipSpeedPayloadSchema,
+  setClipSpeedRampPayloadSchema,
   addMarkerPayloadSchema,
   updateMarkerPayloadSchema,
   removeMarkerPayloadSchema,
@@ -112,6 +119,37 @@ const COMMAND_TOOLS: CommandTool[] = [
     schema: setAssetKeywordsPayloadSchema,
   },
   {
+    name: "add_keyword_range",
+    commandType: "asset.add_keyword_range",
+    title: "Keyword part of an asset",
+    description:
+      "Tag a portion of an asset with one keyword — Final Cut's keyword " +
+      "range. Bounds are source-local microseconds in the asset's own " +
+      "coordinate space, half-open, and must fit its duration; media with no " +
+      "duration cannot be ranged. The keyword obeys the same normalization " +
+      "rule as the asset-level list.",
+    schema: addKeywordRangePayloadSchema,
+  },
+  {
+    name: "update_keyword_range",
+    commandType: "asset.update_keyword_range",
+    title: "Change a keyword range",
+    description:
+      "Move a range's bounds or change its keyword. Every field but the id " +
+      "is optional; omitted ones keep their stored value, and the merged " +
+      "range must still run forwards and fit the media.",
+    schema: updateKeywordRangePayloadSchema,
+  },
+  {
+    name: "remove_keyword_range",
+    commandType: "asset.remove_keyword_range",
+    title: "Remove a keyword range",
+    description:
+      "Delete one keyword range from an asset. The asset's own keyword list " +
+      "is untouched — the two are independent.",
+    schema: removeKeywordRangePayloadSchema,
+  },
+  {
     name: "add_clip",
     commandType: "timeline.add_clip",
     title: "Add clip",
@@ -119,6 +157,31 @@ const COMMAND_TOOLS: CommandTool[] = [
       "Place a clip on a track. Timeline duration is derived from the source " +
       "range and playback rate, so it is not supplied here.",
     schema: addClipPayloadSchema,
+  },
+  {
+    name: "insert_clip",
+    commandType: "timeline.insert_clip",
+    title: "Insert a clip, rippling what follows",
+    description:
+      "Place a clip at its timelineStartUs and push everything at or after " +
+      "that point later by the clip's duration. Only the clip's own track " +
+      "ripples; other tracks stay where they are. If the point falls inside " +
+      "an existing clip, that clip is cut in two and splitClipId names the " +
+      "second half — without it the command is refused rather than guessing " +
+      "an id.",
+    schema: insertClipPayloadSchema,
+  },
+  {
+    name: "overwrite_clip",
+    commandType: "timeline.overwrite_clip",
+    title: "Overwrite whatever a span covers",
+    description:
+      "Place a clip at its timelineStartUs, replacing what its span covers: " +
+      "clips wholly inside are removed, clips crossing either edge are " +
+      "trimmed back (a clip crossing the end has its source advanced so it " +
+      "does not repeat covered frames), and a clip containing the whole span " +
+      "is cut in two — supply splitClipId for that case.",
+    schema: overwriteClipPayloadSchema,
   },
   {
     name: "move_clip",
@@ -200,6 +263,18 @@ const COMMAND_TOOLS: CommandTool[] = [
     schema: setClipAudioPanPayloadSchema,
   },
   {
+    name: "set_clip_blend_mode",
+    commandType: "timeline.set_clip_blend_mode",
+    title: "Set a clip's blend mode",
+    description:
+      "Set how a clip composites with what is beneath it: 'normal' (the " +
+      "default, which hides what is under it), 'multiply' to darken, 'screen' " +
+      "to brighten, 'overlay', 'soft-light' and the rest of the W3C " +
+      "compositing modes under their usual names. Setting 'normal' clears the " +
+      "mode rather than storing it.",
+    schema: setClipBlendModePayloadSchema,
+  },
+  {
     name: "set_clip_speed",
     commandType: "timeline.set_clip_speed",
     title: "Retime a clip",
@@ -209,6 +284,22 @@ const COMMAND_TOOLS: CommandTool[] = [
       "timeline. Supported between 1/4 and 4. The source range is unchanged; " +
       "slowing a clip fails with OVERLAP if the clip after it is in the way.",
     schema: setClipSpeedPayloadSchema,
+  },
+  {
+    name: "set_clip_speed_ramp",
+    commandType: "timeline.set_clip_speed_ramp",
+    title: "Ramp a clip's speed",
+    description:
+      "Give a clip a speed that changes partway through: a list of segments, " +
+      "each a constant rational rate starting at a source offset measured " +
+      "from the clip's sourceInUs. The first segment must start at 0, offsets " +
+      "must strictly increase and stay inside the clip's source, and two " +
+      "segments are the minimum — one rate for a whole clip is set_clip_speed. " +
+      "Stepped rather than interpolated, so every source instant stays exactly " +
+      "computable. Pass null to clear the ramp. Setting a ramp pins " +
+      "playbackRate to 1/1, and set_clip_speed is refused while one is in " +
+      "force. The clip is resized to the sum of the segments.",
+    schema: setClipSpeedRampPayloadSchema,
   },
   {
     name: "add_marker",

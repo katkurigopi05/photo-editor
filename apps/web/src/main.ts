@@ -12,10 +12,16 @@ import {
   buildUpdateEffectParams,
   buildRemoveEffect,
   buildSetClipAudioGain,
+  buildSetClipBlendMode,
   buildSetClipAudioPan,
   buildSetAssetRating,
   buildSetAssetKeywords,
+  buildAddKeywordRange,
+  buildInsertClip,
+  buildOverwriteClip,
+  buildRemoveKeywordRange,
   buildSetClipSpeed,
+  buildSetClipSpeedRamp,
   buildAddMarker,
   buildUpdateMarker,
   buildRemoveMarker,
@@ -142,10 +148,16 @@ import {
 } from "./export-sink.js";
 import { SKINS, currentSkin, applySkin } from "./skin.js";
 import {
+  BLEND_MODES,
   TRANSITION_DIRECTIONS,
   TRANSITION_KINDS,
+  compositeOperation,
   isAudioEffectType,
   normalizeKeyword,
+  rateAtClipOffset,
+  rampTimelineDurationUs,
+  sourceAtClipOffset,
+  type SpeedRamp,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
 import {
@@ -736,6 +748,16 @@ let mediaSearch = "";
 type MediaFilter = "all" | "favorites" | "rejected" | "unrated";
 let mediaFilter: MediaFilter = "all";
 let mediaKeyword = "";
+
+/**
+ * Where an add from the bin lands, and what happens to what is already there —
+ * the destination half of three-point editing.
+ *
+ * Session state, not project state: it is a way of working, not a fact about
+ * the edit. Nothing about it changes what would be rendered, and the commands
+ * it chooses between record what actually happened.
+ */
+let editMode: "append" | "insert" | "overwrite" = "append";
 
 /**
  * Saved views: a named search + keyword + rating filter.
@@ -1644,6 +1666,25 @@ async function addVectorShape(preset: VectorShapePreset): Promise<void> {
   toast(`${preset.label} cartoon added — animate it in the Inspector`);
 }
 
+/**
+ * Add a clip, in whichever of the three destinations the toolbar is set to.
+ *
+ * This is the destination half of three-point editing. The source half is
+ * already decided by the time we get here: `range` is the browser range, so in
+ * and out are chosen; the mode decides where it lands and what happens to what
+ * is already there.
+ *
+ * - **Append** puts it after the last clip on the track — the original
+ *   behaviour, and still the default, because it is what adding from the bin
+ *   means when you are assembling in order.
+ * - **Insert** puts it at the playhead and pushes the rest later.
+ * - **Overwrite** puts it at the playhead and replaces what it covers.
+ *
+ * Insert and overwrite each go through one command, so a ripple across five
+ * clips is one undo and an agent gets the same edit through MCP. `splitClipId`
+ * is supplied every time: the reducer ignores it unless the edit lands mid-clip,
+ * and predicting that here would duplicate the reducer's own arithmetic.
+ */
 function addAssetToTimeline(
   assetId: string,
   kind: MediaAsset["kind"],
@@ -1657,21 +1698,36 @@ function addAssetToTimeline(
     preferredTrackId ?? (kind === "audio" ? AUDIO_TRACK : VIDEO_TRACK);
   const track = seq.tracks.find((t) => t.id === trackId);
   if (!track) return;
-  const startUs = trackEndUs(track).toString();
   const clipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+  const clip = {
+    id: clipId,
+    assetId,
+    timelineStartUs:
+      editMode === "append"
+        ? trackEndUs(track).toString()
+        : playback.currentTimeUs,
+    sourceInUs: range?.inUs ?? "0",
+    sourceOutUs: range?.outUs ?? durationUs,
+    playbackRate: { numerator: 1, denominator: 1 } as const,
+  };
+  const payload = {
+    sequenceId: SEQUENCE_ID,
+    trackId,
+    clip,
+    splitClipId: `clip-${crypto.randomUUID().slice(0, 8)}`,
+  };
   const added = commit(
-    buildAddClip(nextCtx(), {
-      sequenceId: SEQUENCE_ID,
-      trackId,
-      clip: {
-        id: clipId,
-        assetId,
-        timelineStartUs: startUs,
-        sourceInUs: range?.inUs ?? "0",
-        sourceOutUs: range?.outUs ?? durationUs,
-        playbackRate: { numerator: 1, denominator: 1 },
-      },
-    }),
+    editMode === "insert"
+      ? buildInsertClip(nextCtx(), payload)
+      : editMode === "overwrite"
+        ? buildOverwriteClip(nextCtx(), payload)
+        : // Append has nothing to ripple or replace, so it stays the plain add
+          // it always was — and `add_clip` takes no splitClipId.
+          buildAddClip(nextCtx(), {
+            sequenceId: SEQUENCE_ID,
+            trackId,
+            clip,
+          }),
   );
   if (added) selectClip(clipId);
 }
@@ -2114,11 +2170,20 @@ function drawLayer(
   if (transition.dipColorHex !== undefined) {
     ctx.globalAlpha = 1;
     ctx.filter = "none";
+    // A dip is an explicit colour laid *under* the clip, so it is painted
+    // normally whatever the clip blends as.
+    ctx.globalCompositeOperation = "source-over";
     ctx.fillStyle = transition.dipColorHex;
     ctx.fillRect(dx, dy, dw, dh);
   }
   ctx.globalAlpha = transform.alpha * transition.opacity;
   ctx.filter = staticTransform.filter || "none";
+  // How this clip combines with what is already on the canvas. Set inside the
+  // save/restore the layer already has, so it cannot leak into the next clip —
+  // and set explicitly even for "normal", because passing an unknown value to
+  // `globalCompositeOperation` is silently ignored and would leave the previous
+  // layer's operation in force.
+  ctx.globalCompositeOperation = compositeOperation(clip.blendMode ?? "normal");
   const ccx = dx + dw / 2;
   const ccy = dy + dh / 2;
   // A slide contributes a normalized offset on the same convention as
@@ -2955,8 +3020,11 @@ function renderTimeline(): void {
           : ""
       }`;
       // The clip's own span, exposed so a test can assert what a browser range
-      // actually produced rather than inferring it from pixel width.
+      // actually produced rather than inferring it from pixel width. The start
+      // is here for the same reason: a ripple is a change of position, and
+      // reading it off `style.left` would be reading the zoom level back.
       el.dataset.durationUs = clip.timelineDurationUs;
+      el.dataset.startUs = clip.timelineStartUs;
       el.style.left = `${usToPixels(clip.timelineStartUs, zoom)}px`;
       const clipWidth = Math.max(24, usToPixels(clip.timelineDurationUs, zoom));
       el.style.width = `${clipWidth}px`;
@@ -3502,6 +3570,74 @@ const SPEED_PRESETS: ReadonlyArray<{
 const rateKey = (rate: { numerator: number; denominator: number }): string =>
   `${rate.numerator}/${rate.denominator}`;
 
+/** Blend-mode labels. The values are the schema's own names — the W3C ones —
+ * so nothing has to be translated between the picker, the command and the
+ * canvas; only the capitalisation is for reading. */
+const BLEND_LABELS: Readonly<Record<string, string>> = {
+  normal: "Normal",
+  multiply: "Multiply",
+  screen: "Screen",
+  overlay: "Overlay",
+  darken: "Darken",
+  lighten: "Lighten",
+  "color-dodge": "Colour Dodge",
+  "color-burn": "Colour Burn",
+  "hard-light": "Hard Light",
+  "soft-light": "Soft Light",
+  difference: "Difference",
+  exclusion: "Exclusion",
+  hue: "Hue",
+  saturation: "Saturation",
+  color: "Colour",
+  luminosity: "Luminosity",
+};
+
+/**
+ * How this clip combines with what is beneath it.
+ *
+ * Only worth showing where there is something to blend with, which is any
+ * visual clip: on the lowest track a blend mode composites against the
+ * background, which is a real (if quiet) result rather than a no-op.
+ */
+function blendSection(clip: TimelineClip): HTMLElement {
+  const blend = section("Blend");
+  const control = document.createElement("div");
+  control.className = "control";
+  const label = document.createElement("label");
+  label.textContent = "Blend mode";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Blend mode");
+  const current = clip.blendMode ?? "normal";
+  for (const mode of BLEND_MODES) {
+    const option = new Option(BLEND_LABELS[mode] ?? mode, mode);
+    option.selected = mode === current;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => {
+    const loc = locateClip(clip.id);
+    if (!loc) return;
+    commit(
+      buildSetClipBlendMode(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        blendMode: select.value as (typeof BLEND_MODES)[number],
+      }),
+    );
+    updateUI();
+  });
+  control.append(label, select);
+  blend.appendChild(control);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "Multiply darkens, Screen brightens, Overlay does both from the midpoint. " +
+    "A clip blends with whatever is composited beneath it, so the result " +
+    "depends on the track order.";
+  blend.appendChild(note);
+  return blend;
+}
+
 /**
  * Retiming.
  *
@@ -3530,6 +3666,15 @@ function speedSection(clip: TimelineClip): HTMLElement {
   control.append(label, select);
   speed.appendChild(control);
 
+  // A ramp and a constant rate are two descriptions of one clip's speed, and
+  // only one is ever live — so the constant picker is disabled while a ramp is
+  // in force, rather than offering a change the reducer would refuse.
+  if (clip.speedRamp !== undefined) {
+    select.disabled = true;
+    select.title = "This clip has a speed ramp; clear it to set one rate";
+  }
+  speed.appendChild(rampControl(clip));
+
   const note = document.createElement("p");
   note.className = "hint";
   note.textContent =
@@ -3538,6 +3683,190 @@ function speedSection(clip: TimelineClip): HTMLElement {
     "pitch — there is no pitch-preserving stretch yet.";
   speed.appendChild(note);
   return speed;
+}
+
+/**
+ * The ramp editor: the segments a clip's speed is made of, and a way to add one
+ * at the playhead.
+ *
+ * The playhead is the anchor because it is where you are already looking — you
+ * scrub to the moment the action should slow, and say how much. Its *source*
+ * position is what the segment records, since that is the coordinate a ramp is
+ * written in and it does not move when a later rate changes.
+ *
+ * Every action rebuilds the whole ramp and issues one command, because the
+ * command is whole-ramp: segments only mean anything together.
+ */
+function rampControl(clip: TimelineClip): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "ramp";
+
+  const sourceSpan = BigInt(clip.sourceOutUs) - BigInt(clip.sourceInUs);
+  const offsetAtPlayhead =
+    sourceAtClipOffset(
+      clip,
+      BigInt(playback.currentTimeUs) - BigInt(clip.timelineStartUs),
+    ) - BigInt(clip.sourceInUs);
+  const insideClip =
+    BigInt(playback.currentTimeUs) >= BigInt(clip.timelineStartUs) &&
+    BigInt(playback.currentTimeUs) <
+      BigInt(clip.timelineStartUs) + BigInt(clip.timelineDurationUs);
+
+  const segments = clip.speedRamp ?? [];
+  if (segments.length > 0) {
+    const list = document.createElement("div");
+    list.className = "ramp-list";
+    for (const segment of segments) {
+      const row = document.createElement("div");
+      row.className = "ramp-row";
+      row.dataset.offsetUs = segment.sourceOffsetUs;
+
+      const at = document.createElement("span");
+      at.className = "ramp-at";
+      at.textContent = `from ${formatTime(segment.sourceOffsetUs)}`;
+
+      const rate = document.createElement("select");
+      rate.className = "ramp-rate";
+      rate.setAttribute(
+        "aria-label",
+        `Rate from ${formatTime(segment.sourceOffsetUs)}`,
+      );
+      for (const preset of SPEED_PRESETS) {
+        const option = new Option(preset.label, rateKey(preset.rate));
+        option.selected = rateKey(preset.rate) === rateKey(segment.rate);
+        rate.appendChild(option);
+      }
+      rate.addEventListener("change", () => {
+        const preset = SPEED_PRESETS.find((p) => rateKey(p.rate) === rate.value);
+        if (!preset) return;
+        setSpeedRamp(
+          clip,
+          segments.map((s) =>
+            s.id === segment.id ? { ...s, rate: preset.rate } : s,
+          ),
+        );
+      });
+
+      const drop = document.createElement("button");
+      drop.className = "mini ramp-drop";
+      drop.textContent = "✕";
+      drop.title = "Remove this speed change";
+      drop.setAttribute(
+        "aria-label",
+        `Remove speed change at ${formatTime(segment.sourceOffsetUs)}`,
+      );
+      // The first segment is the clip's own opening rate; removing it would
+      // leave the span before the next boundary with no rate at all.
+      drop.disabled = segment.sourceOffsetUs === "0";
+      drop.addEventListener("click", () => {
+        const kept = segments.filter((s) => s.id !== segment.id);
+        // One segment left is a constant rate, which has its own spelling — the
+        // schema refuses a one-segment ramp, so this clears it instead.
+        setSpeedRamp(clip, kept.length < 2 ? null : kept);
+      });
+
+      row.append(at, rate, drop);
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "ramp-actions";
+
+  const add = document.createElement("button");
+  add.className = "mini";
+  add.id = "btn-add-speed-change";
+  add.textContent = "＋ Speed change at playhead";
+  const already = segments.some(
+    (s) => BigInt(s.sourceOffsetUs) === offsetAtPlayhead,
+  );
+  const usable =
+    insideClip && offsetAtPlayhead > 0n && offsetAtPlayhead < sourceSpan;
+  add.disabled = !usable || already;
+  add.title = already
+    ? "There is already a speed change here"
+    : usable
+      ? "Split the clip's speed here and slow what follows"
+      : "Move the playhead inside this clip, past its first frame";
+  add.addEventListener("click", () => {
+    // A new boundary defaults to half speed: the point of adding one is to
+    // change the rate, and 1× would look like nothing happened.
+    const half = { numerator: 1, denominator: 2 };
+    const base =
+      segments.length > 0
+        ? segments
+        : [{ id: rampSegmentId(), sourceOffsetUs: "0", rate: clip.playbackRate }];
+    setSpeedRamp(clip, [
+      ...base,
+      {
+        id: rampSegmentId(),
+        sourceOffsetUs: offsetAtPlayhead.toString(),
+        rate: half,
+      },
+    ]);
+  });
+  actions.appendChild(add);
+
+  if (segments.length > 0) {
+    const clear = document.createElement("button");
+    clear.className = "mini";
+    clear.id = "btn-clear-ramp";
+    clear.textContent = "Clear ramp";
+    clear.title = "Back to one rate for the whole clip";
+    clear.addEventListener("click", () => setSpeedRamp(clip, null));
+    actions.appendChild(clear);
+  }
+
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+const rampSegmentId = (): string => `seg-${crypto.randomUUID().slice(0, 8)}`;
+
+/**
+ * Set or clear a ramp, rippling the clips after it exactly as a constant
+ * retime does — a ramp changes the clip's length for the same reason and the
+ * reducer refuses a collision the same way.
+ */
+function setSpeedRamp(
+  clip: TimelineClip,
+  ramp: SpeedRamp | null,
+): void {
+  const loc = locateClip(clip.id);
+  if (!loc) return;
+  const sourceSpan = BigInt(clip.sourceOutUs) - BigInt(clip.sourceInUs);
+  const newDuration =
+    ramp === null
+      ? sourceSpan
+      : BigInt(rampTimelineDurationUs(ramp, clip.sourceInUs, clip.sourceOutUs));
+  const ripple = planRippleTrim(loc.track, clip.id, newDuration.toString());
+
+  session.beginGesture();
+  const movesFirst = newDuration > BigInt(clip.timelineDurationUs);
+  const applyMoves = (): void => {
+    for (const move of ripple.moves) {
+      commit(
+        buildMoveClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: move.clipId,
+          targetTrackId: loc.track.id,
+          timelineStartUs: move.timelineStartUs,
+        }),
+      );
+    }
+  };
+  if (movesFirst) applyMoves();
+  const ramped = commit(
+    buildSetClipSpeedRamp(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: clip.id,
+      ramp,
+    }),
+  );
+  if (ramped && !movesFirst) applyMoves();
+  session.endGesture();
+  updateUI();
 }
 
 function setClipSpeed(
@@ -3967,6 +4296,9 @@ function renderInspector(): void {
   }
 
   inspectorEl.appendChild(markersSection(clip));
+  if (asset && asset.kind !== "audio") {
+    inspectorEl.appendChild(blendSection(clip));
+  }
   inspectorEl.appendChild(speedSection(clip));
   if (asset && asset.kind !== "audio") {
     inspectorEl.appendChild(masksSection(clip));
@@ -4963,14 +5295,21 @@ function matchesMediaFilters(asset: MediaAsset): boolean {
   const query = mediaSearch.trim().toLowerCase();
   // Search covers keywords as well as the name: typing "interview" should find
   // the shots tagged that way, not only a file that happens to be called it.
+  // Range keywords count the same — a shot with an interview *in* it is a shot
+  // someone searching for "interview" is looking for.
   if (
     query &&
     !assetName(asset).toLowerCase().includes(query) &&
-    !(asset.keywords ?? []).some((keyword) => keyword.includes(query))
+    !(asset.keywords ?? []).some((keyword) => keyword.includes(query)) &&
+    !rangeKeywords(asset).some((keyword) => keyword.includes(query))
   ) {
     return false;
   }
-  if (mediaKeyword && !(asset.keywords ?? []).includes(mediaKeyword)) {
+  if (
+    mediaKeyword &&
+    !(asset.keywords ?? []).includes(mediaKeyword) &&
+    !rangeKeywords(asset).includes(mediaKeyword)
+  ) {
     return false;
   }
   if (mediaFilter === "favorites") return asset.rating === "favorite";
@@ -5006,6 +5345,54 @@ function editKeywords(asset: MediaAsset): void {
       keywords: [...seen].sort(),
     }),
   );
+}
+
+/**
+ * Tag a span of an asset with one keyword, saved with the project.
+ *
+ * A prompt for the same reason `editKeywords` uses one, and normalization at
+ * the same boundary: the schema refuses an unnormalized keyword rather than
+ * fixing it, so "Good Take" has to become "good take" here or the command is
+ * rejected.
+ *
+ * The bounds come from the slider pair, already clamped to the asset and
+ * already at least a millisecond apart, so the reducer's OUT_OF_BOUNDS and the
+ * schema's empty-range rule should both be unreachable from this path — they
+ * still exist for the MCP surface and for anything a future UI does.
+ */
+function keywordCurrentRange(
+  asset: MediaAsset,
+  startUs: number,
+  endUs: number,
+): void {
+  const entered = window.prompt(
+    `Keyword for ${formatTime(String(startUs))} – ${formatTime(String(endUs))} of ${assetName(asset)}`,
+    "",
+  );
+  if (entered === null) return;
+  const keyword = normalizeKeyword(entered);
+  if (!keyword) {
+    toast("That is not a keyword.");
+    return;
+  }
+  const ok = commit(
+    buildAddKeywordRange(nextCtx(), {
+      assetId: asset.id,
+      range: {
+        id: `range-${crypto.randomUUID().slice(0, 8)}`,
+        keyword,
+        startUs: String(startUs),
+        endUs: String(endUs),
+      },
+    }),
+  );
+  if (ok) toast(`Tagged "${keyword}" over that range.`);
+}
+
+/** Every keyword used by a range on this asset, deduplicated — what the chips
+ * and the filters read. */
+function rangeKeywords(asset: MediaAsset): string[] {
+  return [...new Set((asset.keywordRanges ?? []).map((r) => r.keyword))];
 }
 
 /**
@@ -5101,19 +5488,33 @@ function openRangeEditor(asset: MediaAsset, item: HTMLElement): void {
     browserRanges.delete(asset.id);
     renderMedia();
   });
-  actions.append(apply, clear);
+
+  // Keywording the span happens here rather than in its own editor: the
+  // transient range and the persisted one are the same gesture — "this bit,
+  // right here" — and the sliders are already open and already pointed at it.
+  const keywordIt = document.createElement("button");
+  keywordIt.className = "mini";
+  keywordIt.textContent = "Keyword this range";
+  keywordIt.title = "Tag this part of the shot, saved with the project";
+  keywordIt.addEventListener("click", () => {
+    keywordCurrentRange(asset, Math.round(inUs), Math.round(outUs));
+  });
+  actions.append(apply, clear, keywordIt);
 
   refresh();
   editor.append(readout, inRow, outRow, actions);
   item.appendChild(editor);
 }
 
-/** Every keyword in the project, for the filter list. */
+/** Every keyword in the project, for the filter list. Range keywords are in
+ * here too: the picker lists what the project actually has, and a keyword that
+ * only ever named a range is still one of them. */
 function allKeywords(): string[] {
   const seen = new Set<string>();
   for (const asset of session.getProject()?.assets ?? []) {
     if (removedAssets.has(asset.id)) continue;
     for (const keyword of asset.keywords ?? []) seen.add(keyword);
+    for (const keyword of rangeKeywords(asset)) seen.add(keyword);
   }
   return [...seen].sort();
 }
@@ -5290,6 +5691,67 @@ function renderMedia(): void {
       meta.appendChild(chips);
     }
 
+    // Keyword ranges: the parts of this shot someone has already named.
+    //
+    // Clicking one *loads it as the browser range* rather than filtering by it,
+    // which is the whole point of having tagged it — "the good take" becomes
+    // the next thing added, in one click. Filtering by a range keyword is what
+    // the picker and the search box are for, and both now reach these.
+    let rangeRow: HTMLElement | null = null;
+    if ((asset.keywordRanges ?? []).length > 0) {
+      const ranges = document.createElement("div");
+      ranges.className = "media-ranges";
+      for (const kr of asset.keywordRanges ?? []) {
+        const chip = document.createElement("span");
+        chip.className = "media-range-chip";
+        chip.dataset.rangeId = kr.id;
+        chip.dataset.startUs = kr.startUs;
+        chip.dataset.endUs = kr.endUs;
+
+        const use = document.createElement("button");
+        use.className = "media-range-use";
+        use.textContent = `${kr.keyword} ${formatTime(kr.startUs)}–${formatTime(kr.endUs)}`;
+        // The label truncates in a narrow bin, so the title carries it whole.
+        use.title = `${kr.keyword}  ${formatTime(kr.startUs)}–${formatTime(kr.endUs)} — use this range for the next add`;
+        use.setAttribute(
+          "aria-label",
+          `Use keyword range ${kr.keyword} of ${assetName(asset)}`,
+        );
+        use.addEventListener("click", (event) => {
+          event.stopPropagation();
+          browserRanges.set(asset.id, { inUs: kr.startUs, outUs: kr.endUs });
+          renderMedia();
+          toast(`Range set from "${kr.keyword}".`);
+        });
+
+        const drop = document.createElement("button");
+        drop.className = "media-range-drop";
+        drop.textContent = "✕";
+        drop.title = `Remove the "${kr.keyword}" range`;
+        drop.setAttribute(
+          "aria-label",
+          `Remove keyword range ${kr.keyword} from ${assetName(asset)}`,
+        );
+        drop.addEventListener("click", (event) => {
+          event.stopPropagation();
+          commit(
+            buildRemoveKeywordRange(nextCtx(), {
+              assetId: asset.id,
+              rangeId: kr.id,
+            }),
+          );
+        });
+
+        chip.append(use, drop);
+        ranges.appendChild(chip);
+      }
+      // Appended to the item, not to `meta`: the meta column is about 54px in a
+      // 264px sidebar, which truncates "good take" to "good ta…". The chips get
+      // their own full-width row instead, the same escape the range editor
+      // below already makes.
+      rangeRow = ranges;
+    }
+
     // The row's buttons live in one group: three loose flex children were
     // enough to squeeze the name down to "mot…" in a narrow sidebar.
     const actions = document.createElement("div");
@@ -5341,6 +5803,7 @@ function renderMedia(): void {
     );
     actions.append(tag, remove);
     el.append(thumb, meta, add, actions, rating);
+    if (rangeRow) el.appendChild(rangeRow);
     el.addEventListener("click", () =>
       addAssetToTimeline(
         asset.id,
@@ -5917,9 +6380,14 @@ function syncAudioMonitors(): void {
 
     // A retimed clip plays its source faster or slower; the element's own rate
     // does the resampling, so monitoring matches the exported mixdown (which
-    // resamples the decoded buffer the same way, pitch and all).
-    el.playbackRate =
-      loc.clip.playbackRate.numerator / loc.clip.playbackRate.denominator;
+    // resamples the decoded buffer the same way, pitch and all). A ramped clip
+    // has one rate per segment and the element holds only one, so the rate is
+    // re-read at the playhead each tick and changes as a boundary is crossed.
+    const rate = rateAtClipOffset(
+      loc.clip,
+      BigInt(playback.currentTimeUs) - BigInt(loc.clip.timelineStartUs),
+    );
+    el.playbackRate = rate.numerator / rate.denominator;
 
     // Resync the element clock only when it has drifted (or just started /
     // was seeked); small drift is left alone so playback stays smooth.
@@ -7735,6 +8203,9 @@ function bindEvents(): void {
     mediaSearch = $<HTMLInputElement>("media-search").value;
     renderMedia();
   });
+  $("edit-mode").addEventListener("change", () => {
+    editMode = $<HTMLSelectElement>("edit-mode").value as typeof editMode;
+  });
   $("media-keyword").addEventListener("change", () => {
     mediaKeyword = $<HTMLSelectElement>("media-keyword").value;
     renderMedia();
@@ -8050,30 +8521,21 @@ async function renderAndEncodeAudio(
   for (const clip of plan.audioClips) {
     const buffer = decodedByAsset.get(clip.assetId);
     if (!buffer) continue;
-    const source = offline.createBufferSource();
-    source.buffer = buffer;
-    // Same chain as live monitoring, driven by the same effect stack.
+    // Same chain as live monitoring, driven by the same effect stack. One chain
+    // per clip even when the clip is ramped: gain, pan and the fade curve
+    // belong to the whole clip, and only the source nodes are per segment.
     const chain = buildAudioChain(offline);
     applyAudioEffectsToChain(chain, clip.effects);
     chain.gain.gain.value = 10 ** ((clip.gainDb + makeupGainDb(clip.effects)) / 20);
     chain.pan.pan.value = Math.max(-1, Math.min(1, clip.pan));
-    source.connect(chain.low);
     chain.pan.connect(offline.destination);
 
-    // A retimed clip resamples its source, pitch and all — the same varispeed
-    // the live monitor applies via HTMLMediaElement.playbackRate. Pitch-
-    // preserving time-stretch is a different device and is not implemented.
-    source.playbackRate.value =
-      clip.playbackRate.numerator / clip.playbackRate.denominator;
-
     const startSec = Number(clip.timelineStartUs) / 1_000_000;
-    const offsetSec = Number(clip.sourceInUs) / 1_000_000;
+    // How long the clip occupies the timeline. The fade curve spans this, while
+    // each source node below is started with a *source* duration.
+    const clipDurationSec = Number(clip.timelineDurationUs) / 1_000_000;
     const sourceSpanSec =
       (Number(clip.sourceOutUs) - Number(clip.sourceInUs)) / 1_000_000;
-    // How long the clip occupies the timeline, which is the source span divided
-    // by the rate — `start(when, offset, duration)` takes the *source* duration,
-    // so it gets the span, while the fade curve spans the timeline duration.
-    const clipDurationSec = Number(clip.timelineDurationUs) / 1_000_000;
     if (sourceSpanSec <= 0 || clipDurationSec <= 0) continue;
 
     // Fades ride on top of the clip's static gain as a value curve over the
@@ -8095,9 +8557,28 @@ async function renderAndEncodeAudio(
       chain.gain.gain.setValueCurveAtTime(curve, startSec, clipDurationSec);
     }
 
-    // The third argument is measured in source time, so it is the untimed span
-    // — the rate above decides how much timeline that covers.
-    source.start(startSec, offsetSec, sourceSpanSec);
+    // One source node per speed span — a single node carries a single rate, so
+    // a ramped clip cannot be one node. An unramped clip yields exactly one
+    // span covering the whole thing, which is what this always did.
+    //
+    // A retimed span resamples its source, pitch and all: the same varispeed
+    // the live monitor applies via HTMLMediaElement.playbackRate. Pitch-
+    // preserving time-stretch is a different device and is not implemented.
+    for (const span of clip.spans) {
+      const node = offline.createBufferSource();
+      node.buffer = buffer;
+      node.connect(chain.low);
+      node.playbackRate.value = span.rate.numerator / span.rate.denominator;
+      const spanSourceSec = Number(span.sourceDurationUs) / 1_000_000;
+      if (spanSourceSec <= 0) continue;
+      // The third argument is measured in source time, so it is the untimed
+      // span — the rate above decides how much timeline that covers.
+      node.start(
+        startSec + Number(span.timelineOffsetUs) / 1_000_000,
+        Number(span.sourceOffsetUs) / 1_000_000,
+        spanSourceSec,
+      );
+    }
   }
 
   const rendered = await offline.startRendering();

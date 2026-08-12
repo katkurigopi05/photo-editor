@@ -1,4 +1,9 @@
-import type { Sequence, TimelineClip, Track } from "@director/project-schema";
+import {
+  sourceAtClipOffset,
+  type Sequence,
+  type TimelineClip,
+  type Track,
+} from "@director/project-schema";
 
 /**
  * Resolve which clip is visible on each track at a given timeline time, and the
@@ -53,11 +58,11 @@ export function resolveAtTime(
   for (const track of sequence.tracks) {
     for (const clip of activeClipsOnTrack(track, t)) {
       const offset = t - BigInt(clip.timelineStartUs);
-      // sourceIn + offset * playbackRate (v1 rate is 1/1; applied exactly).
-      const scaled =
-        (offset * BigInt(clip.playbackRate.numerator)) /
-        BigInt(clip.playbackRate.denominator);
-      const sourceTime = BigInt(clip.sourceInUs) + scaled;
+      // One function decides what source instant a clip is showing, so the
+      // scrubber, the renderer and the exporter cannot disagree. It walks a
+      // speed ramp's segments when there is one and applies the constant rate
+      // when there is not — exactly, in both cases.
+      const sourceTime = sourceAtClipOffset(clip, offset);
       result.push({
         trackId: track.id,
         clipId: clip.id,

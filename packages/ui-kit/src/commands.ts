@@ -1,11 +1,16 @@
 import type {
   AddClipCommand,
+  InsertClipCommand,
+  OverwriteClipCommand,
   AddEffectCommand,
   AddKeyframeCommand,
   AddTrackCommand,
   AssetRegisterCommand,
   SetAssetRatingCommand,
   SetAssetKeywordsCommand,
+  AddKeywordRangeCommand,
+  UpdateKeywordRangeCommand,
+  RemoveKeywordRangeCommand,
   CreateSequenceCommand,
   DeleteClipCommand,
   MoveClipCommand,
@@ -15,8 +20,10 @@ import type {
   RemoveKeyframeCommand,
   ReorderEffectsCommand,
   SetClipAudioGainCommand,
+  SetClipBlendModeCommand,
   SetClipAudioPanCommand,
   SetClipSpeedCommand,
+  SetClipSpeedRampCommand,
   AddMarkerCommand,
   UpdateMarkerCommand,
   RemoveMarkerCommand,
@@ -79,6 +86,33 @@ export const buildSetAssetKeywords = (
   ctx: CommandContext,
   payload: SetAssetKeywordsCommand["payload"],
 ): SetAssetKeywordsCommand => envelope(ctx, "asset.set_keywords", payload);
+
+export const buildInsertClip = (
+  ctx: CommandContext,
+  payload: InsertClipCommand["payload"],
+): InsertClipCommand => envelope(ctx, "timeline.insert_clip", payload);
+
+export const buildOverwriteClip = (
+  ctx: CommandContext,
+  payload: OverwriteClipCommand["payload"],
+): OverwriteClipCommand => envelope(ctx, "timeline.overwrite_clip", payload);
+
+export const buildAddKeywordRange = (
+  ctx: CommandContext,
+  payload: AddKeywordRangeCommand["payload"],
+): AddKeywordRangeCommand => envelope(ctx, "asset.add_keyword_range", payload);
+
+export const buildUpdateKeywordRange = (
+  ctx: CommandContext,
+  payload: UpdateKeywordRangeCommand["payload"],
+): UpdateKeywordRangeCommand =>
+  envelope(ctx, "asset.update_keyword_range", payload);
+
+export const buildRemoveKeywordRange = (
+  ctx: CommandContext,
+  payload: RemoveKeywordRangeCommand["payload"],
+): RemoveKeywordRangeCommand =>
+  envelope(ctx, "asset.remove_keyword_range", payload);
 
 export const buildCreateSequence = (
   ctx: CommandContext,
@@ -149,10 +183,22 @@ export const buildSetClipAudioPan = (
 ): SetClipAudioPanCommand =>
   envelope(ctx, "timeline.set_clip_audio_pan", payload);
 
+export const buildSetClipBlendMode = (
+  ctx: CommandContext,
+  payload: SetClipBlendModeCommand["payload"],
+): SetClipBlendModeCommand =>
+  envelope(ctx, "timeline.set_clip_blend_mode", payload);
+
 export const buildSetClipSpeed = (
   ctx: CommandContext,
   payload: SetClipSpeedCommand["payload"],
 ): SetClipSpeedCommand => envelope(ctx, "timeline.set_clip_speed", payload);
+
+export const buildSetClipSpeedRamp = (
+  ctx: CommandContext,
+  payload: SetClipSpeedRampCommand["payload"],
+): SetClipSpeedRampCommand =>
+  envelope(ctx, "timeline.set_clip_speed_ramp", payload);
 
 export const buildAddMarker = (
   ctx: CommandContext,

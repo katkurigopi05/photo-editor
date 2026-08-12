@@ -2,9 +2,11 @@ import {
   animationTrackSchema,
   effectParamsSchemas,
   isAssetCompatibleWithTrack,
+  rampTimelineDurationUs,
   transitionsFitClip,
   type AnimationKeyframe,
   type AnimationTrack,
+  type AssetKeywordRange,
   type AssetRating,
   type ClipMarker,
   type ClipMask,
@@ -211,6 +213,16 @@ export function applyForward(
       return setAssetRating(project, command);
     case "asset.set_keywords":
       return setAssetKeywords(project, command);
+    case "timeline.insert_clip":
+      return insertClip(project, command);
+    case "timeline.overwrite_clip":
+      return overwriteClip(project, command);
+    case "asset.add_keyword_range":
+      return addKeywordRange(project, command);
+    case "asset.update_keyword_range":
+      return updateKeywordRange(project, command);
+    case "asset.remove_keyword_range":
+      return removeKeywordRange(project, command);
     case "timeline.create_sequence":
       return createSequence(project, command);
     case "timeline.add_track":
@@ -235,8 +247,12 @@ export function applyForward(
       return updateClipEffects(project, command);
     case "timeline.set_clip_audio_gain":
       return setClipAudioGain(project, command);
+    case "timeline.set_clip_blend_mode":
+      return setClipBlendMode(project, command);
     case "timeline.set_clip_speed":
       return setClipSpeed(project, command);
+    case "timeline.set_clip_speed_ramp":
+      return setClipSpeedRamp(project, command);
     case "timeline.add_marker":
       return addMarker(project, command);
     case "timeline.update_marker":
@@ -418,6 +434,688 @@ function setAssetKeywords(
         restoreUpdatedAt: prevUpdatedAt,
       },
     },
+  };
+}
+
+// --- three-point editing: insert and overwrite ------------------------------
+//
+// The destination half. `add_clip` refuses to land on an existing clip; these
+// two say what to do about it — push it later, or replace it.
+//
+// Both rearrange an unbounded number of clips, so both take the same route: work
+// out the new clip list for the one track, hand the whole previous list to the
+// inverse, and commit once. That makes a five-clip ripple one undo, which is
+// what it is to the person who did it.
+
+/** The source instant a clip is showing `offset` into its time on the timeline. */
+function sourceAtOffset(clip: TimelineClip, offset: bigint): bigint {
+  return (
+    toBig(clip.sourceInUs) +
+    (offset * BigInt(clip.playbackRate.numerator)) /
+      BigInt(clip.playbackRate.denominator)
+  );
+}
+
+/**
+ * Cut a clip at a timeline instant inside it, returning the two halves.
+ *
+ * Timeline durations are kept exact — the halves sum to the original — and the
+ * *source* cut point absorbs any rounding. At the ordinary rate of 1/1 nothing
+ * rounds at all; at other rates a sub-microsecond source error is the right
+ * thing to accept, because the alternative is a gap or an overlap on the
+ * timeline, which is visible and which every downstream invariant cares about.
+ *
+ * What each half keeps is not "everything": a clip carries things that belong
+ * to one end of it or to one moment in it, and copying those to both halves
+ * would invent edits nobody made.
+ *
+ * - **Transitions belong to an end.** `transitionIn` stays with the left half,
+ *   whose start is still the clip's original start; `transitionOut` stays with
+ *   the right. The new inner edges get neither — a crossfade duplicated onto
+ *   the second half would ramp against a boundary that does not exist, and
+ *   could exceed the shorter half's duration, which `transitionsFitClip`
+ *   forbids everywhere it is checked.
+ * - **Markers belong to a moment.** Their times are clip-local, so each marker
+ *   goes to the half it actually falls in, and the ones on the right are
+ *   rebased onto the new start. Left where they were, they would point past
+ *   the left half's end.
+ * - **Effects, masks and blend mode belong to the picture**, which both halves
+ *   still show, so both keep them.
+ *
+ * Animations are the case this cannot do sensibly, and `splitAnimationError`
+ * refuses rather than guessing.
+ */
+function cutClip(
+  clip: TimelineClip,
+  atUs: bigint,
+  secondHalfId: string,
+): [TimelineClip, TimelineClip] {
+  const start = toBig(clip.timelineStartUs);
+  const offset = atUs - start;
+  const sourceCut = sourceAtOffset(clip, offset);
+  const { markers, transitionIn, transitionOut, ...shared }: TimelineClip =
+    clip;
+
+  const before = (markers ?? []).filter((m) => toBig(m.timeUs) < offset);
+  const after = (markers ?? [])
+    .filter((m) => toBig(m.timeUs) >= offset)
+    .map((m) => ({ ...m, timeUs: (toBig(m.timeUs) - offset).toString() }));
+
+  const left: TimelineClip = {
+    ...shared,
+    timelineDurationUs: offset.toString(),
+    sourceOutUs: sourceCut.toString(),
+    // Absent rather than empty: canonical JSON treats those as different.
+    ...(before.length > 0 ? { markers: before } : {}),
+    ...(transitionIn === undefined ? {} : { transitionIn }),
+  };
+  const right: TimelineClip = {
+    ...shared,
+    id: secondHalfId,
+    timelineStartUs: atUs.toString(),
+    timelineDurationUs: (toBig(clip.timelineDurationUs) - offset).toString(),
+    sourceInUs: sourceCut.toString(),
+    ...(after.length > 0 ? { markers: after } : {}),
+    ...(transitionOut === undefined ? {} : { transitionOut }),
+  };
+  return [left, right];
+}
+
+/**
+ * Refuse to cut or rebase a clip that carries keyframes.
+ *
+ * `trim_clip` already refuses to strand a keyframe past a shortened clip, so
+ * producing exactly that state by another route would be inconsistent — and a
+ * cut is worse than a trim, because the right half's start moves and every
+ * clip-local keyframe time on it would need rebasing onto a timeline the
+ * animation was never authored against.
+ *
+ * Refused rather than guessed: dropping the animation loses work silently, and
+ * splitting it invents an interpolation nobody asked for. A boundary edit does
+ * not cut anything, so this only ever blocks a mid-clip one.
+ */
+function splitAnimationError(
+  clip: TimelineClip,
+  path: Array<string | number>,
+): CommandError | null {
+  if ((clip.animations ?? []).length === 0) return null;
+  return makeError(
+    "OUT_OF_BOUNDS",
+    `clip ${clip.id} is animated, so it cannot be cut in two; move the edit to its edge or remove the animation first`,
+    path,
+    { clipId: clip.id },
+  );
+}
+
+/** Shift a clip along the timeline. */
+function shiftClip(clip: TimelineClip, by: bigint): TimelineClip {
+  return {
+    ...clip,
+    timelineStartUs: (toBig(clip.timelineStartUs) + by).toString(),
+  };
+}
+
+/** A clip trimmed to end at `atUs`, keeping its start. */
+function trimEndTo(clip: TimelineClip, atUs: bigint): TimelineClip {
+  const [left] = cutClip(clip, atUs, clip.id);
+  return left;
+}
+
+/** A clip trimmed to begin at `atUs`, its source advancing with the cut so it
+ * does not repeat frames the overwrite just covered. */
+function trimStartTo(clip: TimelineClip, atUs: bigint): TimelineClip {
+  const [, right] = cutClip(clip, atUs, clip.id);
+  return right;
+}
+
+interface ThreePointPlan {
+  project: Project;
+  sequence: Sequence;
+  track: Track;
+  newClip: TimelineClip;
+  start: bigint;
+  end: bigint;
+}
+
+/** Everything both commands check before either decides what to do with the
+ * clips already there. Identical to `add_clip`'s preamble except that landing
+ * on an existing clip is the point rather than an error. */
+function planThreePointEdit(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.insert_clip" | "timeline.overwrite_clip" }
+  >,
+): { ok: true; plan: ThreePointPlan } | { ok: false; error: CommandError } {
+  const pre = requireLiveProject(projectOrNull, command.baseVersion);
+  if (!pre.ok) return pre;
+  const project = pre.project;
+  const { sequenceId, trackId, clip } = command.payload;
+
+  const sequence = findSequence(project, sequenceId);
+  if (sequence === undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "SEQUENCE_NOT_FOUND",
+        `sequence ${sequenceId} not found`,
+        ["payload", "sequenceId"],
+      ),
+    };
+  }
+  const track = sequence.tracks.find((t) => t.id === trackId);
+  if (track === undefined) {
+    return {
+      ok: false,
+      error: makeError("TRACK_NOT_FOUND", `track ${trackId} not found`, [
+        "payload",
+        "trackId",
+      ]),
+    };
+  }
+  const asset = findAsset(project, clip.assetId);
+  if (asset === undefined) {
+    return {
+      ok: false,
+      error: makeError("ASSET_NOT_FOUND", `asset ${clip.assetId} not found`, [
+        "payload",
+        "clip",
+        "assetId",
+      ]),
+    };
+  }
+  if (allClips(project).some((c) => c.id === clip.id)) {
+    return {
+      ok: false,
+      error: makeError("DUPLICATE_ID", `clip id ${clip.id} already exists`, [
+        "payload",
+        "clip",
+        "id",
+      ]),
+    };
+  }
+  const splitClipId = command.payload.splitClipId;
+  if (splitClipId !== undefined) {
+    if (
+      splitClipId === clip.id ||
+      allClips(project).some((c) => c.id === splitClipId)
+    ) {
+      return {
+        ok: false,
+        error: makeError(
+          "DUPLICATE_ID",
+          `clip id ${splitClipId} already exists`,
+          ["payload", "splitClipId"],
+        ),
+      };
+    }
+  }
+  if (!isAssetCompatibleWithTrack(track.kind, asset.kind)) {
+    return {
+      ok: false,
+      error: makeError(
+        "INCOMPATIBLE_TRACK",
+        `asset kind ${asset.kind} is not compatible with a ${track.kind} track`,
+        ["payload", "trackId"],
+        { trackKind: track.kind, assetKind: asset.kind },
+      ),
+    };
+  }
+  const rangeError = validateSourceRange(
+    asset,
+    clip.sourceInUs,
+    clip.sourceOutUs,
+    ["payload", "clip"],
+  );
+  if (rangeError) return { ok: false, error: rangeError };
+
+  const newClip: TimelineClip = {
+    id: clip.id,
+    assetId: clip.assetId,
+    trackId: track.id,
+    timelineStartUs: clip.timelineStartUs,
+    timelineDurationUs: (
+      toBig(clip.sourceOutUs) - toBig(clip.sourceInUs)
+    ).toString(),
+    sourceInUs: clip.sourceInUs,
+    sourceOutUs: clip.sourceOutUs,
+    playbackRate: { numerator: 1, denominator: 1 },
+    audioGainDb: 0,
+    audioPan: 0,
+    effects: [],
+  };
+  const start = toBig(newClip.timelineStartUs);
+  return {
+    ok: true,
+    plan: {
+      project,
+      sequence,
+      track,
+      newClip,
+      start,
+      end: start + toBig(newClip.timelineDurationUs),
+    },
+  };
+}
+
+/** The error a mid-clip edit gets when the caller did not name the second half. */
+function missingSplitIdError(clipId: string): CommandError {
+  return makeError(
+    "VALIDATION_ERROR",
+    `the edit falls inside clip ${clipId}, which must be cut in two; supply splitClipId to name the second half`,
+    ["payload", "splitClipId"],
+    { clipId },
+  );
+}
+
+/** Commit a rearranged clip list for one track, with the whole previous list as
+ * the inverse. */
+function commitTrackClips(
+  plan: ThreePointPlan,
+  clips: TimelineClip[],
+  createdAt: string,
+): ForwardResult {
+  const { project, sequence, track } = plan;
+  const prevUpdatedAt = project.updatedAt;
+  const nextSequence = replaceTrack(sequence, {
+    ...track,
+    clips: sortClips(clips),
+  });
+  return {
+    ok: true,
+    project: {
+      ...project,
+      sequences: project.sequences.map((s) =>
+        s.id === sequence.id ? nextSequence : s,
+      ),
+      updatedAt: createdAt,
+      currentVersion: project.currentVersion + 1,
+    },
+    inverse: {
+      commandType: "internal.set_track_clips",
+      payload: {
+        sequenceId: sequence.id,
+        trackId: track.id,
+        clips: structuredClone([...track.clips]),
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
+function insertClip(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.insert_clip" }>,
+): ForwardResult {
+  const planned = planThreePointEdit(projectOrNull, command);
+  if (!planned.ok) return planned;
+  const { plan } = planned;
+  const { track, newClip, start } = plan;
+  const shift = toBig(newClip.timelineDurationUs);
+
+  const next: TimelineClip[] = [newClip];
+  for (const clip of track.clips) {
+    const clipStart = toBig(clip.timelineStartUs);
+    const clipEnd = clipStart + toBig(clip.timelineDurationUs);
+    if (clipEnd <= start) {
+      // Entirely before the point: untouched.
+      next.push(clip);
+      continue;
+    }
+    if (clipStart >= start) {
+      // At or after the point: rides the ripple.
+      next.push(shiftClip(clip, shift));
+      continue;
+    }
+    // Straddles the point, so it is cut and only the second half rides.
+    const splitClipId = command.payload.splitClipId;
+    if (splitClipId === undefined) {
+      return { ok: false, error: missingSplitIdError(clip.id) };
+    }
+    const animated = splitAnimationError(clip, [
+      "payload",
+      "clip",
+      "timelineStartUs",
+    ]);
+    if (animated) return { ok: false, error: animated };
+    const [left, right] = cutClip(clip, start, splitClipId);
+    next.push(left, shiftClip(right, shift));
+  }
+  return commitTrackClips(plan, next, command.createdAt);
+}
+
+function overwriteClip(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "timeline.overwrite_clip" }>,
+): ForwardResult {
+  const planned = planThreePointEdit(projectOrNull, command);
+  if (!planned.ok) return planned;
+  const { plan } = planned;
+  const { track, newClip, start, end } = plan;
+
+  const next: TimelineClip[] = [newClip];
+  for (const clip of track.clips) {
+    const clipStart = toBig(clip.timelineStartUs);
+    const clipEnd = clipStart + toBig(clip.timelineDurationUs);
+    if (clipEnd <= start || clipStart >= end) {
+      // Clear of the span on one side or the other.
+      next.push(clip);
+      continue;
+    }
+    const crossesStart = clipStart < start;
+    const crossesEnd = clipEnd > end;
+    if (crossesStart || crossesEnd) {
+      // This clip survives, shortened or re-started — the state trim_clip
+      // refuses to reach with a keyframe left outside. A clip the span covers
+      // entirely is not checked: it is simply deleted, and deleting an animated
+      // clip has always been allowed.
+      const animated = splitAnimationError(clip, ["payload", "clip"]);
+      if (animated) return { ok: false, error: animated };
+    }
+    if (crossesStart && crossesEnd) {
+      // The span falls wholly inside this clip, so it becomes two.
+      const splitClipId = command.payload.splitClipId;
+      if (splitClipId === undefined) {
+        return { ok: false, error: missingSplitIdError(clip.id) };
+      }
+      next.push(trimEndTo(clip, start), {
+        ...trimStartTo(clip, end),
+        id: splitClipId,
+      });
+      continue;
+    }
+    if (crossesStart) {
+      next.push(trimEndTo(clip, start));
+      continue;
+    }
+    if (crossesEnd) {
+      next.push(trimStartTo(clip, end));
+      continue;
+    }
+    // Covered entirely: it goes.
+  }
+  return commitTrackClips(plan, next, command.createdAt);
+}
+
+// --- keyword ranges ---------------------------------------------------------
+//
+// A keyword over part of an asset, in the asset's own coordinate space. Two
+// rules the schema cannot enforce, because neither is visible from inside a
+// single payload:
+//
+//   1. a range must fit the media it describes, which needs the asset's
+//      duration;
+//   2. an *update* carrying one bound must still leave a forward range, which
+//      needs the bound it did not carry.
+//
+// Both live here, alongside OVERLAP and the other cross-field invariants.
+
+/** Ranges are stored sorted — by start, then keyword, then id — so two orders
+ * of the same set are one project. An empty list removes the member. */
+function withAssetKeywordRanges(
+  asset: MediaAsset,
+  ranges: AssetKeywordRange[] | null,
+): MediaAsset {
+  if (ranges === null || ranges.length === 0) {
+    const { keywordRanges: _dropped, ...rest } = asset;
+    return rest as MediaAsset;
+  }
+  const ordered = [...ranges].sort((a, b) => {
+    const left = toBig(a.startUs);
+    const right = toBig(b.startUs);
+    if (left !== right) return left < right ? -1 : 1;
+    if (a.keyword !== b.keyword) return a.keyword < b.keyword ? -1 : 1;
+    return compareIds(a.id, b.id);
+  });
+  return { ...asset, keywordRanges: ordered };
+}
+
+function keywordRangeInverse(
+  assetId: string,
+  asset: MediaAsset,
+  restoreUpdatedAt: string,
+): ProjectOperation["inverse"] {
+  return {
+    commandType: "internal.set_asset_keyword_ranges",
+    payload: {
+      assetId,
+      keywordRanges: asset.keywordRanges
+        ? structuredClone(asset.keywordRanges)
+        : null,
+      restoreUpdatedAt,
+    },
+  };
+}
+
+/**
+ * A range has to fit inside the media. Anything past the end would be
+ * unreachable, and would survive every trim as a fact about footage that does
+ * not exist.
+ *
+ * Media with no duration — a still — has nothing to range over at all, so it is
+ * refused rather than treated as zero-length, which would produce the same
+ * error with a far more confusing message.
+ */
+function keywordRangeBoundsError(
+  asset: MediaAsset,
+  startUs: string,
+  endUs: string,
+  path: Array<string | number>,
+): CommandError | null {
+  const durationUs = asset.metadata.durationUs;
+  if (durationUs === undefined) {
+    return makeError(
+      "OUT_OF_BOUNDS",
+      `asset ${asset.id} has no duration to range over`,
+      path,
+    );
+  }
+  // End is exclusive, so ending exactly at the duration is the whole shot.
+  if (toBig(endUs) > toBig(durationUs)) {
+    return makeError(
+      "OUT_OF_BOUNDS",
+      `range ${startUs}–${endUs} falls outside the asset's ${durationUs} duration`,
+      path,
+    );
+  }
+  return null;
+}
+
+/** Resolve the asset a keyword-range command names, or the error saying it is
+ * not there. */
+function resolveAssetForRange(
+  projectOrNull: Project | null,
+  baseVersion: number,
+  assetId: string,
+):
+  | { ok: true; project: Project; asset: MediaAsset }
+  | { ok: false; error: CommandError } {
+  const pre = requireLiveProject(projectOrNull, baseVersion);
+  if (!pre.ok) return pre;
+  const asset = findAsset(pre.project, assetId);
+  if (asset === undefined) {
+    return {
+      ok: false,
+      error: makeError("ASSET_NOT_FOUND", `asset ${assetId} not found`, [
+        "payload",
+        "assetId",
+      ]),
+    };
+  }
+  return { ok: true, project: pre.project, asset };
+}
+
+/** Commit a new range list onto one asset, bumping version and `updatedAt`. */
+function commitKeywordRanges(
+  project: Project,
+  assetId: string,
+  ranges: AssetKeywordRange[],
+  createdAt: string,
+): Project {
+  return {
+    ...project,
+    assets: project.assets.map((candidate) =>
+      candidate.id === assetId
+        ? withAssetKeywordRanges(candidate, ranges)
+        : candidate,
+    ),
+    updatedAt: createdAt,
+    currentVersion: project.currentVersion + 1,
+  };
+}
+
+function addKeywordRange(
+  projectOrNull: Project | null,
+  command: Extract<ProjectCommand, { commandType: "asset.add_keyword_range" }>,
+): ForwardResult {
+  const { assetId, range } = command.payload;
+  const resolved = resolveAssetForRange(
+    projectOrNull,
+    command.baseVersion,
+    assetId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project, asset } = resolved;
+
+  const existing = asset.keywordRanges ?? [];
+  if (existing.some((r) => r.id === range.id)) {
+    return {
+      ok: false,
+      error: makeError(
+        "DUPLICATE_ID",
+        `keyword range ${range.id} already exists`,
+        ["payload", "range", "id"],
+      ),
+    };
+  }
+  const boundsError = keywordRangeBoundsError(
+    asset,
+    range.startUs,
+    range.endUs,
+    ["payload", "range"],
+  );
+  if (boundsError) return { ok: false, error: boundsError };
+
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: commitKeywordRanges(
+      project,
+      assetId,
+      [...existing, structuredClone(range)],
+      command.createdAt,
+    ),
+    inverse: keywordRangeInverse(assetId, asset, prevUpdatedAt),
+  };
+}
+
+function updateKeywordRange(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "asset.update_keyword_range" }
+  >,
+): ForwardResult {
+  const { assetId, rangeId, keyword, startUs, endUs } = command.payload;
+  const resolved = resolveAssetForRange(
+    projectOrNull,
+    command.baseVersion,
+    assetId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project, asset } = resolved;
+
+  const existing = asset.keywordRanges ?? [];
+  const target = existing.find((r) => r.id === rangeId);
+  if (target === undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "KEYWORD_RANGE_NOT_FOUND",
+        `keyword range ${rangeId} not found`,
+        ["payload", "rangeId"],
+      ),
+    };
+  }
+
+  const updated: AssetKeywordRange = {
+    ...target,
+    ...(keyword === undefined ? {} : { keyword }),
+    ...(startUs === undefined ? {} : { startUs }),
+    ...(endUs === undefined ? {} : { endUs }),
+  };
+
+  // The merged range, not the payload: a patch carrying only `endUs` is judged
+  // against the `startUs` already stored.
+  if (toBig(updated.endUs) <= toBig(updated.startUs)) {
+    return {
+      ok: false,
+      error: makeError(
+        "INVALID_TIME_RANGE",
+        `range would end at ${updated.endUs}, at or before its start ${updated.startUs}`,
+        ["payload", "endUs"],
+      ),
+    };
+  }
+  const boundsError = keywordRangeBoundsError(
+    asset,
+    updated.startUs,
+    updated.endUs,
+    ["payload"],
+  );
+  if (boundsError) return { ok: false, error: boundsError };
+
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: commitKeywordRanges(
+      project,
+      assetId,
+      existing.map((r) => (r.id === rangeId ? updated : r)),
+      command.createdAt,
+    ),
+    inverse: keywordRangeInverse(assetId, asset, prevUpdatedAt),
+  };
+}
+
+function removeKeywordRange(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "asset.remove_keyword_range" }
+  >,
+): ForwardResult {
+  const { assetId, rangeId } = command.payload;
+  const resolved = resolveAssetForRange(
+    projectOrNull,
+    command.baseVersion,
+    assetId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project, asset } = resolved;
+
+  const existing = asset.keywordRanges ?? [];
+  if (!existing.some((r) => r.id === rangeId)) {
+    return {
+      ok: false,
+      error: makeError(
+        "KEYWORD_RANGE_NOT_FOUND",
+        `keyword range ${rangeId} not found`,
+        ["payload", "rangeId"],
+      ),
+    };
+  }
+
+  const prevUpdatedAt = project.updatedAt;
+  return {
+    ok: true,
+    project: commitKeywordRanges(
+      project,
+      assetId,
+      existing.filter((r) => r.id !== rangeId),
+      command.createdAt,
+    ),
+    inverse: keywordRangeInverse(assetId, asset, prevUpdatedAt),
   };
 }
 
@@ -1931,6 +2629,61 @@ function previousTransition(
   return current === undefined ? null : structuredClone(current);
 }
 
+// --- compositing reducers ---------------------------------------------------
+
+/**
+ * Set how a clip combines with what is beneath it.
+ *
+ * "normal" removes the member rather than storing it, because that is what an
+ * untouched clip looks like: storing it would make a clip set to normal and a
+ * clip never touched two different projects that render identically, and the
+ * whole point of canonical state is that those cannot exist.
+ */
+function setClipBlendMode(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.set_clip_blend_mode" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, blendMode } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+
+  const prevUpdatedAt = project.updatedAt;
+  const prevMode = location.clip.blendMode ?? null;
+  const newClip: TimelineClip = { ...location.clip };
+  if (blendMode === "normal") delete newClip.blendMode;
+  else newClip.blendMode = blendMode;
+
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_blend_mode",
+      payload: {
+        sequenceId,
+        clipId,
+        blendMode: prevMode,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
 // --- audio reducers ---------------------------------------------------------
 
 function setClipAudioGain(
@@ -2027,6 +2780,154 @@ function setClipAudioPan(
  * previous duration verbatim rather than recomputing it: recomputing would
  * repeat the truncation and undo would not restore the original bytes.
  */
+/**
+ * The two ways a retime can be refused, shared by the constant-rate command and
+ * the ramp: a clip that grows can collide with the one after it, and a clip
+ * that shrinks can strand a keyframe past its own end — the rule trimming
+ * already enforces.
+ */
+function retimeError(
+  clip: TimelineClip,
+  track: Track,
+  newDuration: bigint,
+  path: Array<string | number>,
+): CommandError | null {
+  const start = toBig(clip.timelineStartUs);
+  if (newDuration > toBig(clip.timelineDurationUs)) {
+    const conflict = findOverlapConflict(
+      track.clips,
+      start,
+      start + newDuration,
+      clip.transitionIn,
+      clip.id,
+    );
+    if (conflict) {
+      return makeError(
+        "OVERLAP",
+        `the retimed clip overlaps existing clip ${conflict.id}`,
+        path,
+        { conflictClipId: conflict.id },
+      );
+    }
+  }
+  const stranded = clip.animations
+    ?.flatMap((t) => t.keyframes)
+    .find((keyframe) => toBig(keyframe.timeUs) > newDuration);
+  if (stranded !== undefined) {
+    return makeError(
+      "OUT_OF_BOUNDS",
+      `retimed duration ${newDuration} would strand keyframe ${stranded.id} at ${stranded.timeUs}`,
+      path,
+      {
+        keyframeId: stranded.id,
+        keyframeTimeUs: stranded.timeUs,
+        durationUs: newDuration.toString(),
+      },
+    );
+  }
+  return null;
+}
+
+/**
+ * Set or clear a clip's speed ramp.
+ *
+ * The duration becomes the sum of each segment's own stretch, so a ramp resizes
+ * the clip exactly as a constant retime does, and is refused for the same two
+ * reasons.
+ *
+ * Setting a ramp pins `playbackRate` back to 1/1. The ramp is the complete
+ * description of the clip's speed, and leaving a non-unit constant rate beside
+ * it would silently scale every segment — as well as giving one behaviour two
+ * spellings, which canonical JSON cannot tell apart from two different projects.
+ */
+function setClipSpeedRamp(
+  projectOrNull: Project | null,
+  command: Extract<
+    ProjectCommand,
+    { commandType: "timeline.set_clip_speed_ramp" }
+  >,
+): ForwardResult {
+  const { sequenceId, clipId, ramp } = command.payload;
+  const resolved = resolveClip(
+    projectOrNull,
+    command.baseVersion,
+    sequenceId,
+    clipId,
+  );
+  if (!resolved.ok) return resolved;
+  const { project } = resolved;
+  const { sequence, location } = resolved.resolved;
+  const clip = location.clip;
+
+  const sourceSpan = toBig(clip.sourceOutUs) - toBig(clip.sourceInUs);
+  if (ramp !== null) {
+    // Every boundary has to name a source instant the clip actually owns. One
+    // at or past the end would describe no frames at all.
+    const past = ramp.find((s) => toBig(s.sourceOffsetUs) >= sourceSpan);
+    if (past !== undefined) {
+      return {
+        ok: false,
+        error: makeError(
+          "OUT_OF_BOUNDS",
+          `segment ${past.id} starts at ${past.sourceOffsetUs}, at or past the clip's ${sourceSpan} of source`,
+          ["payload", "ramp"],
+          { segmentId: past.id, sourceSpanUs: sourceSpan.toString() },
+        ),
+      };
+    }
+  }
+
+  const newDuration =
+    ramp === null
+      ? sourceSpan
+      : toBig(rampTimelineDurationUs(ramp, clip.sourceInUs, clip.sourceOutUs));
+  if (newDuration <= 0n) {
+    return {
+      ok: false,
+      error: makeError(
+        "INVALID_TIME_RANGE",
+        "the ramped clip would have no duration",
+        ["payload", "ramp"],
+      ),
+    };
+  }
+  const refusal = retimeError(clip, location.track, newDuration, [
+    "payload",
+    "ramp",
+  ]);
+  if (refusal) return { ok: false, error: refusal };
+
+  const prevUpdatedAt = project.updatedAt;
+  const { speedRamp: _dropped, ...rest } = clip;
+  const newClip: TimelineClip = {
+    ...rest,
+    playbackRate: { numerator: 1, denominator: 1 },
+    timelineDurationUs: newDuration.toString(),
+    ...(ramp === null ? {} : { speedRamp: structuredClone(ramp) }),
+  };
+  return {
+    ok: true,
+    project: commitClipChange(
+      project,
+      sequence,
+      location.track,
+      newClip,
+      command.createdAt,
+    ),
+    inverse: {
+      commandType: "internal.set_clip_speed_ramp",
+      payload: {
+        sequenceId,
+        clipId,
+        speedRamp: clip.speedRamp ? structuredClone(clip.speedRamp) : null,
+        playbackRate: clip.playbackRate,
+        timelineDurationUs: clip.timelineDurationUs,
+        restoreUpdatedAt: prevUpdatedAt,
+      },
+    },
+  };
+}
+
 function setClipSpeed(
   projectOrNull: Project | null,
   command: Extract<ProjectCommand, { commandType: "timeline.set_clip_speed" }>,
@@ -2042,6 +2943,21 @@ function setClipSpeed(
   const { project } = resolved;
   const { sequence, location } = resolved.resolved;
   const clip = location.clip;
+
+  // A ramp and a constant rate are two descriptions of one clip's speed, and
+  // only one may be live. Refused rather than quietly discarding the ramp:
+  // clearing it is a command of its own, and saying so beats losing work the
+  // person cannot see they have lost.
+  if (clip.speedRamp !== undefined) {
+    return {
+      ok: false,
+      error: makeError(
+        "VALIDATION_ERROR",
+        `clip ${clipId} has a speed ramp; clear it with set_clip_speed_ramp before setting a constant rate`,
+        ["payload", "playbackRate"],
+      ),
+    };
+  }
 
   const sourceSpan = toBig(clip.sourceOutUs) - toBig(clip.sourceInUs);
   const newDuration =
@@ -2671,6 +3587,40 @@ export function applyInverse(
         updatedAt: restoreUpdatedAt,
       };
     }
+    case "internal.set_track_clips": {
+      const p = requireProject(project);
+      const { sequenceId, trackId, clips, restoreUpdatedAt } = inverse.payload;
+      const sequence = findSequence(p, sequenceId);
+      if (sequence === undefined) {
+        throw new Error(`inverse references missing sequence ${sequenceId}`);
+      }
+      const track = sequence.tracks.find((t) => t.id === trackId);
+      if (track === undefined) {
+        throw new Error(`inverse references missing track ${trackId}`);
+      }
+      return {
+        ...p,
+        sequences: p.sequences.map((s) =>
+          s.id === sequenceId
+            ? replaceTrack(s, { ...track, clips: structuredClone([...clips]) })
+            : s,
+        ),
+        updatedAt: restoreUpdatedAt,
+      };
+    }
+    case "internal.set_asset_keyword_ranges": {
+      const p = requireProject(project);
+      const { assetId, keywordRanges, restoreUpdatedAt } = inverse.payload;
+      return {
+        ...p,
+        assets: p.assets.map((asset) =>
+          asset.id === assetId
+            ? withAssetKeywordRanges(asset, keywordRanges)
+            : asset,
+        ),
+        updatedAt: restoreUpdatedAt,
+      };
+    }
     case "internal.set_asset_rating": {
       const p = requireProject(project);
       const asset = findAsset(p, inverse.payload.assetId);
@@ -2866,6 +3816,18 @@ export function applyInverse(
         effects: structuredClone(effects),
       }));
     }
+    case "internal.set_clip_blend_mode": {
+      const { sequenceId, clipId, blendMode, restoreUpdatedAt } =
+        inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => {
+        const restored = { ...clip };
+        // `null` is the absent member, not "normal" — undo has to put the
+        // project back byte-for-byte, not merely back to the same picture.
+        if (blendMode === null) delete restored.blendMode;
+        else restored.blendMode = blendMode;
+        return restored;
+      });
+    }
     case "internal.set_clip_audio_gain": {
       const { sequenceId, clipId, gainDb, restoreUpdatedAt } = inverse.payload;
       return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => ({
@@ -2879,6 +3841,30 @@ export function applyInverse(
         ...clip,
         audioPan: pan,
       }));
+    }
+    case "internal.set_clip_speed_ramp": {
+      const {
+        sequenceId,
+        clipId,
+        speedRamp,
+        playbackRate,
+        timelineDurationUs,
+        restoreUpdatedAt,
+      } = inverse.payload;
+      return mapClip(project, sequenceId, clipId, restoreUpdatedAt, (clip) => {
+        // Dropped and re-added rather than assigned: restoring "there was no
+        // ramp" has to remove the member, which is a different project from one
+        // carrying an empty one.
+        const { speedRamp: _dropped, ...rest } = clip;
+        return {
+          ...rest,
+          playbackRate,
+          timelineDurationUs,
+          ...(speedRamp === null
+            ? {}
+            : { speedRamp: structuredClone(speedRamp) }),
+        } as TimelineClip;
+      });
     }
     case "internal.set_clip_speed": {
       const {

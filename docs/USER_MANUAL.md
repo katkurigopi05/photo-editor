@@ -76,6 +76,10 @@ when the system asks for reduced motion.
   renamed file still matches.
 - Unsaved work is snapshotted every 15 seconds; if the tab closes unexpectedly,
   the next start offers to restore it.
+- Blend mode (Inspector) decides how a clip combines with what is beneath it:
+  Multiply darkens, Screen brightens, Overlay does both from the midpoint, and
+  the rest of the standard modes are there too. Earlier tracks draw on top, so
+  the mode applies to the clip above.
 - The level meter beside the transport shows peak and RMS per channel while the
   timeline plays. The red light latches when audio clips; ⟲ clears it.
 - Scopes (Inspector, top) measure the picture: Histogram for levels, Waveform for
@@ -91,6 +95,13 @@ when the system asks for reduced motion.
 - Choose part of a video or audio item before adding it: the ⟦⟧ button opens In
   and Out sliders, and the chosen span is what lands on the timeline. Whole clip
   clears it. The choice lasts for the session and is not saved in the project.
+- Keyword a *part* of a shot: with the In and Out sliders set, press Keyword this
+  range and name it. The tagged span appears as a chip under the item; clicking
+  the chip loads that span back as the range to add, so "the good take" becomes
+  the next thing you place in one click, and ✕ removes it. Unlike the In/Out
+  choice above, keyword ranges are saved with the project and undo like any other
+  edit. Search and the keyword filter both find them, so a keyword that only ever
+  named a range still turns up.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
@@ -107,6 +118,11 @@ when the system asks for reduced motion.
   Luminance range, or Colour range mask under Masks, then pick it in an
   effect's Mask control. Several effects can share one mask.
 - Clip speed (0.25×–4×) under Speed in the Inspector, for any clip.
+- Speed ramps: a clip can change speed partway through. Under Speed, move the
+  playhead to the moment the action should change and press ＋ Speed change at
+  playhead; the new section starts at 0.5× and each section has its own rate
+  picker. ✕ removes a section and Clear ramp returns the clip to a single rate.
+  The speed steps between sections rather than easing between them.
 - Visual clips can animate Position X, Position Y, Scale, Rotation, and Opacity.
 - Easing choices: linear, hold, ease-in, ease-out, and ease-in-out.
 - Crossfade blends with content underneath; dip ramps against a selected color.
@@ -226,6 +242,18 @@ Features:
 - Edit Current Frame opens Brush, Clone, Magic Wand, and other raster tools.
 - Clip speed from 0.25× to 4×. Retiming keeps the same frames and spreads them
   over more or less timeline; later clips ripple to make room or close the gap.
+- Speed ramps: one clip can run at several speeds. Add a speed change at the
+  playhead under Speed, then set each section's rate — full speed into the
+  action, quarter speed across it, full speed out. The clip resizes to the sum of
+  its sections and later clips ripple, exactly as a single speed change does, and
+  the whole ramp is one Undo. Audio is resampled with the picture, so a slowed
+  section drops in pitch.
+- Add as (timeline toolbar) decides where media from the bin lands:
+  **Append** puts it after the last clip on the track, **Insert** puts it at the
+  playhead and pushes everything after it later, and **Overwrite** puts it at the
+  playhead and replaces what it covers. Insert and Overwrite both cut a clip in
+  two if the playhead is in the middle of one, and each is a single Undo however
+  many clips it moved. Only the target track ripples; other tracks stay put.
 - Per-clip gain from −60 to +12 dB and stereo pan from left to right.
 - Audio effects on any clip that carries sound: Fade In / Out, EQ (low, mid,
   high in dB), and Compressor (threshold, ratio, attack, release, makeup).
@@ -243,15 +271,19 @@ Example — make a stylized short video:
 2. Preview with Play or Space and move the playhead with the seek control.
 3. Select a clip and use Split, Delete, or Ripple Delete to remove unwanted
    material. Drag clip edges to trim, and drag clips to reorder them.
-4. Apply Cinematic, then tune its effects in the Inspector.
-5. Apply Pan Left or Drift under Auto Motion.
-6. Add crossfade or dip transitions and adjust audio Gain/Pan.
-7. Under Speed, pick a clip speed between 0.25× and 4×.
-8. Under Audio, add Fade In / Out, EQ, or Compressor to the selected clip.
+4. To drop a shot into the middle of the cut, set Add as to Insert and click the
+   bin item at the playhead; choose Overwrite instead to replace what is there
+   rather than pushing it later.
+5. Apply Cinematic, then tune its effects in the Inspector.
+6. Apply Pan Left or Drift under Auto Motion.
+7. Add crossfade or dip transitions and adjust audio Gain/Pan.
+8. Under Speed, pick a clip speed between 0.25× and 4×, or add a speed change
+   at the playhead to ramp one clip through several speeds.
+9. Under Audio, add Fade In / Out, EQ, or Compressor to the selected clip.
    Slide two audio clips over each other for an automatic crossfade.
-9. Export: choose a resolution (4K, 1440p, 1080p, 720p, 480p, or Custom), a
-   frame rate, a bitrate, and audio settings, then start. Chromium asks where
-   to save and writes the file as it encodes.
+10. Export: choose a resolution (4K, 1440p, 1080p, 720p, 480p, or Custom), a
+    frame rate, a bitrate, and audio settings, then start. Chromium asks where
+    to save and writes the file as it encodes.
 
 MP4 export requires `VideoEncoder`, `AudioEncoder`, and `VideoFrame`. Use a
 recent Chromium browser in a permitted local or secure context.
@@ -387,6 +419,15 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-11:** Added speed ramps — one clip can change speed partway through,
+  set from ＋ Speed change at playhead under Speed. The speed steps between
+  sections rather than easing between them.
+- **2026-08-11:** Added three-point editing — the Add as control in the timeline
+  toolbar chooses whether media from the bin appends, inserts (pushing later
+  clips along) or overwrites what it lands on.
+- **2026-08-10:** Added keyword ranges — tag part of a shot from the In/Out
+  editor, then click the chip to load that span back as the range to add. Unlike
+  the In/Out choice itself, these are saved with the project.
 - **2026-08-08:** Projects can be saved and reopened, with media relinking and a
   15-second crash-recovery snapshot.
 - **2026-08-08:** Added browser ranges — pick In and Out on a media item and

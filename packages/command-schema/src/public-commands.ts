@@ -4,6 +4,8 @@ import {
   audioPanSchema,
   assetRatingSchema,
   assetKeywordsSchema,
+  assetKeywordRangeSchema,
+  keywordSchema,
   animationKeyframeSchema,
   animationPropertySchema,
   animationTracksSchema,
@@ -19,10 +21,12 @@ import {
   timelineClipSchema,
   trackSchema,
   clipPlaybackRateSchema,
+  speedRampSchema,
   clipMaskSchema,
   maskContributionSchema,
   clipMarkerSchema,
   markerKindSchema,
+  blendModeSchema,
 } from "@director/project-schema";
 import { envelopeBaseShape } from "./envelope.js";
 
@@ -102,6 +106,57 @@ export const setAssetKeywordsCommandSchema = command(
   setAssetKeywordsPayloadSchema,
 );
 
+// --- asset keyword ranges ---------------------------------------------------
+//
+// Add/update/remove rather than the whole-list shape `asset.set_keywords` uses.
+// The list here is a set of objects a person builds up one at a time over a long
+// take, not a handful of strings replaced in one gesture, so naming the range
+// keeps the operation log readable — "moved the good take" instead of "set
+// eleven ranges". The inverse still carries the whole list, which is what keeps
+// undo exact.
+
+export const addKeywordRangePayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    range: assetKeywordRangeSchema,
+  })
+  .strict();
+
+export const addKeywordRangeCommandSchema = command(
+  "asset.add_keyword_range",
+  addKeywordRangePayloadSchema,
+);
+
+/** Every field but the id is optional: this is a patch. The reducer checks the
+ * *merged* range, since a payload carrying only one bound cannot be judged on
+ * its own. */
+export const updateKeywordRangePayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    rangeId: z.string().min(1),
+    keyword: keywordSchema.optional(),
+    startUs: microsecondStringSchema.optional(),
+    endUs: microsecondStringSchema.optional(),
+  })
+  .strict();
+
+export const updateKeywordRangeCommandSchema = command(
+  "asset.update_keyword_range",
+  updateKeywordRangePayloadSchema,
+);
+
+export const removeKeywordRangePayloadSchema = z
+  .object({
+    assetId: z.string().min(1),
+    rangeId: z.string().min(1),
+  })
+  .strict();
+
+export const removeKeywordRangeCommandSchema = command(
+  "asset.remove_keyword_range",
+  removeKeywordRangePayloadSchema,
+);
+
 // --- timeline.create_sequence ----------------------------------------------
 
 export const sequenceInputSchema = sequenceSchema.omit({ tracks: true });
@@ -163,6 +218,56 @@ export const addClipPayloadSchema = z
 export const addClipCommandSchema = command(
   "timeline.add_clip",
   addClipPayloadSchema,
+);
+
+// --- three-point editing: insert and overwrite ------------------------------
+//
+// `add_clip` places a clip where nothing is, and refuses with OVERLAP when
+// something is. These two say what to do about the something: insert pushes it
+// later, overwrite replaces it. Together with the browser range — which is the
+// source half — they are three-point editing: source in, source out and a
+// destination, with the fourth point derived.
+//
+// One command each rather than a UI-composed run of move/trim/delete, because
+// rippling five clips has to be *one* undo. The inverse restores the whole
+// track for the same reason masks and markers carry their whole list: exact
+// undo of an arbitrary rearrangement, without a reconstruction rule per case.
+//
+// `splitClipId` names the second half when the edit lands mid-clip and that
+// clip has to be cut in two. It is supplied rather than generated because
+// reducers never invent identity — the same rule the rest of the engine keeps.
+// When no split is needed it is ignored; when one is needed and it is absent,
+// the command is refused rather than guessing.
+
+const threePointPayloadShape = {
+  sequenceId: z.string().min(1),
+  trackId: z.string().min(1),
+  clip: clipInputSchema,
+  splitClipId: z.string().min(1).optional(),
+};
+
+/** Place a clip at its `timelineStartUs`, pushing everything at or after that
+ * point later by the clip's duration. Only on the clip's own track: rippling
+ * every track is the magnetic timeline, which is a separate decision. */
+export const insertClipPayloadSchema = z
+  .object(threePointPayloadShape)
+  .strict();
+
+export const insertClipCommandSchema = command(
+  "timeline.insert_clip",
+  insertClipPayloadSchema,
+);
+
+/** Place a clip at its `timelineStartUs`, replacing whatever the span covers:
+ * clips inside it go, clips across either edge are trimmed back, and a clip
+ * spanning the whole span is cut in two around it. */
+export const overwriteClipPayloadSchema = z
+  .object(threePointPayloadShape)
+  .strict();
+
+export const overwriteClipCommandSchema = command(
+  "timeline.overwrite_clip",
+  overwriteClipPayloadSchema,
 );
 
 // --- timeline.move_clip -----------------------------------------------------
@@ -305,6 +410,21 @@ export const setClipAudioGainPayloadSchema = z
 export const setClipAudioGainCommandSchema = command(
   "timeline.set_clip_audio_gain",
   setClipAudioGainPayloadSchema,
+);
+
+// --- timeline.set_clip_blend_mode -------------------------------------------
+
+export const setClipBlendModePayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    blendMode: blendModeSchema,
+  })
+  .strict();
+
+export const setClipBlendModeCommandSchema = command(
+  "timeline.set_clip_blend_mode",
+  setClipBlendModePayloadSchema,
 );
 
 // --- timeline.set_clip_audio_pan --------------------------------------------
@@ -516,6 +636,27 @@ export const updateClipAnimationsCommandSchema = command(
 
 /** One command sets or clears either end's transition: `null` removes it, so
  * add/replace/remove share a single validated shape and a single inverse. */
+/**
+ * Set or clear a clip's speed ramp. `null` clears it.
+ *
+ * Whole-ramp rather than per-segment commands: a ramp is a handful of segments
+ * that only make sense together — moving one boundary changes the timeline
+ * position of every segment after it — so one command carrying the whole thing
+ * makes the inverse exact and one undo match one gesture.
+ */
+export const setClipSpeedRampPayloadSchema = z
+  .object({
+    sequenceId: z.string().min(1),
+    clipId: z.string().min(1),
+    ramp: speedRampSchema.nullable(),
+  })
+  .strict();
+
+export const setClipSpeedRampCommandSchema = command(
+  "timeline.set_clip_speed_ramp",
+  setClipSpeedRampPayloadSchema,
+);
+
 export const setClipTransitionPayloadSchema = z
   .object({
     sequenceId: z.string().min(1),
@@ -537,9 +678,14 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   assetRegisterCommandSchema,
   setAssetRatingCommandSchema,
   setAssetKeywordsCommandSchema,
+  addKeywordRangeCommandSchema,
+  updateKeywordRangeCommandSchema,
+  removeKeywordRangeCommandSchema,
   createSequenceCommandSchema,
   addTrackCommandSchema,
   addClipCommandSchema,
+  insertClipCommandSchema,
+  overwriteClipCommandSchema,
   moveClipCommandSchema,
   trimClipCommandSchema,
   deleteClipCommandSchema,
@@ -549,8 +695,10 @@ export const projectCommandSchema = z.discriminatedUnion("commandType", [
   reorderEffectsCommandSchema,
   updateClipEffectsCommandSchema,
   setClipAudioGainCommandSchema,
+  setClipBlendModeCommandSchema,
   setClipAudioPanCommandSchema,
   setClipSpeedCommandSchema,
+  setClipSpeedRampCommandSchema,
   addMarkerCommandSchema,
   updateMarkerCommandSchema,
   removeMarkerCommandSchema,
@@ -572,9 +720,20 @@ export type SetAssetRatingCommand = z.infer<typeof setAssetRatingCommandSchema>;
 export type SetAssetKeywordsCommand = z.infer<
   typeof setAssetKeywordsCommandSchema
 >;
+export type AddKeywordRangeCommand = z.infer<
+  typeof addKeywordRangeCommandSchema
+>;
+export type UpdateKeywordRangeCommand = z.infer<
+  typeof updateKeywordRangeCommandSchema
+>;
+export type RemoveKeywordRangeCommand = z.infer<
+  typeof removeKeywordRangeCommandSchema
+>;
 export type CreateSequenceCommand = z.infer<typeof createSequenceCommandSchema>;
 export type AddTrackCommand = z.infer<typeof addTrackCommandSchema>;
 export type AddClipCommand = z.infer<typeof addClipCommandSchema>;
+export type InsertClipCommand = z.infer<typeof insertClipCommandSchema>;
+export type OverwriteClipCommand = z.infer<typeof overwriteClipCommandSchema>;
 export type MoveClipCommand = z.infer<typeof moveClipCommandSchema>;
 export type TrimClipCommand = z.infer<typeof trimClipCommandSchema>;
 export type DeleteClipCommand = z.infer<typeof deleteClipCommandSchema>;
@@ -590,10 +749,16 @@ export type UpdateClipEffectsCommand = z.infer<
 export type SetClipAudioGainCommand = z.infer<
   typeof setClipAudioGainCommandSchema
 >;
+export type SetClipBlendModeCommand = z.infer<
+  typeof setClipBlendModeCommandSchema
+>;
 export type SetClipAudioPanCommand = z.infer<
   typeof setClipAudioPanCommandSchema
 >;
 export type SetClipSpeedCommand = z.infer<typeof setClipSpeedCommandSchema>;
+export type SetClipSpeedRampCommand = z.infer<
+  typeof setClipSpeedRampCommandSchema
+>;
 export type AddMarkerCommand = z.infer<typeof addMarkerCommandSchema>;
 export type UpdateMarkerCommand = z.infer<typeof updateMarkerCommandSchema>;
 export type RemoveMarkerCommand = z.infer<typeof removeMarkerCommandSchema>;
@@ -618,9 +783,14 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "asset.register",
   "asset.set_rating",
   "asset.set_keywords",
+  "asset.add_keyword_range",
+  "asset.update_keyword_range",
+  "asset.remove_keyword_range",
   "timeline.create_sequence",
   "timeline.add_track",
   "timeline.add_clip",
+  "timeline.insert_clip",
+  "timeline.overwrite_clip",
   "timeline.move_clip",
   "timeline.trim_clip",
   "timeline.delete_clip",
@@ -631,7 +801,9 @@ export const PUBLIC_COMMAND_TYPES: readonly PublicCommandType[] = [
   "timeline.update_clip_effects",
   "timeline.set_clip_audio_gain",
   "timeline.set_clip_audio_pan",
+  "timeline.set_clip_blend_mode",
   "timeline.set_clip_speed",
+  "timeline.set_clip_speed_ramp",
   "timeline.add_marker",
   "timeline.update_marker",
   "timeline.remove_marker",

@@ -4,7 +4,9 @@ import { transitionSchema } from "./transitions.js";
 import { effectInstanceSchema } from "./effects.js";
 import { clipMasksSchema } from "./masks.js";
 import { clipMarkersSchema } from "./markers.js";
-import { assetKeywordsSchema } from "./keywords.js";
+import { assetKeywordRangesSchema, assetKeywordsSchema } from "./keywords.js";
+import { speedRampSchema } from "./speed-ramp.js";
+import { blendModeSchema } from "./blend.js";
 import {
   audioGainDbSchema,
   audioPanSchema,
@@ -52,6 +54,10 @@ export const mediaAssetSchema = z
     // Optional like `rating`, and for the same reason: an asset registered
     // before keywords existed must parse byte-for-byte identically.
     keywords: assetKeywordsSchema.optional(),
+    // Optional for the same reason again: an asset keyworded before ranges
+    // existed must parse byte-for-byte identically. Absent rather than `[]`,
+    // which canonical JSON treats as a different project.
+    keywordRanges: assetKeywordRangesSchema.optional(),
     createdAt: isoInstantSchema,
   })
   .strict();
@@ -80,6 +86,14 @@ export const timelineClipSchema = z
     // Optional preserves byte-equivalent parsing of schema-v1 projects. New
     // animation commands will materialize the array only when first used.
     animations: animationTracksSchema.optional(),
+    // A ramp supersedes the constant `playbackRate`, which the reducer pins to
+    // 1/1 whenever one is set — one behaviour keeps one spelling. Optional for
+    // the same reason as every field below: pre-ramp projects parse unchanged.
+    speedRamp: speedRampSchema.optional(),
+    // Same reasoning again: absent on every project written before blend modes,
+    // and absent rather than "normal" on a clip nobody has changed, so the
+    // default composite costs no bytes and no migration.
+    blendMode: blendModeSchema.optional(),
     // Same reasoning as `animations`: absent on every pre-transition project.
     transitionIn: transitionSchema.optional(),
     transitionOut: transitionSchema.optional(),

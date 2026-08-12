@@ -62,8 +62,9 @@ about a saved view changes what would be rendered or exported.
 
 ## Not built
 
-**Keyword ranges** — Final Cut applies a keyword to a *portion* of a clip in the
-browser. That needs range selection before adding to a timeline, which is the
-next step; the asset-level list here is the half that makes sense without it.
-Also absent: keyword hierarchies, and smart collections that update from a query
-rather than from a saved filter.
+~~**Keyword ranges**~~ — built since, once browser ranges gave it the selection
+half it was waiting on. See [keyword-ranges.md](keyword-ranges.md). Search, the
+picker and the chips here all reach range keywords too.
+
+Still absent: keyword hierarchies, and smart collections that update from a
+query rather than from a saved filter.

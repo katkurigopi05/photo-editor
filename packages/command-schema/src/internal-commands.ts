@@ -4,6 +4,7 @@ import {
   audioPanSchema,
   assetRatingSchema,
   assetKeywordsSchema,
+  assetKeywordRangesSchema,
   animationTracksSchema,
   transitionSchema,
   transitionSideSchema,
@@ -14,8 +15,10 @@ import {
   nonNegativeSafeIntSchema,
   timelineClipSchema,
   clipPlaybackRateSchema,
+  speedRampSchema,
   clipMasksSchema,
   clipMarkersSchema,
+  blendModeSchema,
 } from "@director/project-schema";
 
 /**
@@ -74,6 +77,42 @@ export const setAssetKeywordsInverseSchema = internal(
     .object({
       assetId: z.string().min(1),
       keywords: assetKeywordsSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
+/** One inverse for all three range commands: it restores the asset's whole
+ * list. `null` restores an asset that had no `keywordRanges` member — which is
+ * a different project from one holding an empty array. */
+export const setAssetKeywordRangesInverseSchema = internal(
+  "internal.set_asset_keyword_ranges",
+  z
+    .object({
+      assetId: z.string().min(1),
+      keywordRanges: assetKeywordRangesSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
+/**
+ * Restore a track's whole clip list.
+ *
+ * The inverse of insert and overwrite, which rearrange an unbounded number of
+ * clips in one gesture: a ripple moves everything downstream, an overwrite may
+ * trim two clips, delete three and split a fourth. Carrying the list entire is
+ * the same bargain masks and markers strike — exact undo without a
+ * reconstruction rule per case — and a track's clips are small compared with
+ * the media they point at.
+ */
+export const setTrackClipsInverseSchema = internal(
+  "internal.set_track_clips",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      trackId: z.string().min(1),
+      clips: z.array(timelineClipSchema),
       restoreUpdatedAt: isoInstantSchema,
     })
     .strict(),
@@ -226,12 +265,50 @@ export const setClipAudioGainInverseSchema = internal(
     .strict(),
 );
 
+/** Restores a clip's blend mode, or its absence. `null` is not the same as
+ * "normal": an untouched clip carries no member at all, and undo has to put the
+ * project back byte-for-byte, not merely back to the same picture. */
+export const setClipBlendModeInverseSchema = internal(
+  "internal.set_clip_blend_mode",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      blendMode: blendModeSchema.nullable(),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 /** Restores a clip's rate *and* the duration derived from it: recomputing the
  * duration on undo would repeat the truncation the forward command did. */
 /** Restores a clip's whole marker list. Same reasoning as the mask inverse:
  * the list is small, and carrying it entire keeps undo exact — including the
  * difference between no markers and an empty list. `null` restores the absent
  * member. */
+/**
+ * Restores a clip's ramp, the constant rate the ramp displaced, and the
+ * duration derived from whichever was in force.
+ *
+ * The duration is carried verbatim rather than recomputed, for the reason the
+ * constant-speed inverse carries it: the forward arithmetic truncates at
+ * sub-microsecond precision, and recomputing on undo would repeat the
+ * truncation instead of restoring the bytes that were there.
+ */
+export const setClipSpeedRampInverseSchema = internal(
+  "internal.set_clip_speed_ramp",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      clipId: z.string().min(1),
+      speedRamp: speedRampSchema.nullable(),
+      playbackRate: clipPlaybackRateSchema,
+      timelineDurationUs: microsecondStringSchema,
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 export const setClipMarkersInverseSchema = internal(
   "internal.set_clip_markers",
   z
@@ -333,6 +410,8 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   removeAssetInverseSchema,
   setAssetRatingInverseSchema,
   setAssetKeywordsInverseSchema,
+  setAssetKeywordRangesInverseSchema,
+  setTrackClipsInverseSchema,
   removeSequenceInverseSchema,
   removeTrackInverseSchema,
   removeClipInverseSchema,
@@ -345,8 +424,10 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   reorderEffectsInverseSchema,
   setClipEffectsInverseSchema,
   setClipAudioGainInverseSchema,
+  setClipBlendModeInverseSchema,
   setClipAudioPanInverseSchema,
   setClipSpeedInverseSchema,
+  setClipSpeedRampInverseSchema,
   setClipMarkersInverseSchema,
   setClipMasksInverseSchema,
   setEffectMaskInverseSchema,
