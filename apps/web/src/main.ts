@@ -1142,6 +1142,9 @@ function offlineAssets(): MediaAsset[] {
     (asset) =>
       !removedAssets.has(asset.id) &&
       asset.kind !== "adjustment" &&
+      // A compound clip's asset names a sequence, not a file: there is nothing
+      // to find and nothing to relink, so it is never "missing".
+      asset.kind !== "sequence" &&
       !mediaCache.has(assetUri(asset)),
   );
 }
@@ -6417,8 +6420,10 @@ function renderMedia(): void {
     (asset) =>
       !removedAssets.has(asset.id) &&
       // An adjustment layer is created on the timeline, not imported, and there
-      // is nothing to preview, rate, keyword or add from here.
+      // is nothing to preview, rate, keyword or add from here. A compound
+      // clip's asset is a pointer to a sequence, for the same reason.
       asset.kind !== "adjustment" &&
+      asset.kind !== "sequence" &&
       matchesMediaFilters(asset),
   );
   const anyMedia = (session.getProject()?.assets ?? []).some(
@@ -6713,7 +6718,7 @@ function mediaHints(): MediaHint[] {
     // flatMap rather than filter-then-map: the ternary narrows `kind` to the
     // kinds a hint can carry, which a filter predicate does not.
     .flatMap((asset) =>
-      asset.kind === "adjustment"
+      asset.kind === "adjustment" || asset.kind === "sequence"
         ? []
         : [
             {

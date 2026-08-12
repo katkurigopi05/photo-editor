@@ -35,6 +35,9 @@ export const assetKindSchema = z.enum([
   "audio",
   "generated",
   "adjustment",
+  // A compound clip: the asset names a sequence rather than a file, so a clip
+  // can play a whole sequence and still be an ordinary clip.
+  "sequence",
 ]);
 export type AssetKind = z.infer<typeof assetKindSchema>;
 
@@ -178,7 +181,10 @@ export function isAssetCompatibleWithTrack(
       assetKind === "image" ||
       assetKind === "generated" ||
       // An adjustment layer adjusts a picture, so it lives where pictures are.
-      assetKind === "adjustment"
+      assetKind === "adjustment" ||
+      // A compound clip plays a sequence, which is pictures and sound both; it
+      // lives on a video track and its audio is mixed from within.
+      assetKind === "sequence"
     );
   }
   // Audio track: an adjustment layer has nothing to adjust here and all its
