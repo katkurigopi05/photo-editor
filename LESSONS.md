@@ -76,3 +76,13 @@ Symptom: the existing e2e "MP4 export of a video clip writes distinct frames" we
 Root cause: two separate faults with the same shape. (1) The proxy build seeked the *cached* video element, which is also the element the preview and the export seek; each one's seeks landed in the other's frames. (2) After giving the build a private element, running a build and an export at once starved the export's seeks, so `seekVideoFrame` resolved on the frame already up and the encoder got the same picture over and over.
 Fix: build proxies through a private element, and pause building for the duration of an export (`exportActive`), resuming afterwards.
 Why: a stale seek is invisible — nothing throws, nothing warns, the file is simply wrong. Any second feature that decodes video by seeking an element is competing for the same decoder, so it needs its own element *and* a rule about who runs when. Note also which test caught it: an old export test, red only because its fixture became large enough to qualify for the new feature. New features change the conditions old tests run under.
+
+## 2026-08-12: overlapping e2e runs hid two real regressions
+Wrong: started a full Playwright run while another was still in flight, three times, and piped each to `tail -8`.
+Fix: check `pgrep -f playwright` and port 5199 are clear before starting; never pipe test output — the pipe's exit code is what gets reported.
+Why: `playwright.config.ts` uses a fixed port with `strictPort` and `reuseExistingServer` locally, so a second run reuses the first's dev server and the first tears it down on exit, killing the other mid-flight. The results looked like failures (24 in one run) and like passes (`tail` exits 0 whatever Playwright did), so three commits were reported as verified when they were not — and the noise masked two genuine regressions in `audio.spec.ts` and `import-checksum.spec.ts` for several commits. Verification that cannot be trusted is worse than none: it still looks like coverage.
+
+## 2026-08-12: tests read the history panel's prose
+Wrong: `audio.spec.ts` and `import-checksum.spec.ts` asserted on the history panel's text to prove a command reached the engine, matching raw types like `timeline.add_effect`. Rewriting the panel to show human labels broke both at once.
+Fix: entries carry `data-command-type`; the probes read that.
+Why: an assertion about *engine behaviour* was coupled to *display wording*. When a UI string is the only handle a test has on a fact, give the fact its own handle.
