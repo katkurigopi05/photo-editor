@@ -5784,6 +5784,11 @@ function historyLabel(commandType: string): string {
 /** One entry in the panel: a whole gesture, named after what it did. */
 interface HistoryStep {
   label: string;
+  /** The gesture's first command type. Exposed as a data attribute so a test
+   * can assert *which* command ran without depending on the wording of a label
+   * meant for people — the two changed together once, and every check that read
+   * the panel broke at the same time. */
+  commandType: string;
   /** Steps before the cursor are done; the rest are on the redo branch. */
   done: boolean;
 }
@@ -5808,8 +5813,10 @@ function historySteps(): HistoryStep[] {
   let at = session.getBaseline();
   for (const size of session.undoStepSizes()) {
     const first = log[at];
+    const type = first?.command.commandType ?? "";
     steps.push({
-      label: first ? historyLabel(first.command.commandType) : "Edit",
+      label: type ? historyLabel(type) : "Edit",
+      commandType: type,
       done: true,
     });
     at += size;
@@ -5822,8 +5829,10 @@ function historySteps(): HistoryStep[] {
   let remaining = redo.length;
   for (const size of session.redoStepSizes()) {
     const first = redo[remaining - size];
+    const type = first?.command.commandType ?? "";
     steps.push({
-      label: first ? historyLabel(first.command.commandType) : "Edit",
+      label: type ? historyLabel(type) : "Edit",
+      commandType: type,
       done: false,
     });
     remaining -= size;
@@ -5871,6 +5880,7 @@ function renderHistory(): void {
     const isCurrent = index === cursor - 1;
     el.className = `history-item${isCurrent ? " current" : ""}${step.done ? "" : " undone"}`;
     el.textContent = `${index + 1}. ${step.label}`;
+    el.dataset.commandType = step.commandType;
     el.setAttribute("aria-current", isCurrent ? "step" : "false");
     el.title = step.done
       ? "Go back to just after this edit"

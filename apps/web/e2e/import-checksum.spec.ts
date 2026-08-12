@@ -19,13 +19,14 @@ test("the checksum of an imported file is its real SHA-256", async ({
   const file = "photos/gradient-landscape-1600x900.png";
   await importMedia(page, file);
 
-  // The operation log carries the registered asset, checksum and all.
-  const checksum = await page.evaluate(() => {
-    const entries = [
-      ...document.querySelectorAll("#history-list .history-item"),
-    ].map((node) => (node.textContent ?? "").trim());
-    return entries.some((entry) => entry.includes("asset.register"));
-  });
+  // The operation log carries the registered asset, checksum and all. Read
+  // from the entry's data attribute rather than its text: the label is written
+  // for people and may be reworded, the command type may not.
+  const checksum = await page.evaluate(() =>
+    [...document.querySelectorAll("#history-list .history-item")].some(
+      (node) => (node as HTMLElement).dataset.commandType === "asset.register",
+    ),
+  );
   expect(checksum, "the asset registered").toBe(true);
 
   // Hash the same bytes with Node and compare against what the page stored.
