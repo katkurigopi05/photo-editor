@@ -161,7 +161,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Save / open a project file | all | ✗ | **the largest hole on this page** — step P1 |
 | Auto-save and crash recovery | all | ✗ | step P1 |
 | Desktop application | all | ✗ | Tauri shell, deferred by decision (cost) |
-| Undo history panel | all | ◐ | the log is listed; it cannot be navigated — step P2 |
+| Undo history panel | all | ✓ | one entry per gesture, click to travel — step P2 |
 | Customisable shortcuts | all pro | ✗ | step P3 |
 | Templates and presets | CapCut, Canva-likes, Lightroom | ◐ | Looks and motion presets ship; nothing is user-definable — step P4 |
 | GPU-accelerated rendering | all pro | ✗ | canvas 2D throughout; step P5, large |
@@ -219,8 +219,10 @@ session, **M** a few sessions, **L** a phase.
 8. ~~**C1 · Control-point curves**~~ — done. Monotone cubic (Fritsch–Carlson)
    so a curve never overshoots between its points, on the composite and on each
    channel, with a drag-to-shape editor. See `docs/phases/curves.md`.
-9. **P2 · Navigable history panel** — **S**. The log exists and replay works;
-   this is a UI over both.
+9. ~~**P2 · Navigable history panel**~~ — done. One entry per gesture rather
+   than per operation, named after the action, with the redo branch drawn and
+   clickable. Clicking steps Undo/Redo rather than jumping, so it cannot
+   disagree with the buttons. See `docs/phases/history-panel.md`.
 
 ### Later — bigger bets
 
@@ -229,8 +231,9 @@ session, **M** a few sessions, **L** a phase.
 11. **A2 · Motion tracking** and **A3 · Stabilisation** — **L** each. Both need
     real optical-flow work; both are the sort of thing a native pipeline does
     far better than canvas 2D.
-12. **O1 · More codecs** — **M**, gated on what WebCodecs offers; the schema is
-    already wider than the encoder.
+12. ~~**O1 · More codecs**~~ — done. VP9 and AV1 into WebM beside H.264 into
+    MP4, with the set offered probed from the browser at the chosen size rather
+    than assumed. See `docs/phases/codecs.md`.
 13. **C4 · Raw development** — **L**. Exists in the Python track; bringing it to
     the web stack means a decoder and a colour pipeline.
 14. **M1 · Magnetic timeline** — **L**, and a decision before a task: it changes

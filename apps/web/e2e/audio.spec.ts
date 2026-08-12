@@ -93,9 +93,16 @@ test("an audio clip exposes fade, EQ and compressor controls", async ({
   await setSlider(page, "Ratio", 8);
 
   // Each change went through the command engine rather than mutating state.
-  const history = await page.locator("#history-list").innerText();
-  expect(history).toContain("timeline.add_effect");
-  expect(history).toContain("timeline.update_effect_params");
+  // Asserted on the command type carried by each entry, not on its label: the
+  // label is prose for people and changed once already, taking every check
+  // that read it down at the same time.
+  const types = await page.evaluate(() =>
+    [...document.querySelectorAll("#history-list .history-item")].map(
+      (node) => (node as HTMLElement).dataset.commandType ?? "",
+    ),
+  );
+  expect(types).toContain("timeline.add_effect");
+  expect(types).toContain("timeline.update_effect_params");
 
   // And they survive a re-render as real project state.
   await expect(

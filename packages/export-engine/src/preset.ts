@@ -62,17 +62,25 @@ export function isCodecContainerCompatible(
 }
 
 /**
- * What the browser exporter can actually produce.
+ * What the browser exporter can attempt.
  *
- * The schema above is deliberately wider — it mirrors the Rust
- * `export-engine` crate, which targets the full codec matrix. The browser path
- * is WebCodecs plus an MP4 muxer, and it hardcodes H.264 into MP4: a preset
- * asking for VP9/WebM used to be accepted and then quietly encoded as
- * H.264/MP4 anyway. Phase 6 requires export failures to be typed and
- * recoverable rather than silent, so callers check this first.
+ * The schema above is wider still — it mirrors the Rust `export-engine` crate,
+ * which targets the full matrix including H.265 and ProRes. This list is what
+ * the browser path has a codec string and a muxer for: H.264 into MP4, VP9 and
+ * AV1 into WebM.
+ *
+ * "Can attempt" rather than "can do". Whether a given build will really encode
+ * AV1 at 4K is a question only that browser can answer, and it is asked at
+ * export time through `VideoEncoder.isConfigSupported` — see
+ * `apps/web/src/codec-support.ts`. This list keeps a preset naming ProRes from
+ * reaching an encoder that has never heard of it.
  */
-export const BROWSER_VIDEO_CODECS: readonly VideoCodec[] = ["h264"];
-export const BROWSER_CONTAINERS: readonly Container[] = ["mp4"];
+export const BROWSER_VIDEO_CODECS: readonly VideoCodec[] = [
+  "h264",
+  "vp9",
+  "av1",
+];
+export const BROWSER_CONTAINERS: readonly Container[] = ["mp4", "webm"];
 export const BROWSER_AUDIO_CODECS: readonly AudioCodec[] = ["opus", "none"];
 
 /**

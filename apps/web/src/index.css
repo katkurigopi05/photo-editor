@@ -1116,18 +1116,37 @@ body {
 .media-meta {
   flex: 1 1 96px;
 }
+/* Entries are buttons now, so they reset the button defaults and keep the
+   left-rail look the list already had. */
 .history-item {
+  display: block;
+  width: 100%;
+  text-align: left;
   padding: 6px 10px;
+  border: 0;
   border-left: 2px solid var(--line);
   color: var(--muted);
+  font: inherit;
   font-size: 12px;
   border-radius: 0 6px 6px 0;
   background: var(--panel-2);
+  cursor: pointer;
+}
+.history-item:hover,
+.history-item:focus-visible {
+  color: var(--text);
+  border-left-color: var(--accent);
 }
 .history-item.current {
   border-left-color: var(--accent);
   color: var(--text);
   background: var(--panel-3);
+}
+/* Steps ahead of the present: still there, still clickable, visibly not
+   applied — the redo branch drawn rather than hidden. */
+.history-item.undone {
+  opacity: 0.45;
+  font-style: italic;
 }
 
 /* ---- effects palette ---- */

@@ -5,6 +5,10 @@ import {
   FRAME_RATE_CHOICES,
   RESOLUTION_CHOICES,
   type ExportFields,
+  vp9CodecString,
+  av1CodecString,
+  CODEC_CONTAINER,
+  codecStringFor,
 } from "../src/export-preset.js";
 
 /**
@@ -157,5 +161,61 @@ describe("h264CodecString", () => {
 
   it("never returns a level below the smallest one it knows", () => {
     expect(h264CodecString(64, 64, 24)).toMatch(/^avc1\.4200[0-9a-f]{2}$/);
+  });
+});
+
+describe("VP9 and AV1 codec strings", () => {
+  it("shape: profile, level, bit depth", () => {
+    expect(vp9CodecString(1920, 1080, 30)).toMatch(/^vp09\.00\.\d{2}\.08$/);
+    expect(av1CodecString(1920, 1080, 30)).toMatch(/^av01\.0\.\d{2}M\.08$/);
+  });
+
+  it("raises the level as the picture grows", () => {
+    // The point of deriving it: a level too low for the frame fails inside
+    // WebCodecs with an opaque message.
+    const small = vp9CodecString(640, 360, 30);
+    const large = vp9CodecString(3840, 2160, 60);
+    expect(Number(small.split(".")[2])).toBeLessThan(
+      Number(large.split(".")[2]),
+    );
+
+    const smallAv1 = av1CodecString(640, 360, 30);
+    const largeAv1 = av1CodecString(3840, 2160, 60);
+    expect(parseInt(smallAv1.split(".")[2]!, 10)).toBeLessThan(
+      parseInt(largeAv1.split(".")[2]!, 10),
+    );
+  });
+
+  it("raises the level for frame rate alone", () => {
+    // Same picture, more of them per second is more throughput.
+    const slow = vp9CodecString(1920, 1080, 24);
+    const fast = vp9CodecString(1920, 1080, 120);
+    expect(Number(fast.split(".")[2])).toBeGreaterThanOrEqual(
+      Number(slow.split(".")[2]),
+    );
+  });
+
+  it("does not run off the end of its table", () => {
+    // Beyond the table, ask for the highest level rather than silently picking
+    // one that cannot carry the frame.
+    expect(vp9CodecString(16000, 16000, 240)).toBe("vp09.00.60.08");
+    expect(av1CodecString(16000, 16000, 240)).toBe("av01.0.16M.08");
+  });
+
+  it("routes each codec to the container that can hold it", () => {
+    // VP9 and AV1 go to WebM here: mp4-muxer writes H.264, and a codec written
+    // into a container that cannot hold it is a file nothing will play.
+    expect(CODEC_CONTAINER.h264).toBe("mp4");
+    expect(CODEC_CONTAINER.vp9).toBe("webm");
+    expect(CODEC_CONTAINER.av1).toBe("webm");
+  });
+
+  it("has no builder for a codec the browser path cannot attempt", () => {
+    // h265 and prores are in the schema because the Rust crate targets them.
+    // Returning null rather than a plausible-looking string keeps the refusal
+    // at the boundary instead of inside WebCodecs.
+    expect(codecStringFor("h265", 1920, 1080, 30)).toBeNull();
+    expect(codecStringFor("prores", 1920, 1080, 30)).toBeNull();
+    expect(codecStringFor("h264", 1920, 1080, 30)).toMatch(/^avc1\./);
   });
 });
