@@ -187,7 +187,10 @@ import {
   TRANSITION_DIRECTIONS,
   TRANSITION_KINDS,
   compositeOperation,
+  dissolveBlockers,
+  dissolveCompound,
   isAudioEffectType,
+  nestedSequenceId,
   normalizeKeyword,
   rateAtClipOffset,
   rampTimelineDurationUs,
@@ -2444,6 +2447,222 @@ async function makeCompoundClip(): Promise<void> {
   selectedClipIds.clear();
   selectClip(compoundClipId);
   toast("Compound clip made — its contents live in their own sequence.");
+}
+
+/** Whether a span is free on a track, ignoring one clip that is about to go. */
+function trackHasRoom(
+  track: Track,
+  startUs: bigint,
+  endUs: bigint,
+  ignoreClipId: string,
+): boolean {
+  return track.clips.every((c) => {
+    if (c.id === ignoreClipId) return true;
+    const s = BigInt(c.timelineStartUs);
+    return s + BigInt(c.timelineDurationUs) <= startUs || s >= endUs;
+  });
+}
+
+/**
+ * Put a compound clip's contents back on this timeline — the inverse of
+ * `makeCompoundClip`.
+ *
+ * The order is forced and is the opposite of compounding's. The inner clips
+ * land exactly where the compound clip sat, so it has to go *first* or every
+ * add would be refused as an overlap. That removes the safety compounding had
+ * (delete only once the copy exists), so instead everything is checked before
+ * anything is written: the blockers, and that each target track has room. By
+ * the time the first command is dispatched there is nothing left to discover.
+ *
+ * Audio and video contents may need different tracks from the one the compound
+ * clip sat on, and the outer sequence need not have one — so a missing track is
+ * added rather than treated as a refusal.
+ */
+function dissolveCompoundClip(): void {
+  const project = session.getProject();
+  const seq = activeSequence();
+  const loc = locateClip(selectedClipId);
+  if (!project || !seq || !loc) {
+    toast("Select a compound clip to dissolve.", true);
+    return;
+  }
+
+  const asset = findAsset(loc.clip.assetId);
+  if (!asset || nestedSequenceId(asset) === null) {
+    toast("That is not a compound clip.", true);
+    return;
+  }
+
+  const blockers = dissolveBlockers(loc.clip);
+  if (blockers.length > 0) {
+    toast(
+      `Cannot dissolve this compound clip because ${blockers.join(", and ")}. Remove those first.`,
+      true,
+    );
+    return;
+  }
+
+  const placements = dissolveCompound(project, loc.clip);
+  if (placements.length === 0) {
+    toast("This compound clip is empty — delete it instead.", true);
+    return;
+  }
+
+  // Pick a destination per placement before writing anything. The compound
+  // clip's own track takes whatever matches its kind, so the common case (a
+  // video compound on a video track) puts the clips back where they came from.
+  const targets = new Map<string, string>();
+  const pendingTracks: { id: string; kind: Track["kind"] }[] = [];
+  for (const p of placements) {
+    if (targets.has(p.trackKind)) continue;
+    const existing =
+      loc.track.kind === p.trackKind
+        ? loc.track
+        : seq.tracks.find((t) => t.kind === p.trackKind);
+    if (existing) {
+      targets.set(p.trackKind, existing.id);
+      continue;
+    }
+    const id = `track-${crypto.randomUUID().slice(0, 8)}`;
+    pendingTracks.push({ id, kind: p.trackKind });
+    targets.set(p.trackKind, id);
+  }
+
+  // Room check on the tracks that already exist. A track about to be created is
+  // empty by construction, so it has room for anything.
+  const existingIds = new Set(seq.tracks.map((t) => t.id));
+  for (const p of placements) {
+    const targetId = targets.get(p.trackKind)!;
+    if (!existingIds.has(targetId)) continue;
+    const track = seq.tracks.find((t) => t.id === targetId)!;
+    const start = BigInt(p.timelineStartUs);
+    const end = start + BigInt(p.timelineDurationUs);
+    if (!trackHasRoom(track, start, end, loc.clip.id)) {
+      toast(
+        `Cannot dissolve: ${track.name} already has a clip where ${p.source.id} would land. Move it out of the way first.`,
+        true,
+      );
+      return;
+    }
+  }
+
+  session.beginGesture();
+  for (const t of pendingTracks) {
+    commit(
+      buildAddTrack(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        track: {
+          id: t.id,
+          kind: t.kind,
+          name: t.kind === "audio" ? "A1" : "V1",
+          index: seq.tracks.length + pendingTracks.indexOf(t),
+        },
+      }),
+    );
+  }
+
+  commit(
+    buildDeleteClip(nextCtx(), {
+      sequenceId: SEQUENCE_ID,
+      clipId: loc.clip.id,
+    }),
+  );
+
+  const restored: string[] = [];
+  for (const p of placements) {
+    const newId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+    const placed = commit(
+      buildAddClip(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        trackId: targets.get(p.trackKind)!,
+        clip: {
+          id: newId,
+          assetId: p.source.assetId,
+          timelineStartUs: p.timelineStartUs,
+          sourceInUs: p.sourceInUs,
+          sourceOutUs: p.sourceOutUs,
+          playbackRate: { numerator: 1, denominator: 1 },
+        },
+      }),
+    );
+    if (!placed) {
+      const why = session.getLastError();
+      toast(
+        `Could not restore ${p.source.id}: ${why?.message ?? "unknown"}`,
+        true,
+      );
+      continue;
+    }
+    restored.push(newId);
+
+    // Same reasoning as compounding: `add_clip` takes none of this, so each
+    // part is carried across by the command that owns it. Dropping a grade on
+    // the way out would be exactly the loss compounding was careful to avoid on
+    // the way in.
+    if (p.source.effects.length > 0) {
+      commit(
+        buildUpdateClipEffects(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: newId,
+          effects: structuredClone(p.source.effects),
+        }),
+      );
+    }
+    if ((p.source.animations ?? []).length > 0) {
+      commit(
+        buildUpdateClipAnimations(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: newId,
+          animations: structuredClone(p.source.animations ?? []),
+        }),
+      );
+    }
+    if (p.source.blendMode !== undefined) {
+      commit(
+        buildSetClipBlendMode(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: newId,
+          blendMode: p.source.blendMode,
+        }),
+      );
+    }
+    if (
+      p.source.playbackRate.numerator !== p.source.playbackRate.denominator
+    ) {
+      commit(
+        buildSetClipSpeed(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: newId,
+          playbackRate: p.source.playbackRate,
+        }),
+      );
+    }
+    if (p.source.audioGainDb !== 0) {
+      commit(
+        buildSetClipAudioGain(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: newId,
+          gainDb: p.source.audioGainDb,
+        }),
+      );
+    }
+    if (p.source.audioPan !== 0) {
+      commit(
+        buildSetClipAudioPan(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: newId,
+          pan: p.source.audioPan,
+        }),
+      );
+    }
+  }
+  session.endGesture();
+
+  selectedClipIds.clear();
+  selectClip(restored[0] ?? null);
+  toast(
+    `Dissolved into ${restored.length} clip${restored.length === 1 ? "" : "s"}.`,
+  );
 }
 
 /** Remove a clip from the timeline via the command engine (undoable). */
@@ -9343,6 +9562,9 @@ function bindEvents(): void {
     .getElementById("system-capabilities")
     ?.addEventListener("toggle", renderCapabilities);
   $("btn-make-compound").addEventListener("click", () => void makeCompoundClip());
+  $("btn-dissolve-compound").addEventListener("click", () =>
+    dissolveCompoundClip(),
+  );
   $("btn-add-adjustment").addEventListener(
     "click",
     () => void addAdjustmentLayer(),

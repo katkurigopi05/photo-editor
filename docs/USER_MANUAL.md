@@ -256,6 +256,16 @@ Features:
   effects, animations, speed and blend mode come along, and the whole thing is
   one Undo. Useful when a run of clips has become one thing you want to move,
   trim or grade together.
+- ⧈ Dissolve is the way back: it puts a compound clip's contents onto this
+  timeline again, where it was playing them, with their effects and animations
+  intact. If you had trimmed the compound clip, you get back only the part it
+  was showing — a clip the trim ran through comes back shortened, not whole.
+  Dissolving is one Undo.
+- Dissolve is refused, with a message naming the reason, if the compound clip
+  itself carries an effect, an animation, a mask, a blend mode or a speed
+  change. Those apply to the combined picture and have no per-clip equivalent,
+  so putting the clips back would quietly change what you see. Remove them from
+  the compound clip first, then dissolve.
 - Shift-click or Cmd/Ctrl-click selects several clips. Effects, Looks, Delete
   and Ripple Delete all apply to every selected clip, and each apply is a single
   Undo step however many clips and effects it touched. The Inspector still edits
@@ -467,6 +477,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-12:** ⧈ Dissolve puts a compound clip's contents back on the
+  timeline. Compounding is no longer one-way.
 - **2026-08-12:** Tracks can be made magnetic with the 🧲 button on the track
   head — clips stay packed end to end, and gaps close by themselves.
 - **2026-08-12:** Added compound clips — select a run of clips and press ⧉
