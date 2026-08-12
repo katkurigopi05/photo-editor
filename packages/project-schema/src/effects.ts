@@ -406,6 +406,66 @@ export const toneCurveParamsSchema = z
   })
   .strict();
 
+const unitValue = finiteNumber.refine(
+  (n) => n >= 0 && n <= 1,
+  "must be between 0 and 1",
+);
+
+const curvePointSchema = z.object({ x: unitValue, y: unitValue }).strict();
+
+/**
+ * One channel's curve.
+ *
+ * Anchored at both ends and strictly increasing in x, so the curve is defined
+ * over the whole range exactly once. Without the anchors a curve would say
+ * nothing about its darkest and brightest input; without strict increase two
+ * points could sit at the same x and the value there would depend on which one
+ * the evaluator happened to reach first.
+ *
+ * y is free — a curve may fall as well as rise, which is what an inversion is.
+ */
+export const curvePointsSchema = z
+  .array(curvePointSchema)
+  .min(2, "a curve needs at least its two endpoints")
+  .superRefine((points, ctx) => {
+    if (points[0] !== undefined && points[0].x !== 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "the first point must be at x = 0",
+        path: [0, "x"],
+      });
+    }
+    const last = points[points.length - 1];
+    if (last !== undefined && last.x !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "the last point must be at x = 1",
+        path: [points.length - 1, "x"],
+      });
+    }
+    points.forEach((point, index) => {
+      const previous = points[index - 1];
+      if (previous !== undefined && point.x <= previous.x) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "curve points must be strictly increasing in x",
+          path: [index, "x"],
+        });
+      }
+    });
+  });
+
+/** A composite curve plus one per channel, all four always present: an absent
+ * curve and an identity curve would render the same and store differently. */
+export const curvesParamsSchema = z
+  .object({
+    rgb: curvePointsSchema,
+    red: curvePointsSchema,
+    green: curvePointsSchema,
+    blue: curvePointsSchema,
+  })
+  .strict();
+
 export const vibranceParamsSchema = z
   .object({
     amount: finiteNumber.refine(
@@ -565,6 +625,7 @@ export const EFFECT_TYPES = [
   "color.white_balance",
   "color.levels",
   "color.tone_curve",
+  "color.curves",
   "color.vibrance",
   "light.tone",
   "color.hsl_mixer",
@@ -620,6 +681,7 @@ export const effectParamsSchemas = {
   "color.white_balance": whiteBalanceParamsSchema,
   "color.levels": levelsParamsSchema,
   "color.tone_curve": toneCurveParamsSchema,
+  "color.curves": curvesParamsSchema,
   "color.vibrance": vibranceParamsSchema,
   "light.tone": toneParamsSchema,
   "color.hsl_mixer": hslMixerParamsSchema,
@@ -681,6 +743,7 @@ export const effectInstanceSchema = z.discriminatedUnion("type", [
   effect("color.white_balance", whiteBalanceParamsSchema),
   effect("color.levels", levelsParamsSchema),
   effect("color.tone_curve", toneCurveParamsSchema),
+  effect("color.curves", curvesParamsSchema),
   effect("color.vibrance", vibranceParamsSchema),
   effect("light.tone", toneParamsSchema),
   effect("color.hsl_mixer", hslMixerParamsSchema),

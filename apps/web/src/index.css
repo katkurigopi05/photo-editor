@@ -2459,3 +2459,58 @@ select {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* ---- curve editor ---- */
+.curve-editor {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  margin-top: 4px;
+}
+.curve-tabs {
+  display: flex;
+  gap: 4px;
+}
+/* The channel tabs carry their own colour, so which one is being edited is
+   readable without depending on the pressed state alone. */
+.curve-tab[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.curve-tab-red[aria-pressed="true"] {
+  border-color: #e5534b;
+}
+.curve-tab-green[aria-pressed="true"] {
+  border-color: #3fb950;
+}
+.curve-tab-blue[aria-pressed="true"] {
+  border-color: #58a6ff;
+}
+.curve-canvas {
+  width: 100%;
+  max-width: 220px;
+  aspect-ratio: 1;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* ---- capability report ---- */
+/* Collapsed by default: it answers "why can't I export MP4 here", which is a
+   question people only ask once, and only when something is missing. */
+.system-capabilities {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.system-capabilities summary {
+  cursor: pointer;
+  user-select: none;
+}
+.system-capabilities p {
+  margin: 6px 0 0;
+  line-height: 1.5;
+}

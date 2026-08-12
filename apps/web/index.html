@@ -433,6 +433,13 @@
       <footer id="timeline" class="panel" aria-label="Timeline">
         <div class="timeline-toolbar">
           <button id="btn-add-track" class="tool">＋ Track</button>
+          <button
+            id="btn-add-adjustment"
+            class="tool"
+            title="A layer with no picture of its own, whose effects apply to everything beneath it"
+          >
+            ＋ Adjustment
+          </button>
           <button id="btn-split" class="tool">✂ Split</button>
           <button id="btn-delete" class="tool danger">🗑 Delete</button>
           <button
@@ -529,6 +536,19 @@
             <select id="export-audio-bitrate"></select>
           </label>
           <div id="export-summary" class="export-summary"></div>
+          <details id="system-capabilities" class="system-capabilities">
+            <summary>This device</summary>
+            <div id="system-capabilities-body"></div>
+            <label class="export-field system-quality"
+              >Preview quality
+              <select id="preview-quality" aria-label="Preview quality">
+                <option value="auto" selected>Auto — match this machine</option>
+                <option value="low">Low — keep it responsive</option>
+                <option value="medium">Medium</option>
+                <option value="high">High — best preview</option>
+              </select>
+            </label>
+          </details>
         </div>
         <div id="export-progress-wrap" class="export-progress-wrap hidden">
           <div id="export-phase" class="export-phase">Rendering frames…</div>

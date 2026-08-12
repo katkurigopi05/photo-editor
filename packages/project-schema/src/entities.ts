@@ -20,7 +20,22 @@ import {
   clipPlaybackRateSchema,
 } from "./primitives.js";
 
-export const assetKindSchema = z.enum(["image", "video", "audio", "generated"]);
+/**
+ * `adjustment` is the odd one out: it has no media behind it at all. A clip
+ * pointing at one carries only effects and applies them to everything beneath
+ * it on the timeline.
+ *
+ * Modelled as a kind rather than a flag on the clip so that a clip stays a
+ * clip — add, trim, move, delete, effects, masks, blend mode and animation all
+ * work on it unchanged, and no reducer had to learn a new case.
+ */
+export const assetKindSchema = z.enum([
+  "image",
+  "video",
+  "audio",
+  "generated",
+  "adjustment",
+]);
 export type AssetKind = z.infer<typeof assetKindSchema>;
 
 export const assetRatingSchema = z.enum(["favorite", "rejected"]);
@@ -161,9 +176,13 @@ export function isAssetCompatibleWithTrack(
     return (
       assetKind === "video" ||
       assetKind === "image" ||
-      assetKind === "generated"
+      assetKind === "generated" ||
+      // An adjustment layer adjusts a picture, so it lives where pictures are.
+      assetKind === "adjustment"
     );
   }
+  // Audio track: an adjustment layer has nothing to adjust here and all its
+  // effects are visual, so a silent clip that did nothing would be a trap.
   // audio track
   return assetKind === "audio" || assetKind === "video";
 }

@@ -91,6 +91,23 @@ import {
 } from "./theme.js";
 import { layoutTextLines } from "./text-overlay.js";
 import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
+import type { JsonValue } from "@director/canonical-json";
+import {
+  describeCapabilities,
+  fitWithinBudget,
+  previewGradeBudgetPx,
+  readEnvironment,
+} from "./capabilities.js";
+import {
+  budgetForLevel,
+  createAdaptiveState,
+  describeQuality,
+  isQualityPreference,
+  levelForPreference,
+  observeFrame,
+  QUALITY_LADDER,
+  type QualityPreference,
+} from "./adaptive-quality.js";
 import { checksumBlob } from "./checksum.js";
 import {
   buildProjectFile,
@@ -224,6 +241,14 @@ import {
   type Mask,
   type Point,
   type RasterImage,
+  applyCurves,
+  curvePoint,
+  IDENTITY_CURVE,
+  type CurvePoint,
+  type CurveSet,
+  applyLut3d,
+  cubeImageToLut,
+  identityCubeImage,
 } from "@director/raster-tools";
 import {
   biasSubjectMask,
@@ -301,6 +326,10 @@ interface EffectSpec {
   label: string;
   modes: Array<"video" | "photo">;
   params: ParamSpec[];
+  /** Defaults for an effect whose params are not a list of scalars — a curve is
+   * four arrays of points, which no slider can describe. When present this is
+   * the whole params object the effect is created with. */
+  defaults?: Record<string, JsonValue>;
   /** Audio effects are applied by the mixer and belong to the Audio section of
    * the inspector, not to the visual effects palette. */
   surface?: "audio";
@@ -368,6 +397,23 @@ const EFFECTS: EffectSpec[] = [
       range("whitePoint", "Whites", 0, 1, 0.01, 1),
       range("gamma", "Gamma", 0.1, 4, 0.05, 1),
     ],
+  },
+  {
+    type: "color.curves",
+    label: "Curves",
+    modes: ["video", "photo"],
+    // No slider params: a curve is edited by dragging its points, so the
+    // Inspector renders a canvas for this type instead of a parameter list.
+    params: [],
+    // All four channels start as the diagonal, which is the identity — an
+    // absent curve and an identity curve would render the same and store
+    // differently, so the schema requires all four to be present.
+    defaults: {
+      rgb: IDENTITY_CURVE.map((p) => ({ x: p.x, y: p.y })),
+      red: IDENTITY_CURVE.map((p) => ({ x: p.x, y: p.y })),
+      green: IDENTITY_CURVE.map((p) => ({ x: p.x, y: p.y })),
+      blue: IDENTITY_CURVE.map((p) => ({ x: p.x, y: p.y })),
+    },
   },
   {
     type: "color.tone_curve",
@@ -705,10 +751,12 @@ const visualEffects = (): EffectSpec[] =>
 const audioEffects = (): EffectSpec[] =>
   EFFECTS.filter((spec) => spec.surface === "audio");
 
-function defaultParams(
-  spec: EffectSpec,
-): Record<string, number | string | boolean> {
-  const out: Record<string, number | string | boolean> = {};
+function defaultParams(spec: EffectSpec): Record<string, JsonValue> {
+  // A spec with non-scalar params supplies the whole object: building it from
+  // an empty `params` list would produce `{}`, which the effect's own schema
+  // rejects — the effect would simply never be added, with no visible reason.
+  if (spec.defaults) return structuredClone(spec.defaults);
+  const out: Record<string, JsonValue> = {};
   for (const p of spec.params) out[p.name] = p.def;
   return out;
 }
@@ -747,6 +795,50 @@ const selectedClipIds = new Set<string>();
 let mediaSearch = "";
 type MediaFilter = "all" | "favorites" | "rejected" | "unrated";
 let mediaFilter: MediaFilter = "all";
+/** Read once: the environment does not change while the app is open, and
+ * re-reading it per frame would be a syscall in the render loop. */
+const ENVIRONMENT = readEnvironment();
+const QUALITY_PREF_KEY = "director-preview-quality";
+
+/** What the user asked for. Machine-personal like the theme and saved views, so
+ * it lives in localStorage rather than in the project. */
+let qualityPreference: QualityPreference = ((): QualityPreference => {
+  const stored = localStorage.getItem(QUALITY_PREF_KEY);
+  return isQualityPreference(stored) ? stored : "auto";
+})();
+
+/**
+ * Auto-scaling state.
+ *
+ * The device's own report picks the opening rung — the nearest to what its
+ * cores suggest — and measurement takes over from there. A guess makes a better
+ * first frame than the middle of the ladder; it makes a far worse tenth frame
+ * than a measurement does.
+ */
+let adaptiveQuality = createAdaptiveState(
+  ((): number => {
+    const hint = previewGradeBudgetPx(ENVIRONMENT);
+    let best = 0;
+    QUALITY_LADDER.forEach((px, index) => {
+      if (Math.abs(px - hint) < Math.abs(QUALITY_LADDER[best]! - hint)) {
+        best = index;
+      }
+    });
+    return best;
+  })(),
+);
+
+/** Set by the adjustment-layer path when it actually did pixel work, so only
+ * frames that exercised the budget are used to judge it — a frame with nothing
+ * to grade is fast for reasons that say nothing about the machine. */
+let gradedThisFrame = false;
+
+/** The pixel budget in force for preview grading right now. */
+function previewBudget(): number {
+  const pinned = levelForPreference(qualityPreference);
+  return budgetForLevel(pinned ?? adaptiveQuality.level);
+}
+
 let mediaKeyword = "";
 
 /**
@@ -1018,11 +1110,19 @@ async function discardProxies(): Promise<void> {
   toast("Proxies deleted — editing the originals.");
 }
 
-/** Assets whose bytes are not available in this session. */
+/**
+ * Assets whose bytes are not available in this session.
+ *
+ * An adjustment layer has no bytes by definition, so it is never "missing" and
+ * can never be relinked. Without this it would sit in the bin under a Relink
+ * prompt and keep the "1 file missing" bar up for the life of the project.
+ */
 function offlineAssets(): MediaAsset[] {
   return (session.getProject()?.assets ?? []).filter(
     (asset) =>
-      !removedAssets.has(asset.id) && !mediaCache.has(assetUri(asset)),
+      !removedAssets.has(asset.id) &&
+      asset.kind !== "adjustment" &&
+      !mediaCache.has(assetUri(asset)),
   );
 }
 
@@ -1398,6 +1498,265 @@ function findAsset(id: string): MediaAsset | undefined {
   return session.getProject()?.assets.find((a) => a.id === id);
 }
 
+/**
+ * The four curves an effect carries, each falling back to the identity curve.
+ *
+ * Read defensively rather than trusted: the params are validated on the way
+ * into state, but this also runs against effects being edited live and against
+ * anything an older project happens to hold.
+ */
+/** Which of a curve effect's four channels the editor is showing. Session
+ * state: it is a way of looking at the effect, not part of it. */
+const curveChannel = new Map<string, keyof CurveSet>();
+
+/** How close a click must be to grab an existing point, in canvas pixels. */
+const CURVE_GRAB_PX = 10;
+
+/**
+ * The curve editor: a square, the curve, and its points.
+ *
+ * Drag a point to move it, click empty space to add one, double-click or
+ * right-click a point to remove it. The two endpoints can move vertically but
+ * not horizontally — the schema anchors them at x = 0 and x = 1 so the curve is
+ * defined across the whole range, and letting them slide inward would leave the
+ * ends undefined.
+ *
+ * Committed on release rather than on every pointer move: a drag is one edit,
+ * and one command per mouse sample would bury the operation log and make Undo
+ * step back through a gesture pixel by pixel.
+ */
+function curveEditor(clip: TimelineClip, fx: EffectInstance): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "curve-editor";
+
+  const channel = curveChannel.get(fx.id) ?? "rgb";
+  const tabs = document.createElement("div");
+  tabs.className = "curve-tabs";
+  const CHANNELS: Array<[keyof CurveSet, string]> = [
+    ["rgb", "RGB"],
+    ["red", "R"],
+    ["green", "G"],
+    ["blue", "B"],
+  ];
+  for (const [key, label] of CHANNELS) {
+    const tab = document.createElement("button");
+    tab.className = `mini curve-tab curve-tab-${key}`;
+    tab.textContent = label;
+    tab.setAttribute("aria-pressed", String(key === channel));
+    tab.setAttribute("aria-label", `${label} curve`);
+    tab.addEventListener("click", () => {
+      curveChannel.set(fx.id, key);
+      renderInspector();
+    });
+    tabs.appendChild(tab);
+  }
+  wrap.appendChild(tabs);
+
+  const size = 220;
+  const canvas = document.createElement("canvas");
+  canvas.className = "curve-canvas";
+  canvas.width = size;
+  canvas.height = size;
+  canvas.setAttribute("role", "application");
+  canvas.setAttribute("aria-label", `${channel} curve editor`);
+  wrap.appendChild(canvas);
+
+  const set = curveSetOf(fx);
+  let points = [...set[channel]].map((p) => ({ ...p }));
+
+  const toCanvas = (p: CurvePoint) => ({
+    x: p.x * size,
+    y: (1 - p.y) * size,
+  });
+
+  const draw = (): void => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const styles = getComputedStyle(document.documentElement);
+    const line = styles.getPropertyValue("--line").trim() || "#8884";
+    const accent = styles.getPropertyValue("--accent").trim() || "#7c5cff";
+    const text = styles.getPropertyValue("--text").trim() || "#eee";
+
+    ctx.clearRect(0, 0, size, size);
+    // A quarter grid: enough to judge where a point sits, few enough not to
+    // compete with the curve.
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i += 1) {
+      const at = (i / 4) * size;
+      ctx.beginPath();
+      ctx.moveTo(at, 0);
+      ctx.lineTo(at, size);
+      ctx.moveTo(0, at);
+      ctx.lineTo(size, at);
+      ctx.stroke();
+    }
+    // The identity, so a change is visible as a departure from it.
+    ctx.strokeStyle = line;
+    ctx.beginPath();
+    ctx.moveTo(0, size);
+    ctx.lineTo(size, 0);
+    ctx.stroke();
+
+    ctx.strokeStyle = channel === "rgb" ? text : accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let px = 0; px <= size; px += 1) {
+      const y = (1 - curvePoint(points, px / size)) * size;
+      if (px === 0) ctx.moveTo(px, y);
+      else ctx.lineTo(px, y);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = accent;
+    for (const p of points) {
+      const c = toCanvas(p);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  const commitPoints = (): void => {
+    commit(
+      buildUpdateEffectParams(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        clipId: clip.id,
+        effectId: fx.id,
+        // The params object is JSON by construction — the curve is an array of
+        // {x, y} numbers — so this narrows rather than widens.
+        params: {
+          ...(fx.params as Record<string, JsonValue>),
+          [channel]: points.map((p) => ({ x: p.x, y: p.y })),
+        },
+      }),
+    );
+  };
+
+  const positionOf = (event: PointerEvent | MouseEvent): CurvePoint => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, 1 - (event.clientY - rect.top) / rect.height)),
+    };
+  };
+
+  const nearestIndex = (at: CurvePoint): number => {
+    const rect = canvas.getBoundingClientRect();
+    let best = -1;
+    let bestDistance = Infinity;
+    points.forEach((p, index) => {
+      const dx = (p.x - at.x) * rect.width;
+      const dy = (p.y - at.y) * rect.height;
+      const distance = Math.hypot(dx, dy);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    });
+    return bestDistance <= CURVE_GRAB_PX ? best : -1;
+  };
+
+  let dragging = -1;
+  canvas.addEventListener("pointerdown", (event) => {
+    const at = positionOf(event);
+    let index = nearestIndex(at);
+    if (index === -1) {
+      // A click in open space adds a point there, which is how a curve is
+      // shaped without a separate "add" mode.
+      const insertAt = points.findIndex((p) => p.x > at.x);
+      index = insertAt === -1 ? points.length : insertAt;
+      points.splice(index, 0, at);
+    }
+    dragging = index;
+    canvas.setPointerCapture(event.pointerId);
+    draw();
+  });
+
+  canvas.addEventListener("pointermove", (event) => {
+    if (dragging < 0) return;
+    const at = positionOf(event);
+    const isEnd = dragging === 0 || dragging === points.length - 1;
+    const previous = points[dragging - 1];
+    const next = points[dragging + 1];
+    // Endpoints keep their x so the curve stays anchored across the range;
+    // inner points are held strictly between their neighbours, because two
+    // points sharing an x is a curve with no defined value there.
+    const EPSILON = 0.001;
+    const x = isEnd
+      ? points[dragging]!.x
+      : Math.max(
+          (previous?.x ?? 0) + EPSILON,
+          Math.min((next?.x ?? 1) - EPSILON, at.x),
+        );
+    points[dragging] = { x, y: at.y };
+    draw();
+  });
+
+  const endDrag = (): void => {
+    if (dragging < 0) return;
+    dragging = -1;
+    commitPoints();
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+
+  const removeAt = (event: MouseEvent): void => {
+    event.preventDefault();
+    const index = nearestIndex(positionOf(event));
+    // The endpoints are structural: removing one would leave the curve
+    // undefined at that end, which the schema refuses anyway.
+    if (index <= 0 || index >= points.length - 1) return;
+    points.splice(index, 1);
+    draw();
+    commitPoints();
+  };
+  canvas.addEventListener("dblclick", removeAt);
+  canvas.addEventListener("contextmenu", removeAt);
+
+  const reset = document.createElement("button");
+  reset.className = "mini";
+  reset.textContent = "Reset channel";
+  reset.addEventListener("click", () => {
+    points = [...IDENTITY_CURVE].map((p) => ({ ...p }));
+    draw();
+    commitPoints();
+  });
+  wrap.appendChild(reset);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "Drag to shape, click to add a point, double-click one to remove it. The " +
+    "two ends move up and down only.";
+  wrap.appendChild(hint);
+
+  draw();
+  return wrap;
+}
+
+function curveSetOf(effect: EffectInstance): CurveSet {
+  const params = effect.params as Record<string, unknown>;
+  const read = (name: string): CurvePoint[] => {
+    const raw = params[name];
+    if (!Array.isArray(raw) || raw.length < 2) return [...IDENTITY_CURVE];
+    const points = raw.filter(
+      (p): p is CurvePoint =>
+        typeof p === "object" &&
+        p !== null &&
+        typeof (p as CurvePoint).x === "number" &&
+        typeof (p as CurvePoint).y === "number",
+    );
+    return points.length >= 2 ? points : [...IDENTITY_CURVE];
+  };
+  return {
+    rgb: read("rgb"),
+    red: read("red"),
+    green: read("green"),
+    blue: read("blue"),
+  };
+}
+
 function getParamNumber(
   effect: EffectInstance,
   name: string,
@@ -1667,6 +2026,111 @@ async function addVectorShape(preset: VectorShapePreset): Promise<void> {
 }
 
 /**
+ * Add an adjustment layer: a clip with no picture of its own, whose effects
+ * apply to everything beneath it.
+ *
+ * It has to end up *above* the clips it adjusts, and the lowest track index is
+ * the one that paints on top — so the top track is where it goes. When that
+ * track already holds clips, they are moved down onto a new track first, which
+ * is why this is a run of commands rather than one: a track is added beneath,
+ * the top track's clips move onto it, and the adjustment takes the vacated top.
+ *
+ * The whole run is one gesture, so it is one Undo, and the picture is unchanged
+ * by the move itself — the clips were the only visual content and they still
+ * composite in the same order.
+ */
+async function addAdjustmentLayer(): Promise<void> {
+  const seq = activeSequence();
+  if (!seq) return;
+  const videoTracks = seq.tracks.filter((t) => t.kind === "video");
+  const top = videoTracks[0];
+  if (!top) return;
+
+  const spanUs = sequenceDurationUs(seq);
+  if (BigInt(spanUs) <= 0n) {
+    toast("Add some media first — an adjustment layer needs something to adjust.", true);
+    return;
+  }
+
+  const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  const clipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+  const newTrackId = `video-${crypto.randomUUID().slice(0, 8)}`;
+  // No file behind it, so there is nothing to checksum. A constant stands in,
+  // and `mediaHints` leaves adjustment assets out of the save entirely.
+  const checksum = await checksumBlob(new Blob([new TextEncoder().encode("adjustment")]));
+  assetNames.set(assetId, "Adjustment layer");
+
+  session.beginGesture();
+  if (top.clips.length > 0) {
+    const added = commit(
+      buildAddTrack(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        track: {
+          id: newTrackId,
+          kind: "video",
+          name: `Video ${seq.tracks.length}`,
+          index: seq.tracks.length,
+        },
+      }),
+    );
+    if (!added) {
+      session.endGesture();
+      return;
+    }
+    for (const clip of top.clips) {
+      commit(
+        buildMoveClip(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          clipId: clip.id,
+          targetTrackId: newTrackId,
+          timelineStartUs: clip.timelineStartUs,
+        }),
+      );
+    }
+  }
+
+  const registered = commit(
+    buildRegisterAsset(nextCtx(), {
+      asset: {
+        id: assetId,
+        projectId: PROJECT_ID,
+        kind: "adjustment",
+        originalUri: "adjustment:",
+        checksum,
+        metadata: {
+          fileSizeBytes: "0",
+          // Nominal and long: a clip trims what it needs out of it, and the
+          // reducer only asks that the source range fits inside.
+          durationUs: "3600000000",
+        },
+        createdAt: new Date().toISOString(),
+      },
+    }),
+  );
+  if (registered) {
+    // Spanning everything by default, because an adjustment layer that covered
+    // part of the cut would look like it had simply failed on the rest.
+    commit(
+      buildAddClip(nextCtx(), {
+        sequenceId: SEQUENCE_ID,
+        trackId: top.id,
+        clip: {
+          id: clipId,
+          assetId,
+          timelineStartUs: "0",
+          sourceInUs: "0",
+          sourceOutUs: spanUs,
+          playbackRate: { numerator: 1, denominator: 1 },
+        },
+      }),
+    );
+  }
+  session.endGesture();
+  selectClip(clipId);
+  toast("Adjustment layer added — its effects apply to everything beneath it.");
+}
+
+/**
  * Add a clip, in whichever of the three destinations the toolbar is set to.
  *
  * This is the destination half of three-point editing. The source half is
@@ -1783,20 +2247,41 @@ function drawPreview(): void {
     return;
   }
 
-  // Paint highest track index last (on top): resolve order is track order.
+  // Timed so auto-scaling has something real to judge. Only the layer painting
+  // is measured: the scope pass below and the canvas resize above are not what
+  // the budget controls, and including them would make the controller chase
+  // costs it cannot change.
+  const paintedAt = performance.now();
+  gradedThisFrame = false;
+
+  // Resolve order is track order, ascending by index, and this reverses it —
+  // so the *lowest* index is painted last and ends up on top. That is what lets
+  // an adjustment layer read the canvas and find everything beneath it already
+  // painted and nothing above it painted yet.
   for (const layer of [...visual].reverse()) {
     const loc = locateClip(layer.clipId);
     if (loc) {
-      drawLayer(
+      paintLayer(
         cctx,
         loc.clip,
         layer.sourceTimeUs,
         clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
         cw,
         ch,
+        previewBudget(),
       );
     }
   }
+  // Only frames that actually graded are evidence about this machine, and only
+  // while auto is in force — a pinned preference is an instruction, not a
+  // hypothesis to be revised.
+  if (gradedThisFrame && qualityPreference === "auto") {
+    adaptiveQuality = observeFrame(
+      adaptiveQuality,
+      performance.now() - paintedAt,
+    );
+  }
+
   // Measured after everything is painted, so a scope reads exactly what the
   // viewer is looking at rather than an intermediate state.
   drawScope();
@@ -2030,6 +2515,119 @@ function redrawWhenFrameReady(video: HTMLVideoElement): void {
   }
   video.addEventListener("seeked", settle, { once: true });
   video.addEventListener("loadeddata", settle, { once: true });
+}
+
+/**
+ * Draw an adjustment layer: apply the clip's effects to what is already on the
+ * canvas, rather than to media of its own.
+ *
+ * This works because of the order the render loop already paints in. Layers are
+ * drawn beneath-first — the last track first, the first track last — so by the
+ * time an adjustment layer's turn comes, everything below it is on the canvas
+ * and nothing above it is. Reading the canvas back at that moment *is* "the
+ * composite of everything beneath", with no separate accumulation buffer and no
+ * second pass.
+ *
+ * The layer's own opacity, transition ramp and blend mode still apply, to the
+ * adjusted copy on its way back down. That is what makes a half-opacity
+ * adjustment layer mean "half the grade" and a Multiply one mean "darken by the
+ * grade", rather than either being a special case.
+ *
+ * A CSS-filter effect and a pixel effect both work, by the same split
+ * `drawLayer` uses: pixels through `gradeUncached`, filters through
+ * `ctx.filter`.
+ */
+/**
+ * Paint one resolved layer, whichever kind it is.
+ *
+ * Every render path goes through here — preview, MP4 and GIF — so an adjustment
+ * layer cannot work in one and be missing from another. That is the same reason
+ * `drawLayer` was shared in the first place, and it is why the blend-mode e2e
+ * measures an exported file rather than the preview canvas.
+ */
+function paintLayer(
+  ctx: CanvasRenderingContext2D,
+  clip: TimelineClip,
+  sourceTimeUs: string,
+  localTimeUs: string,
+  cw: number,
+  ch: number,
+  /** Pixel budget for CPU grading, or 0 for none. Preview passes a budget so
+   * its cost does not scale with the viewer's screen; export passes none,
+   * because a render must be full quality whatever machine made it. */
+  gradeBudgetPx = 0,
+): void {
+  if (findAsset(clip.assetId)?.kind === "adjustment") {
+    drawAdjustmentLayer(ctx, clip, localTimeUs, cw, ch, gradeBudgetPx);
+    return;
+  }
+  drawLayer(ctx, clip, sourceTimeUs, localTimeUs, cw, ch);
+}
+
+function drawAdjustmentLayer(
+  ctx: CanvasRenderingContext2D,
+  clip: TimelineClip,
+  localTimeUs: string,
+  cw: number,
+  ch: number,
+  gradeBudgetPx = 0,
+): void {
+  if (cw <= 0 || ch <= 0) return;
+  // Before/After compare shows the untouched picture, so an adjustment layer
+  // contributes nothing while it is held — the same rule drawLayer follows.
+  if (compareShowOriginal) return;
+
+  const gradingFx = clip.effects.filter((e) => e.enabled && runsAsPixels(e));
+  const staticTransform = previewTransform(clip);
+  const filter = staticTransform.filter;
+  if (gradingFx.length === 0 && filter === "") return;
+
+  // Opacity is read the same way a media clip reads it, so an animated Opacity
+  // keyframe ramps the grade in exactly as it would ramp a picture in.
+  const transform = composeCanvasLayerTransform(
+    staticTransform,
+    resolveLayerAnimationTransform(clip, localTimeUs),
+    cw,
+    ch,
+  );
+
+  // Snapshot what is beneath. Reading the canvas is the whole mechanism, so it
+  // is done once per layer rather than per effect.
+  //
+  // Unlike a media clip — which grades at its own resolution and caches the
+  // result — this grades the live canvas every frame, so its cost follows the
+  // preview's size and therefore the viewer's window and pixel ratio. A budget
+  // keeps that from making the same project four times dearer on a retina
+  // screen than on a 1080p one. The grade is a per-pixel tone and colour
+  // operation, so computing it on a smaller copy and scaling back is very close
+  // to computing it at full size; export passes no budget and gets exactly it.
+  const graded = fitWithinBudget(cw, ch, gradeBudgetPx);
+  const beneath = document.createElement("canvas");
+  beneath.width = graded.width;
+  beneath.height = graded.height;
+  const bctx = beneath.getContext("2d", { willReadFrequently: true });
+  if (!bctx) return;
+  bctx.drawImage(ctx.canvas, 0, 0, cw, ch, 0, 0, graded.width, graded.height);
+
+  gradedThisFrame = true;
+  const adjusted =
+    gradingFx.length > 0
+      ? gradeUncached(
+          beneath,
+          graded.width,
+          graded.height,
+          gradingFx,
+          clip.masks ?? [],
+        )
+      : beneath;
+
+  const transition = sampleClipTransition(clip, localTimeUs);
+  ctx.save();
+  ctx.globalAlpha = transform.alpha * transition.opacity;
+  ctx.filter = filter || "none";
+  ctx.globalCompositeOperation = compositeOperation(clip.blendMode ?? "normal");
+  ctx.drawImage(adjusted, 0, 0, cw, ch);
+  ctx.restore();
 }
 
 function drawLayer(
@@ -2617,10 +3215,35 @@ function runsAsPixels(fx: EffectInstance): boolean {
   );
 }
 
+/**
+ * Grading effects whose output for a pixel depends on that pixel alone.
+ *
+ * A stack made only of these is a pure function from RGB to RGB, so it can be
+ * sampled once into a 3D table and applied by lookup — see `lut3d`. The two
+ * grading effects missing from this list are the two that read a pixel's
+ * neighbours: Presence (clarity, texture, dehaze) works on local contrast, and
+ * Noise Reduction is a spatial filter by definition. A table cannot represent
+ * either, so a stack containing one takes the direct path.
+ *
+ * `isPointwise` in raster-tools exists to check a claim like this by
+ * experiment rather than assertion.
+ */
+const POINTWISE_GRADING_TYPES: ReadonlySet<string> = new Set([
+  "color.white_balance",
+  "color.levels",
+  "color.tone_curve",
+  "color.curves",
+  "color.vibrance",
+  "light.tone",
+  "color.hsl_mixer",
+  "color.color_grading",
+]);
+
 const GRADING_TYPES: ReadonlySet<string> = new Set([
   "color.white_balance",
   "color.levels",
   "color.tone_curve",
+  "color.curves",
   "color.vibrance",
   "light.tone",
   "color.hsl_mixer",
@@ -2745,6 +3368,9 @@ function gradeImage(image: RasterImage, fx: EffectInstance): RasterImage {
       getParamNumber(fx, "gamma", 1),
     );
   }
+  if (fx.type === "color.curves") {
+    return applyCurves(image, curveSetOf(fx));
+  }
   if (fx.type === "color.tone_curve") {
     return toneCurve(
       image,
@@ -2824,12 +3450,74 @@ function grade(
   const cached = gradeCache.get(key);
   if (cached) return cached;
 
+  const off = gradeUncached(source, width, height, gradingFx, masks);
+
+  // Bounded like artCache: the cache exists for the repeated frames of one
+  // export and one slider drag, not for a whole session's history.
+  if (gradeCache.size > 12) {
+    const oldest = gradeCache.keys().next().value;
+    if (oldest !== undefined) gradeCache.delete(oldest);
+  }
+  gradeCache.set(key, off);
+  return off;
+}
+
+/**
+ * Run a grade with no cache at all.
+ *
+ * `grade()` keys its cache on the *source*, which works because a clip's media
+ * at a given source time is the same picture every time it is asked for. An
+ * adjustment layer's source is the live canvas — different pixels on every
+ * frame, and often on every repaint of the same frame — so a cache would either
+ * return a stale grade or grow without bound. This is that path.
+ */
+/**
+ * Can this stack be collapsed into a 3D table?
+ *
+ * Only when every effect is pointwise and none is masked — a mask makes the
+ * result depend on *where* a pixel is, which is precisely what a colour table
+ * cannot encode.
+ *
+ * Two effects is the floor. One pointwise effect costs a single pass either
+ * way, and building a table for it would add ~36k evaluations to save nothing.
+ */
+function isLutable(
+  gradingFx: readonly EffectInstance[],
+  masks: readonly ClipMask[],
+): boolean {
+  if (gradingFx.length < 2) return false;
+  if (masks.length > 0 && gradingFx.some((fx) => fx.maskId)) return false;
+  return gradingFx.every((fx) => POINTWISE_GRADING_TYPES.has(fx.type));
+}
+
+function gradeUncached(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  gradingFx: EffectInstance[],
+  masks: readonly ClipMask[],
+): HTMLCanvasElement {
   const off = document.createElement("canvas");
   off.width = width;
   off.height = height;
   const octx = off.getContext("2d", { willReadFrequently: true })!;
   octx.drawImage(source, 0, 0, width, height);
   const image = octx.getImageData(0, 0, width, height);
+
+  // A pointwise stack costs one pass instead of one per effect: the chain is
+  // run once over a 33-cube of colours — about 36k pixels however many effects
+  // there are — and every image pixel then costs one interpolated lookup. The
+  // table is built by running the very same `gradeImage`, so the two paths
+  // cannot drift apart.
+  if (isLutable(gradingFx, masks)) {
+    let cube = identityCubeImage();
+    for (const fx of gradingFx) cube = gradeImage(cube, fx);
+    const lut = cubeImageToLut(cube);
+    const out = applyLut3d({ width, height, data: image.data }, lut);
+    image.data.set(out.data);
+    octx.putImageData(image, 0, 0);
+    return off;
+  }
 
   let raster: RasterImage = { width, height, data: image.data };
   // One rasterization per mask, however many effects reference it: turning
@@ -2855,14 +3543,6 @@ function grade(
 
   image.data.set(raster.data);
   octx.putImageData(image, 0, 0);
-
-  // Bounded like artCache: the cache exists for the repeated frames of one
-  // export and one slider drag, not for a whole session's history.
-  if (gradeCache.size > 12) {
-    const oldest = gradeCache.keys().next().value;
-    if (oldest !== undefined) gradeCache.delete(oldest);
-  }
-  gradeCache.set(key, off);
   return off;
 }
 
@@ -4812,7 +5492,11 @@ function appendEffectRows(
     header.append(name, remove);
     container.appendChild(header);
 
-    if (spec) {
+    // A curve has no scalar parameters to slide — it is edited by dragging its
+    // points — so this type renders its own control instead of a param list.
+    if (fx.type === "color.curves") {
+      container.appendChild(curveEditor(clip, fx));
+    } else if (spec) {
       for (const p of spec.params) {
         container.appendChild(paramControl(clip.id, fx, spec, p));
       }
@@ -5561,7 +6245,12 @@ function renderMedia(): void {
   mediaListEl.innerHTML = "";
   mediaListEl.classList.toggle("grid", galleryGrid);
   const visible = (session.getProject()?.assets ?? []).filter(
-    (asset) => !removedAssets.has(asset.id) && matchesMediaFilters(asset),
+    (asset) =>
+      !removedAssets.has(asset.id) &&
+      // An adjustment layer is created on the timeline, not imported, and there
+      // is nothing to preview, rate, keyword or add from here.
+      asset.kind !== "adjustment" &&
+      matchesMediaFilters(asset),
   );
   const anyMedia = (session.getProject()?.assets ?? []).some(
     (asset) => !removedAssets.has(asset.id),
@@ -5841,17 +6530,32 @@ function removeAsset(assetId: string): void {
 // Saving and opening a project
 // ==========================================================================
 
-/** Media hints for the save file: enough to find each file again. */
+/**
+ * Media hints for the save file: enough to find each file again.
+ *
+ * Adjustment layers are left out. A hint exists so a missing file can be
+ * relinked by checksum, and an adjustment layer has no file — listing one would
+ * put an entry in the save that could never be matched to anything, and would
+ * show up in the bin's missing-media list on every reopen.
+ */
 function mediaHints(): MediaHint[] {
   return (session.getProject()?.assets ?? [])
     .filter((asset) => !removedAssets.has(asset.id))
-    .map((asset) => ({
-      assetId: asset.id,
-      name: assetName(asset),
-      checksum: asset.checksum,
-      fileSizeBytes: asset.metadata.fileSizeBytes,
-      kind: asset.kind,
-    }));
+    // flatMap rather than filter-then-map: the ternary narrows `kind` to the
+    // kinds a hint can carry, which a filter predicate does not.
+    .flatMap((asset) =>
+      asset.kind === "adjustment"
+        ? []
+        : [
+            {
+              assetId: asset.id,
+              name: assetName(asset),
+              checksum: asset.checksum,
+              fileSizeBytes: asset.metadata.fileSizeBytes,
+              kind: asset.kind,
+            },
+          ],
+    );
 }
 
 function currentProjectText(): string {
@@ -8149,6 +8853,44 @@ function bindEvents(): void {
   $("btn-delete").addEventListener("click", () => deleteSelection(false));
   $("btn-ripple-delete").addEventListener("click", () => deleteSelection(true));
 
+  // The static half of the report never changes; the quality line does, so it
+  // is refreshed each time the panel is opened rather than left stale.
+  const capabilitiesBody = document.getElementById("system-capabilities-body");
+  const qualityLine = document.createElement("p");
+  const renderCapabilities = (): void => {
+    qualityLine.textContent = describeQuality(adaptiveQuality, qualityPreference);
+  };
+  if (capabilitiesBody) {
+    for (const line of describeCapabilities(ENVIRONMENT)) {
+      const p = document.createElement("p");
+      p.textContent = line;
+      capabilitiesBody.appendChild(p);
+    }
+    capabilitiesBody.appendChild(qualityLine);
+    renderCapabilities();
+  }
+  const qualitySelect = document.getElementById(
+    "preview-quality",
+  ) as HTMLSelectElement | null;
+  if (qualitySelect) {
+    qualitySelect.value = qualityPreference;
+    qualitySelect.addEventListener("change", () => {
+      if (!isQualityPreference(qualitySelect.value)) return;
+      qualityPreference = qualitySelect.value;
+      localStorage.setItem(QUALITY_PREF_KEY, qualityPreference);
+      // Back to auto means measuring again from where it is, not from the
+      // original guess: the machine has not changed, only the instruction.
+      renderCapabilities();
+      drawPreview();
+    });
+  }
+  document
+    .getElementById("system-capabilities")
+    ?.addEventListener("toggle", renderCapabilities);
+  $("btn-add-adjustment").addEventListener(
+    "click",
+    () => void addAdjustmentLayer(),
+  );
   $("btn-split").addEventListener("click", splitSelectedClip);
   $("btn-export").addEventListener("click", doExport);
 
@@ -8432,7 +9174,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
     if (layerMedia instanceof HTMLVideoElement) {
       await seekVideoFrame(layerMedia, Number(layer.sourceTimeUs) / 1_000_000);
     }
-    drawLayer(
+    paintLayer(
       octx,
       loc.clip,
       layer.sourceTimeUs,
@@ -8646,7 +9388,7 @@ export type VideoExportResult =
 type ExportProgress = (phase: string, done: number, total: number) => void;
 
 /** Real, working video export: renders every planned frame (effects baked
- * in, via the same drawLayer() used for live preview) to an offscreen
+ * in, via the same paintLayer() used for live preview) to an offscreen
  * canvas, encodes with the browser-native WebCodecs API, and muxes video and
  * (when present) a real audio mixdown into a downloadable MP4.
  *
@@ -8771,7 +9513,7 @@ async function runVideoExport(
           if (media instanceof HTMLVideoElement) {
             await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
           }
-          drawLayer(
+          paintLayer(
             offCtx,
             loc.clip,
             layer.sourceTimeUs,
@@ -9201,7 +9943,7 @@ async function runGifExport(): Promise<void> {
         if (media instanceof HTMLVideoElement) {
           await seekVideoFrame(media, Number(layer.sourceTimeUs) / 1_000_000);
         }
-        drawLayer(
+        paintLayer(
           offCtx,
           loc.clip,
           layer.sourceTimeUs,

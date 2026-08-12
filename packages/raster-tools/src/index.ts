@@ -10,6 +10,24 @@ export {
 } from "./types.js";
 
 export {
+  type Lut3d,
+  LUT_SIZE,
+  identityCubeImage,
+  cubeImageToLut,
+  applyLut3d,
+  isPointwise,
+} from "./lut3d.js";
+
+export {
+  type CurvePoint,
+  type CurveSet,
+  IDENTITY_CURVE,
+  curvePoint,
+  buildCurveLut,
+  applyCurves,
+} from "./curves.js";
+
+export {
   type Point,
   polygonMask,
   floodFillMask,
