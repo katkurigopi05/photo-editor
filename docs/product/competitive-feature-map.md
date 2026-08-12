@@ -235,8 +235,15 @@ session, **M** a few sessions, **L** a phase.
     the web stack means a decoder and a colour pipeline.
 14. **M1 · Magnetic timeline** — **L**, and a decision before a task: it changes
     what a track *is*, and the overlap rules in the reducer with it.
-15. **P5 · GPU rendering** — **L**. The `crates/render-engine` scaffold exists
-    for exactly this and has no consumer.
+15. **P5 · GPU rendering** — **L**. There is no GPU code at all: no WebGL, no
+    WebGPU, and no `crates/render-engine` — that crate is in the roadmap's
+    planned layout but was never created. What the GPU does today is only what
+    the browser gives for free (canvas compositing, `ctx.filter`, blend modes,
+    and hardware H.264 via WebCodecs). The ten `GRADING_TYPES` effects, mask
+    rasterisation and the artistic passes are all `getImageData` → JS loop →
+    `putImageData` on one thread. The win is WebGL2/WebGPU shaders for that
+    pipeline inside `apps/web`, not the native crate: native `media-core` work
+    was already deferred precisely because it had no effect on the running app.
 
 ## What this map says about the project
 

@@ -92,6 +92,12 @@ import {
 import { layoutTextLines } from "./text-overlay.js";
 import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
 import type { JsonValue } from "@director/canonical-json";
+import {
+  describeCapabilities,
+  fitWithinBudget,
+  previewGradeBudgetPx,
+  readEnvironment,
+} from "./capabilities.js";
 import { checksumBlob } from "./checksum.js";
 import {
   buildProjectFile,
@@ -776,6 +782,11 @@ const selectedClipIds = new Set<string>();
 let mediaSearch = "";
 type MediaFilter = "all" | "favorites" | "rejected" | "unrated";
 let mediaFilter: MediaFilter = "all";
+/** Read once: the environment does not change while the app is open, and
+ * re-reading it per frame would be a syscall in the render loop. */
+const ENVIRONMENT = readEnvironment();
+const PREVIEW_GRADE_BUDGET_PX = previewGradeBudgetPx(ENVIRONMENT);
+
 let mediaKeyword = "";
 
 /**
@@ -2198,6 +2209,7 @@ function drawPreview(): void {
         clipLocalTimeUs(playback.currentTimeUs, layer.timelineStartUs),
         cw,
         ch,
+        PREVIEW_GRADE_BUDGET_PX,
       );
     }
   }
@@ -2471,9 +2483,13 @@ function paintLayer(
   localTimeUs: string,
   cw: number,
   ch: number,
+  /** Pixel budget for CPU grading, or 0 for none. Preview passes a budget so
+   * its cost does not scale with the viewer's screen; export passes none,
+   * because a render must be full quality whatever machine made it. */
+  gradeBudgetPx = 0,
 ): void {
   if (findAsset(clip.assetId)?.kind === "adjustment") {
-    drawAdjustmentLayer(ctx, clip, localTimeUs, cw, ch);
+    drawAdjustmentLayer(ctx, clip, localTimeUs, cw, ch, gradeBudgetPx);
     return;
   }
   drawLayer(ctx, clip, sourceTimeUs, localTimeUs, cw, ch);
@@ -2485,6 +2501,7 @@ function drawAdjustmentLayer(
   localTimeUs: string,
   cw: number,
   ch: number,
+  gradeBudgetPx = 0,
 ): void {
   if (cw <= 0 || ch <= 0) return;
   // Before/After compare shows the untouched picture, so an adjustment layer
@@ -2507,16 +2524,31 @@ function drawAdjustmentLayer(
 
   // Snapshot what is beneath. Reading the canvas is the whole mechanism, so it
   // is done once per layer rather than per effect.
+  //
+  // Unlike a media clip — which grades at its own resolution and caches the
+  // result — this grades the live canvas every frame, so its cost follows the
+  // preview's size and therefore the viewer's window and pixel ratio. A budget
+  // keeps that from making the same project four times dearer on a retina
+  // screen than on a 1080p one. The grade is a per-pixel tone and colour
+  // operation, so computing it on a smaller copy and scaling back is very close
+  // to computing it at full size; export passes no budget and gets exactly it.
+  const graded = fitWithinBudget(cw, ch, gradeBudgetPx);
   const beneath = document.createElement("canvas");
-  beneath.width = cw;
-  beneath.height = ch;
+  beneath.width = graded.width;
+  beneath.height = graded.height;
   const bctx = beneath.getContext("2d", { willReadFrequently: true });
   if (!bctx) return;
-  bctx.drawImage(ctx.canvas, 0, 0, cw, ch);
+  bctx.drawImage(ctx.canvas, 0, 0, cw, ch, 0, 0, graded.width, graded.height);
 
   const adjusted =
     gradingFx.length > 0
-      ? gradeUncached(beneath, cw, ch, gradingFx, clip.masks ?? [])
+      ? gradeUncached(
+          beneath,
+          graded.width,
+          graded.height,
+          gradingFx,
+          clip.masks ?? [],
+        )
       : beneath;
 
   const transition = sampleClipTransition(clip, localTimeUs);
@@ -8693,6 +8725,16 @@ function bindEvents(): void {
   $("btn-delete").addEventListener("click", () => deleteSelection(false));
   $("btn-ripple-delete").addEventListener("click", () => deleteSelection(true));
 
+  // Filled once: the capability report is a fact about the machine, not about
+  // the project, so it never needs re-rendering.
+  const capabilitiesBody = document.getElementById("system-capabilities-body");
+  if (capabilitiesBody) {
+    for (const line of describeCapabilities(ENVIRONMENT)) {
+      const p = document.createElement("p");
+      p.textContent = line;
+      capabilitiesBody.appendChild(p);
+    }
+  }
   $("btn-add-adjustment").addEventListener(
     "click",
     () => void addAdjustmentLayer(),

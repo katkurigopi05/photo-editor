@@ -380,6 +380,23 @@ Example — create a two-photo loop:
 
 To reduce file size, lower width first, then frame rate, then palette colors.
 
+### Running on your machine
+
+The editor adapts to the device it finds rather than assuming one:
+
+- Open Export and expand **This device** to see what is available here — whether
+  MP4 export is supported, whether long exports write straight to disk or are
+  held in memory, and what the machine reports about itself.
+- Where a capability is missing the reason is stated along with what still
+  works. A browser without WebCodecs cannot write MP4 or build proxies, but
+  image and GIF export are unaffected.
+- Preview grading runs within a pixel budget chosen from the machine, so a
+  high-resolution display does not make the same project slower to preview than
+  a smaller one would. **Exports are never budgeted** — a render is always full
+  resolution and full quality, whatever machine produced it.
+- Large video is proxied at 540p on import, so editing stays responsive on
+  modest hardware; exports still read the original.
+
 ## 7. Export reference
 
 | Mode | Result | Notes |
@@ -434,6 +451,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-11:** Preview grading now runs within a pixel budget chosen from the
+  device, so a high-resolution display no longer makes previewing the same
+  project slower. Exports are unaffected and remain full resolution. Export now
+  shows a **This device** report of what is and is not available here.
 - **2026-08-11:** Added Curves — a control-point curve on the composite or on
   any single channel, replacing nothing: the three-band Tone Curve stays.
 - **2026-08-11:** Added adjustment layers — ＋ Adjustment in the timeline

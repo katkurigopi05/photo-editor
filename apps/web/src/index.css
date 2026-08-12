@@ -2497,3 +2497,20 @@ select {
   touch-action: none;
   cursor: crosshair;
 }
+
+/* ---- capability report ---- */
+/* Collapsed by default: it answers "why can't I export MP4 here", which is a
+   question people only ask once, and only when something is missing. */
+.system-capabilities {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.system-capabilities summary {
+  cursor: pointer;
+  user-select: none;
+}
+.system-capabilities p {
+  margin: 6px 0 0;
+  line-height: 1.5;
+}

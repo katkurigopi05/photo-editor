@@ -113,3 +113,26 @@ test("it needs something to adjust", async ({ page }) => {
   await addAdjustment(page);
   await expect(page.locator(".clip")).toHaveCount(0);
 });
+
+test("the preview grade is bounded, and the report says so", async ({
+  page,
+}) => {
+  // The adjustment path grades the live canvas every frame, so its cost
+  // follows the preview size and therefore the viewer's screen. The budget
+  // must not change what the grade *does* — only how many pixels it does it to.
+  await importMedia(page, SOURCE);
+  await setMode(page, "video");
+  await addAdjustment(page);
+  const empty = await previewSignature(page);
+  await applyLook(page, "Cinematic");
+  const graded = await previewSignature(page);
+  expect(signatureDistance(empty, graded)).toBeGreaterThan(2);
+
+  // And the machine's limits are stated rather than left to be discovered.
+  await page.click("#btn-export");
+  await page.waitForTimeout(600);
+  const report = page.locator("#system-capabilities");
+  await expect(report).toBeVisible();
+  await report.locator("summary").click();
+  await expect(report).toContainText("exports always render at full resolution");
+});
