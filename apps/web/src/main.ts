@@ -808,6 +808,23 @@ const FRAME_RATE = { numerator: 30, denominator: 1 };
  */
 let activeSequenceId: string = SEQUENCE_ID;
 
+/** One compound clip stepped into: what to show in the breadcrumb, and where
+ * the playhead was outside so stepping back out returns to that frame. */
+interface SequenceStep {
+  id: string;
+  name: string;
+  returnTimeUs: string;
+}
+
+/**
+ * The compound clips currently stood inside, outermost first. Empty at the
+ * root, so its length is the depth and `SEQUENCE_ID` needs no entry.
+ *
+ * A path rather than a single id because stepping out has to know *where to*,
+ * and because a compound clip can contain another one.
+ */
+let sequencePath: SequenceStep[] = [];
+
 const session = new EditorSession();
 /** GIF is a third output mode, not a third editor: it shares the timeline and
  * the effect stack with video, and differs only in how frames leave the app. */
@@ -1549,7 +1566,12 @@ function activeSequence(): Sequence | undefined {
   if (sequences === undefined) return undefined;
   const here = sequences.find((s) => s.id === activeSequenceId);
   if (here !== undefined) return here;
-  if (activeSequenceId !== SEQUENCE_ID) activeSequenceId = SEQUENCE_ID;
+  if (activeSequenceId !== SEQUENCE_ID) {
+    activeSequenceId = SEQUENCE_ID;
+    // The breadcrumb has to go with it, or it would offer a way back into a
+    // sequence that no longer exists.
+    sequencePath = [];
+  }
   return sequences.find((s) => s.id === SEQUENCE_ID);
 }
 
@@ -2693,6 +2715,80 @@ function dissolveCompoundClip(): void {
   toast(
     `Dissolved into ${restored.length} clip${restored.length === 1 ? "" : "s"}.`,
   );
+}
+
+/**
+ * Step inside the selected compound clip and edit its contents.
+ *
+ * Not a command and not undoable: this moves the viewer, not the project. The
+ * inner sequence has been editable since compound clips landed — what was
+ * missing was any way to point the editor at it.
+ *
+ * The playhead follows the frame rather than resetting, because stepping in is
+ * meant to feel like looking closer at what you were already watching. Inside,
+ * that instant is `playhead − clipStart + sourceIn`, which is the same
+ * translation the resolver does; stepping back out restores the outer time we
+ * left, so a round trip lands on the frame it started from.
+ */
+function openCompoundClip(): void {
+  const loc = locateClip(selectedClipId);
+  if (!loc) {
+    toast("Select a compound clip to open it.", true);
+    return;
+  }
+  const asset = findAsset(loc.clip.assetId);
+  const inner = asset ? nestedSequenceId(asset) : null;
+  if (inner === null) {
+    toast("That is not a compound clip.", true);
+    return;
+  }
+  if (session.getProject()?.sequences.some((s) => s.id === inner) !== true) {
+    toast("This compound clip's contents are missing.", true);
+    return;
+  }
+
+  const outerNow = BigInt(playback.currentTimeUs);
+  const clipStart = BigInt(loc.clip.timelineStartUs);
+  const clipEnd = clipStart + BigInt(loc.clip.timelineDurationUs);
+  // Only meaningful while the playhead is actually over the clip; from outside
+  // it, the head of what the clip plays is the honest place to land.
+  const insideUs =
+    outerNow >= clipStart && outerNow < clipEnd
+      ? outerNow - clipStart + BigInt(loc.clip.sourceInUs)
+      : BigInt(loc.clip.sourceInUs);
+
+  sequencePath = [
+    ...sequencePath,
+    {
+      id: inner,
+      name: assetNames.get(asset!.id) ?? "Compound",
+      returnTimeUs: playback.currentTimeUs,
+    },
+  ];
+  activeSequenceId = inner;
+  selectedClipId = null;
+  selectedClipIds.clear();
+  playback = seek(playback, insideUs.toString());
+  updateUI();
+  toast(`Inside ${sequencePath[sequencePath.length - 1]!.name}.`);
+}
+
+/**
+ * Step back out to `depth` levels of nesting — 0 being the root sequence.
+ *
+ * Takes a depth rather than "up one" so the breadcrumb can jump several levels
+ * in a single click, and so the two callers cannot disagree about what a step
+ * means.
+ */
+function goToSequenceDepth(depth: number): void {
+  if (depth < 0 || depth >= sequencePath.length) return;
+  const returnTimeUs = sequencePath[depth]!.returnTimeUs;
+  sequencePath = sequencePath.slice(0, depth);
+  activeSequenceId = sequencePath[depth - 1]?.id ?? SEQUENCE_ID;
+  selectedClipId = null;
+  selectedClipIds.clear();
+  playback = seek(playback, returnTimeUs);
+  updateUI();
 }
 
 /** Remove a clip from the timeline via the command engine (undoable). */
@@ -4150,6 +4246,44 @@ function drawWaveform(
   }
 }
 
+/**
+ * The trail of compound clips currently stood inside, as buttons back out.
+ *
+ * Hidden entirely at the root, where it would be a permanent label reading
+ * "Main" that never does anything. It appears only when there is somewhere to
+ * go back to, which is also the only time you need telling that the timeline
+ * below is not the whole edit.
+ */
+function renderSequencePath(): void {
+  const nav = $("sequence-path");
+  nav.innerHTML = "";
+  nav.hidden = sequencePath.length === 0;
+  if (sequencePath.length === 0) return;
+
+  const crumb = (label: string, depth: number, current: boolean): void => {
+    if (nav.childElementCount > 0) {
+      const sep = document.createElement("span");
+      sep.className = "sequence-path-sep";
+      sep.textContent = "›";
+      sep.setAttribute("aria-hidden", "true");
+      nav.append(sep);
+    }
+    const el = document.createElement("button");
+    el.className = `sequence-crumb${current ? " current" : ""}`;
+    el.textContent = label;
+    // The one you are on is not a destination, so it is not a control.
+    el.disabled = current;
+    if (current) el.setAttribute("aria-current", "true");
+    else el.addEventListener("click", () => goToSequenceDepth(depth));
+    nav.append(el);
+  };
+
+  crumb("Main", 0, false);
+  sequencePath.forEach((step, i) => {
+    crumb(step.name, i + 1, i === sequencePath.length - 1);
+  });
+}
+
 function renderTimeline(): void {
   const seq = activeSequence();
   timelineBody.innerHTML = "";
@@ -4261,6 +4395,14 @@ function renderTimeline(): void {
       label.className = "clip-label";
       label.textContent = asset ? assetName(asset) : clip.id;
       el.appendChild(label);
+
+      // A compound clip says so. Opening it on double-click is handled in
+      // `startClipDrag`, not with a `dblclick` listener here — see there.
+      if (asset && nestedSequenceId(asset) !== null) {
+        el.classList.add("compound");
+        el.dataset.compound = "true";
+        el.title = "Compound clip — double-click to edit inside it";
+      }
 
       for (const localTimeUs of uniqueKeyframeTimes(clip)) {
         const count = (clip.animations ?? []).reduce(
@@ -4375,6 +4517,12 @@ function snapToleranceUs(): string {
   return String(Math.round((SNAP_TOLERANCE_PX / zoom) * 1_000_000));
 }
 
+/** How close together two presses on the same clip count as a double-click.
+ * Matches the platform default closely enough that it feels like one. */
+const DOUBLE_CLICK_MS = 400;
+/** The last press on a clip, by id rather than by element — see startClipDrag. */
+let lastClipPress: { clipId: string; at: number } | null = null;
+
 /** Drag a clip horizontally to move it (dispatches timeline.move_clip).
  * The drop position snaps to clip edges, the playhead and the sequence start;
  * hold Alt to place it exactly where the pointer is instead. */
@@ -4388,6 +4536,29 @@ function startClipDrag(
     toggleClipSelection(clip.id);
     return;
   }
+
+  // Double-click to open a compound clip, detected here rather than with a
+  // `dblclick` listener on the element. Selecting a clip re-renders the
+  // timeline, so by the second press the first element is gone and the browser
+  // never pairs the two clicks into a `dblclick` at all — it fires two
+  // singles. Tracking the clip *id* survives the re-render; the element does
+  // not.
+  const now = Date.now();
+  const isSecond =
+    lastClipPress !== null &&
+    lastClipPress.clipId === clip.id &&
+    now - lastClipPress.at <= DOUBLE_CLICK_MS;
+  lastClipPress = { clipId: clip.id, at: now };
+  if (isSecond) {
+    const asset = findAsset(clip.assetId);
+    if (asset && nestedSequenceId(asset) !== null) {
+      lastClipPress = null;
+      selectClip(clip.id);
+      openCompoundClip();
+      return;
+    }
+  }
+
   selectClip(clip.id);
   const startX = e.clientX;
   let moved = false;
@@ -7386,6 +7557,7 @@ async function openProjectFile(file: File): Promise<void> {
   // sequence you were inside may not exist in this one, and even if an id
   // collides it is a different sequence.
   activeSequenceId = SEQUENCE_ID;
+  sequencePath = [];
   browserRanges.clear();
   playback = seek(playback, "0");
   projectDirty = false;
@@ -7837,6 +8009,7 @@ function updateUI(): void {
   renderEffectsPalette();
   renderLooks();
   renderHistory();
+  renderSequencePath();
   renderTimeline();
   renderInspector();
   renderGifPanel();
@@ -9596,6 +9769,7 @@ function bindEvents(): void {
     .getElementById("system-capabilities")
     ?.addEventListener("toggle", renderCapabilities);
   $("btn-make-compound").addEventListener("click", () => void makeCompoundClip());
+  $("btn-open-compound").addEventListener("click", () => openCompoundClip());
   $("btn-dissolve-compound").addEventListener("click", () =>
     dissolveCompoundClip(),
   );

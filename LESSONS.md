@@ -86,3 +86,9 @@ Why: `playwright.config.ts` uses a fixed port with `strictPort` and `reuseExisti
 Wrong: `audio.spec.ts` and `import-checksum.spec.ts` asserted on the history panel's text to prove a command reached the engine, matching raw types like `timeline.add_effect`. Rewriting the panel to show human labels broke both at once.
 Fix: entries carry `data-command-type`; the probes read that.
 Why: an assertion about *engine behaviour* was coupled to *display wording*. When a UI string is the only handle a test has on a fact, give the fact its own handle.
+
+## 2026-08-12: a double-click listener on a node its own first click destroys
+Symptom: `dblclick` on a compound clip never opened it. The button beside it worked, so the feature was fine and only the idiom was broken.
+Root cause: pressing a clip selects it, which calls `updateUI()` and rebuilds every clip element. By the second press the element that received the first is gone, so the browser sees two clicks on two different nodes and never pairs them into a `dblclick` at all — not a swallowed event, an event that is never synthesised.
+Fix: detect it in the existing pointerdown handler, keyed on the clip **id** and a timestamp. The id survives the re-render; the element does not. Event delegation would not have helped, because dispatch still depends on the hit target being the same node.
+Why: any gesture assembled from two events cannot be attached to a node that its own first event destroys. Worth checking wherever a handler re-renders the thing it is attached to — which in this app is most of them. Caught only because the e2e drove the real gesture; a unit test of the open function would have passed.

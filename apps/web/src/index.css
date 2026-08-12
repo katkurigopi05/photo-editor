@@ -1769,6 +1769,47 @@ select {
   align-items: center;
   gap: 8px;
 }
+
+/* Shown only while standing inside a compound clip; at the root it is hidden,
+   because a crumb trail of one is a label rather than a way back. */
+.sequence-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.sequence-path[hidden] {
+  display: none;
+}
+.sequence-path-sep {
+  color: var(--muted);
+}
+.sequence-crumb {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  padding: 3px 8px;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast, 150ms) ease,
+    background-color var(--dur-fast, 150ms) ease;
+}
+.sequence-crumb:hover:not(:disabled),
+.sequence-crumb:focus-visible {
+  color: var(--text);
+  background: var(--surface-2, rgb(0 0 0 / 6%));
+}
+/* The sequence you are in is where you are, not somewhere to go: full contrast
+   so it reads as the heading it is, and no pointer because it does nothing. */
+.sequence-crumb.current {
+  color: var(--text);
+  cursor: default;
+  opacity: 1;
+}
 .timeline-toolbar .spacer {
   flex: 1;
 }
@@ -1857,6 +1898,17 @@ select {
 }
 .clip:hover {
   filter: brightness(1.08);
+}
+/* A compound clip holds a whole sequence, so it is marked as different in kind
+   from a clip holding one piece of media — the stacked edge reads as depth
+   without needing a legend. */
+.clip.compound {
+  background: linear-gradient(180deg, #4f7bd4, #33529c);
+  border-color: #7fa6ef;
+  box-shadow:
+    var(--shadow-soft),
+    inset -3px 0 0 rgb(255 255 255 / 22%),
+    inset -7px 0 0 rgb(255 255 255 / 12%);
 }
 .clip.audio {
   background: linear-gradient(180deg, #1f6b62, #14504a);

@@ -256,6 +256,17 @@ Features:
   effects, animations, speed and blend mode come along, and the whole thing is
   one Undo. Useful when a run of clips has become one thing you want to move,
   trim or grade together.
+- ⤵ Open edits inside a compound clip. Double-clicking the clip does the same.
+  The timeline below switches to the clip's own contents, and a trail appears
+  above it reading `Main › Compound clip` — click `Main` to come back out.
+  Everything works in there as it does anywhere else: trim, grade, add clips,
+  add tracks. The playhead follows the frame in and back out, so a round trip
+  leaves you looking at what you were looking at.
+- Compound clips are drawn in blue with a stacked right edge, so a clip holding
+  a whole sequence is distinguishable from one holding a single piece of media.
+- Stepping in and out is not an edit and does not appear in Undo. If you undo
+  far enough to remove the compound clip while you are inside it, the editor
+  steps you back out to the main sequence rather than showing nothing.
 - ⧈ Dissolve is the way back: it puts a compound clip's contents onto this
   timeline again, where it was playing them, with their effects and animations
   intact. If you had trimmed the compound clip, you get back only the part it
@@ -477,6 +488,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-12:** ⤵ Open (or double-click) edits inside a compound clip, with a
+  breadcrumb above the timeline to come back out. Compound clips are now drawn
+  in blue with a stacked edge.
 - **2026-08-12:** Reviewed; no user-visible change. Internally the editor now
   tracks *which* sequence it is showing instead of assuming there is only one.
   Nothing yet moves it off the main sequence, so the editor behaves exactly as

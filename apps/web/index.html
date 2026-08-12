@@ -431,6 +431,12 @@
 
       <!-- BOTTOM: timeline -->
       <footer id="timeline" class="panel" aria-label="Timeline">
+        <nav
+          id="sequence-path"
+          class="sequence-path"
+          aria-label="Sequence you are editing"
+          hidden
+        ></nav>
         <div class="timeline-toolbar">
           <button id="btn-add-track" class="tool">＋ Track</button>
           <button
@@ -446,6 +452,13 @@
             title="Move the selected clips into their own sequence, played by one clip"
           >
             ⧉ Compound
+          </button>
+          <button
+            id="btn-open-compound"
+            class="tool"
+            title="Edit inside the selected compound clip. Double-clicking it does the same."
+          >
+            ⤵ Open
           </button>
           <button
             id="btn-dissolve-compound"

@@ -101,6 +101,12 @@ The whole run is one gesture, so it is one Undo.
   mutation-checked: dropping `− fromUs` still passes every untrimmed case and
   fails the front-trimmed one, which is the case that tells the two formulas
   apart.
+- `apps/web/e2e/reopen-compound.spec.ts` — the timeline switches to the inner
+  contents, both by button and by double-click; the breadcrumb appears only when
+  there is a way back; an edit made inside lands inside and nothing leaks to the
+  root; a round trip returns to the frame it started from; and undoing the
+  compound while inside it steps back out. The double-click test caught the
+  `dblclick`-never-fires bug above, which would otherwise have shipped.
 - `apps/web/e2e/dissolve.spec.ts` — the round trip restores the clip count and
   the original starts, the picture is unchanged, it is one Undo, a grade
   survives coming back out, and a compound clip carrying an effect is refused in
@@ -151,10 +157,58 @@ The inner sequence and its asset are left in the project. Undo restores the
 compound clip, which still points at them; deleting them would make the gesture
 un-undoable. Orphan sequences therefore accumulate, which is the accepted cost.
 
+## Opening one: the editor learns it has more than one sequence
+
+Added 2026-08-12. The inner sequence had been editable in principle since
+compound clips landed; nothing could point the editor at it, because
+`activeSequence()` and 63 command payloads all named a hardcoded `SEQUENCE_ID`.
+"The sequence being edited" and "the project's root sequence" were the same
+identifier and could not be told apart.
+
+They are separate now. `SEQUENCE_ID` keeps its literal meaning — the sequence
+`seed()` creates, used by exactly those three calls — and everything else takes
+`activeSequenceId`. That is session state, like the playback position and the
+raster session: where you are standing, not part of the edit, so it is not a
+command and does not undo.
+
+The refactor landed **on its own**, with nothing able to move `activeSequenceId`
+off the root. That made it provably behaviour-preserving and let the existing
+suite verify it (140 passed, identical), rather than shipping the refactor and
+the new behaviour together, where one mis-assigned site would have been
+invisible until someone stepped inside.
+
+`sequencePath` holds the compound clips stood inside, outermost first — a path
+rather than one id, because stepping out has to know where *to*, and a compound
+clip can contain another.
+
+### Two things one sequence never had to handle
+
+- **Opening a project resets it.** Where you were standing belonged to the
+  project you closed; even a colliding id is a different sequence.
+- **`activeSequence()` heals itself.** The inner sequence exists because a
+  command created it, so undoing far enough removes the ground you are standing
+  on. Falling back to the root makes that a step outward rather than an editor
+  showing nothing and refusing every command. The breadcrumb is cleared with it,
+  or it would offer a way back into a sequence that is gone.
+
+### Export follows the active sequence
+
+All three places — the plan, the frame requests and the dialog summary. They
+have to agree: a summary reporting the frame count of a sequence it is not
+exporting is the shape of bug this project has already shipped twice.
+
+### The double-click that could not work
+
+Opening on double-click was written first as a `dblclick` listener on the clip
+element, and it never fired. Selecting a clip re-renders the timeline, so by the
+second press the first element is gone; the browser sees two clicks on two
+different elements and never pairs them. Detection moved into `startClipDrag`,
+keyed on the clip **id** and a timestamp, because the id survives the re-render
+and the element does not.
+
+Worth remembering as a class: any gesture built from two events cannot be
+attached to a node that its own first event destroys.
+
 ## Not built
 
-- **Opening a compound clip to edit its contents.** The sequence exists and is
-  editable in principle, but `activeSequence()` resolves a hardcoded
-  `SEQUENCE_ID` in 58 places in `main.ts` — the app drives one sequence and has
-  no way to switch. That constant becoming session state is the prerequisite.
-- **Renaming.** Every compound clip is called "Compound".
+- **Renaming.** Every compound clip is called "Compound clip".
