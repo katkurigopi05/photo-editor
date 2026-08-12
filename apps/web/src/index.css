@@ -2533,3 +2533,33 @@ select {
   margin: 6px 0 0;
   line-height: 1.5;
 }
+
+/* ---- magnetic track toggle ---- */
+.track-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+/* Dim until it is on: an unmarked track is the default, and a row of bright
+   magnets would read as state rather than as an offer. */
+.track-magnet {
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.3;
+  filter: grayscale(1);
+}
+.track-magnet:hover,
+.track-magnet:focus-visible {
+  opacity: 0.7;
+}
+.track-magnet[aria-pressed="true"] {
+  opacity: 1;
+  filter: none;
+  background: color-mix(in oklab, var(--accent) 20%, transparent);
+}

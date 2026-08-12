@@ -59,7 +59,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | --- | --- | --- | --- |
 | Multi-track timeline | all | ✓ | |
 | Ripple / roll / slip / slide trims | Premiere, Resolve, FCP | ◐ | ripple only; roll, slip and slide missing |
-| Magnetic timeline, connected clips | FCP | ✗ | an architecture, not a feature — see step M1 |
+| Magnetic timeline, connected clips | FCP | ◐ | per-track magnetic packing; connected clips not built — step M1 |
 | Compound clips / nested sequences | all pro | ◐ | make one, render and mix through it; no way to reopen or dissolve — step T3 |
 | Multicam editing | Premiere, Resolve, FCP | ✗ | needs sync + angle switching; step T7 |
 | Roles / lanes / track groups | FCP, Premiere | ✗ | step T4 |
@@ -238,8 +238,10 @@ session, **M** a few sessions, **L** a phase.
     than assumed. See `docs/phases/codecs.md`.
 13. **C4 · Raw development** — **L**. Exists in the Python track; bringing it to
     the web stack means a decoder and a colour pipeline.
-14. **M1 · Magnetic timeline** — **L**, and a decision before a task: it changes
-    what a track *is*, and the overlap rules in the reducer with it.
+14. ~~**M1 · Magnetic timeline**~~ — done as *per-track* magnetism rather than
+    Final Cut's primary storyline, so it coexists with lanes, adjustment layers,
+    compound clips and three-point editing instead of replacing what a track is.
+    Connected clips are not built. See `docs/phases/magnetic-tracks.md`.
 15. **P5 · GPU rendering** — **L**. There is no GPU code at all: no WebGL, no
     WebGPU, and no `crates/render-engine` — that crate is in the roadmap's
     planned layout but was never created. What the GPU does today is only what

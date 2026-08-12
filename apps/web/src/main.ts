@@ -42,6 +42,7 @@ import {
   usToPixels,
   type CommandContext,
   buildUpdateClipEffects,
+  buildSetTrackMagnetic,
 } from "@director/ui-kit";
 import {
   createPlaybackState,
@@ -3914,7 +3915,33 @@ function renderTimeline(): void {
 
     const head = document.createElement("div");
     head.className = "track-head";
-    head.textContent = `${track.name} (${track.kind})`;
+    const headName = document.createElement("span");
+    headName.textContent = `${track.name} (${track.kind})`;
+    head.appendChild(headName);
+
+    // Magnetic is a property of the track, so it is toggled where the track is
+    // named rather than from a global menu that would have to ask which one.
+    const magnet = document.createElement("button");
+    magnet.className = "track-magnet";
+    magnet.textContent = "🧲";
+    magnet.dataset.trackId = track.id;
+    const on = track.magnetic === true;
+    magnet.setAttribute("aria-pressed", String(on));
+    magnet.setAttribute("aria-label", `Magnetic ${track.name}`);
+    magnet.title = on
+      ? "Magnetic: clips stay packed end to end. Click to allow gaps."
+      : "Click to make this track magnetic — gaps close and clips reorder.";
+    magnet.addEventListener("click", (event) => {
+      event.stopPropagation();
+      commit(
+        buildSetTrackMagnetic(nextCtx(), {
+          sequenceId: SEQUENCE_ID,
+          trackId: track.id,
+          magnetic: !on,
+        }),
+      );
+    });
+    head.appendChild(magnet);
     row.appendChild(head);
 
     const lane = document.createElement("div");

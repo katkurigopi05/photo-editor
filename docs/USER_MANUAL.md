@@ -248,6 +248,10 @@ Features:
 - Trim handles on each clip edge change the in/out point. Hold Shift while
   trimming to ripple: later clips on the track shift by the same amount.
 - Ripple Delete removes the selection and closes the gap behind it.
+- The 🧲 button on a track makes it magnetic: its clips stay packed end to end,
+  so deleting one closes the gap, adding one pushes the rest along, and dragging
+  one past a neighbour swaps them. Other tracks are unaffected — magnetic is per
+  track, and an ordinary track still allows gaps.
 - ⧉ Compound turns the selected clips into a single clip that plays them. Their
   effects, animations, speed and blend mode come along, and the whole thing is
   one Undo. Useful when a run of clips has become one thing you want to move,
@@ -463,6 +467,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-12:** Tracks can be made magnetic with the 🧲 button on the track
+  head — clips stay packed end to end, and gaps close by themselves.
 - **2026-08-12:** Added compound clips — select a run of clips and press ⧉
   Compound to replace them with one clip that plays them all.
 - **2026-08-12:** Export can write VP9 and AV1 into WebM as well as H.264 into

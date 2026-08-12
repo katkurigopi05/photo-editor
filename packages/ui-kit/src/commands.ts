@@ -5,6 +5,7 @@ import type {
   AddEffectCommand,
   AddKeyframeCommand,
   AddTrackCommand,
+  SetTrackMagneticCommand,
   AssetRegisterCommand,
   SetAssetRatingCommand,
   SetAssetKeywordsCommand,
@@ -123,6 +124,12 @@ export const buildAddTrack = (
   ctx: CommandContext,
   payload: AddTrackCommand["payload"],
 ): AddTrackCommand => envelope(ctx, "timeline.add_track", payload);
+
+export const buildSetTrackMagnetic = (
+  ctx: CommandContext,
+  payload: SetTrackMagneticCommand["payload"],
+): SetTrackMagneticCommand =>
+  envelope(ctx, "timeline.set_track_magnetic", payload);
 
 export const buildAddClip = (
   ctx: CommandContext,
