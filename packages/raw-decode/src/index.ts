@@ -27,6 +27,15 @@ export {
   type DngMetadata,
 } from "./dng.js";
 
+export {
+  unpackImage,
+  unpackRows,
+  normaliseSamples,
+  cfaColourAt,
+  rowBytes,
+  SUPPORTED_BIT_DEPTHS,
+} from "./unpack.js";
+
 export { TiffReader, findTag, type IfdEntry } from "./tiff.js";
 
 export {
