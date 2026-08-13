@@ -227,3 +227,170 @@ test("the picture is not flipped, mirrored or offset", async ({ page }) => {
   expect(corners!.bottomLeft[0]).toBeLessThan(200);
   expect(corners!.topRight[0]).toBeLessThan(200);
 });
+
+/**
+ * Masked chains.
+ *
+ * A masked stack is *not* one table. The CPU path applies each effect to the
+ * whole frame and blends it back through that effect's own coverage before the
+ * next one sees the pixels, so where coverage is partial
+ * `blend(blend(x, A), B)` differs from `blend(x, B∘A)`. The GPU therefore runs
+ * one pass per effect. These checks exist to hold that line — the collapsed
+ * version is faster and would pass a test that only looked at fully-masked and
+ * fully-unmasked pixels.
+ */
+
+interface ChainPass {
+  recipe?: string;
+  identity?: boolean;
+  masked?: boolean;
+}
+
+/** Run the same chain through both appliers and report the worst disagreement,
+ * split by whether coverage there was partial. */
+async function compareChain(
+  page: Page,
+  passes: ChainPass[],
+): Promise<{
+  reason?: string;
+  maxDelta: number;
+  maxDeltaFeathered: number;
+  effect: number;
+}> {
+  return page.evaluate((spec) => {
+    const api = (window as unknown as { __gpuLutTest?: Record<string, never> })
+      .__gpuLutTest as
+      | {
+          buildLut: (r: string) => Uint8ClampedArray;
+          identityLut: () => Uint8ClampedArray;
+          rampCoverage: (w: number, h: number) => Uint8ClampedArray;
+          applyCpuChain: (
+            i: ImageData,
+            p: { lut: Uint8ClampedArray; coverage?: Uint8ClampedArray }[],
+          ) => Uint8ClampedArray;
+          applyGpuChain: (
+            i: ImageData,
+            p: { lut: Uint8ClampedArray; coverage?: Uint8ClampedArray }[],
+          ) => Uint8ClampedArray | null;
+        }
+      | undefined;
+    if (!api)
+      return {
+        reason: "harness missing",
+        maxDelta: -1,
+        maxDeltaFeathered: -1,
+        effect: -1,
+      };
+
+    const w = 128;
+    const h = 128;
+    const image = new ImageData(w, h);
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const i = (y * w + x) * 4;
+        image.data[i] = Math.round((x / (w - 1)) * 255);
+        image.data[i + 1] = Math.round((y / (h - 1)) * 255);
+        image.data[i + 2] = Math.round(((x + y) / (w + h - 2)) * 255);
+        image.data[i + 3] = 255;
+      }
+    }
+
+    const coverage = api.rampCoverage(w, h);
+    const built = spec.map((p) => ({
+      lut: p.identity ? api.identityLut() : api.buildLut(p.recipe!),
+      ...(p.masked ? { coverage } : {}),
+    }));
+
+    const cpu = api.applyCpuChain(image, built);
+    const gpu = api.applyGpuChain(image, built);
+    if (gpu === null)
+      return {
+        reason: "no WebGL2 renderer",
+        maxDelta: -1,
+        maxDeltaFeathered: -1,
+        effect: -1,
+      };
+
+    let maxDelta = 0;
+    let maxDeltaFeathered = 0;
+    let effect = 0;
+    let count = 0;
+    for (let p = 0, i = 0; i < cpu.length; i += 4, p += 1) {
+      const cover = coverage[p]!;
+      const partial = cover > 8 && cover < 247;
+      for (let c = 0; c < 3; c += 1) {
+        const d = Math.abs(cpu[i + c]! - gpu[i + c]!);
+        if (d > maxDelta) maxDelta = d;
+        if (partial && d > maxDeltaFeathered) maxDeltaFeathered = d;
+        effect += Math.abs(cpu[i + c]! - image.data[i + c]!);
+        count += 1;
+      }
+    }
+    return { maxDelta, maxDeltaFeathered, effect: effect / count };
+  }, passes);
+}
+
+test("a masked grade agrees with the CPU, including in the feather", async ({
+  page,
+}) => {
+  const r = await compareChain(page, [{ recipe: "levels", masked: true }]);
+  expect(r.reason).toBeUndefined();
+  expect(r.effect).toBeGreaterThan(5);
+  expect(r.maxDelta).toBeLessThanOrEqual(FILTERING_TOLERANCE);
+  // Called out separately: the feathered band is the only place a collapsed
+  // chain would disagree, and it is a minority of the pixels, so a single
+  // whole-frame maximum can hide it behind the fully-masked majority.
+  expect(r.maxDeltaFeathered).toBeLessThanOrEqual(FILTERING_TOLERANCE);
+});
+
+test("two masked effects compose in sequence, not as one table", async ({
+  page,
+}) => {
+  // The load-bearing case. Two effects under one feathered mask: the GPU must
+  // blend after each, exactly as the CPU does. Collapsing them into a single
+  // lookup passes at cover 0 and cover 1 and is wrong everywhere between.
+  const r = await compareChain(page, [
+    { recipe: "levels", masked: true },
+    { recipe: "stack", masked: true },
+  ]);
+  expect(r.reason).toBeUndefined();
+  expect(r.effect).toBeGreaterThan(5);
+  expect(r.maxDeltaFeathered).toBeLessThanOrEqual(FILTERING_TOLERANCE);
+  expect(r.maxDelta).toBeLessThanOrEqual(FILTERING_TOLERANCE);
+});
+
+test("a masked effect after an unmasked one agrees too", async ({ page }) => {
+  // Mixed chains are the common shape: grade the whole shot, then lift one
+  // region. This also exercises the ping-pong, since pass two reads what pass
+  // one wrote rather than the original picture.
+  const r = await compareChain(page, [
+    { recipe: "stack" },
+    { recipe: "levels", masked: true },
+  ]);
+  expect(r.reason).toBeUndefined();
+  expect(r.effect).toBeGreaterThan(5);
+  expect(r.maxDelta).toBeLessThanOrEqual(FILTERING_TOLERANCE);
+});
+
+test("a chain of identity tables changes nothing, however long", async ({
+  page,
+}) => {
+  // The multi-pass equivalent of the identity check above, and the one that
+  // catches an orientation bug in the ping-pong: each pass after the first
+  // reads a framebuffer already in GL's orientation, so flipping again there
+  // stands the picture on its head.
+  //
+  // **An even number of passes, deliberately.** A stray flip adds one per pass
+  // after the first, so with an odd pass count the extra flips cancel and the
+  // picture comes back upright by accident. Written first with three passes,
+  // this test passed against exactly the mutation it exists to catch. Four
+  // leaves an odd number of extra flips, and it fails.
+  const r = await compareChain(page, [
+    { identity: true },
+    { identity: true },
+    { identity: true },
+    { identity: true },
+  ]);
+  expect(r.reason).toBeUndefined();
+  expect(r.maxDelta).toBeLessThanOrEqual(FILTERING_TOLERANCE);
+});
