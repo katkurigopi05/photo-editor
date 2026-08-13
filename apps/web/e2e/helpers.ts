@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 /** Repo-root test media, the same fixtures the unit suite and docs refer to. */
 export const MEDIA = fileURLToPath(
@@ -121,4 +121,45 @@ export async function gifFrameMetrics(
     },
     { b64: bytes.toString("base64"), wanted: frames, fn: metricFn },
   );
+}
+
+/**
+ * A bounding box that is safe to hand to `page.mouse`.
+ *
+ * `page.mouse` takes **viewport** coordinates. `locator.boundingBox()` returns
+ * them too — but only for what is currently on screen, and this app's inspector
+ * is long enough that controls routinely sit at y≈2450. Clicking there lands on
+ * nothing, and the test fails against a working control.
+ *
+ * That has now happened twice: once on the curves editor and again on the
+ * tracking picker, with the lesson written down in between. Writing it down was
+ * not enough, so the fix is a helper that makes the safe thing the easy thing —
+ * scroll first, then measure.
+ *
+ * Use this instead of `boundingBox()` anywhere the result feeds `page.mouse`.
+ * For a plain click prefer `locator.click({ position })`, which scrolls on its
+ * own; this exists for drags, which need the raw coordinates.
+ */
+export async function boxInView(
+  locator: Locator,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error(
+      "element has no bounding box — it is not rendered, so no coordinate exists",
+    );
+  }
+  return box;
+}
+
+/** A point at a fraction of an element, in viewport coordinates, safe for
+ * `page.mouse`. */
+export async function pointIn(
+  locator: Locator,
+  fx = 0.5,
+  fy = 0.5,
+): Promise<{ x: number; y: number }> {
+  const box = await boxInView(locator);
+  return { x: box.x + box.width * fx, y: box.y + box.height * fy };
 }

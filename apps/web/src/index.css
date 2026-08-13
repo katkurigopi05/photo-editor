@@ -2641,3 +2641,16 @@ select {
 .playback-rate:focus-visible {
   color: var(--text);
 }
+
+/* The tracking picker: the analysis frame, shown at whatever width the panel
+   allows. Full width so the feature being picked is as large as possible —
+   clicking a face in a 480px-wide thumbnail is hard enough already. */
+.track-picker {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line, rgb(0 0 0 / 12%));
+  border-radius: 6px;
+  background: #000;
+  cursor: crosshair;
+}

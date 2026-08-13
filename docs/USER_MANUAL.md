@@ -155,6 +155,17 @@ when the system asks for reduced motion.
   rotation, because applying it would replace that work. Clear the animation
   first. Clips longer than 240 frames are refused too — split them and
   stabilise each part.
+![Stabilise and Track a feature](assets/user-manual/track-feature.png)
+
+- Track a feature (Inspector, video clips) follows something in the shot and
+  holds it still: click the thing to follow in the small frame shown, then
+  Track. The clip moves to keep that point in place, so a moving subject stays
+  put and the world moves around it.
+- Pick something with detail in both directions — a corner, a marking, a face.
+  A smooth wall or a straight edge cannot be followed at all: there is no way
+  to tell where along an edge you are, and tracking will say so rather than
+  guess. If the feature goes out of shot or behind something, tracking stops
+  there and keeps what it had.
 - Clip speed (0.25×–4×) under Speed in the Inspector, for any clip.
 - Speed ramps: a clip can change speed partway through. Under Speed, move the
   playhead to the moment the action should change and press ＋ Speed change at
@@ -516,6 +527,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-13:** Track a feature, in the Inspector for video clips — follows a
+  point and holds it still in frame.
 
 - **2026-08-13:** Stabilise, in the Inspector for video clips — measures camera
   shake and writes keyframes that cancel it, keeping an intended pan.

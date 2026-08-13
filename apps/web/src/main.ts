@@ -66,7 +66,9 @@ import {
   planStabilisation,
   solveStabilisation,
   toFlowFrame,
+  trackPoint as trackFlowPoint,
   type FrameMotion,
+  type TrackPoint,
 } from "@director/motion-tracking";
 import {
   browserPresetUnsupportedReason,
@@ -5364,6 +5366,308 @@ async function stabiliseClip(clip: TimelineClip): Promise<void> {
 }
 
 /**
+ * Following a feature, and locking the shot onto it.
+ *
+ * Stabilisation removes shake and keeps a deliberate pan. This is the other
+ * thing flow is for: pick something in the picture and hold it still, so a
+ * moving subject stays put in frame and the world moves around it.
+ *
+ * It is the same clip that moves, so there is no second thing to target and no
+ * cross-clip UI. The correction is the negative of the feature's travel: when
+ * the face drifts right, the picture is pushed left by the same amount.
+ */
+
+/** The feature to follow, in analysis-frame pixels, per clip. Session state:
+ * it is a choice about how to analyse, not part of the edit. */
+const trackTargets = new Map<string, TrackPoint>();
+
+/**
+ * Draw the frame at the playhead into a picking canvas.
+ *
+ * Deliberately the *analysis* frame rather than the composited preview. The
+ * preview is letterboxed per layer with crop, transform and animation composed
+ * in, so mapping a click back through all of that is several chances to be
+ * quietly wrong. Picking on the pixels the tracker itself sees removes the
+ * mapping entirely — the click already is the coordinate.
+ */
+async function drawTrackPicker(
+  canvasEl: HTMLCanvasElement,
+  clip: TimelineClip,
+): Promise<boolean> {
+  const asset = findAsset(clip.assetId);
+  if (!asset) return false;
+  const media = mediaCache.get(assetUri(asset));
+  if (!(media instanceof HTMLVideoElement)) return false;
+
+  const sourceUs = BigInt(clip.sourceInUs);
+  try {
+    await seekVideoFrame(media, Number(sourceUs) / 1_000_000);
+  } catch {
+    return false;
+  }
+  const ctx = canvasEl.getContext("2d");
+  if (!ctx) return false;
+  ctx.drawImage(media, 0, 0, canvasEl.width, canvasEl.height);
+  return true;
+}
+
+/** Mark the chosen feature so it is obvious what will be followed. */
+function drawTrackMarker(
+  canvasEl: HTMLCanvasElement,
+  at: TrackPoint | undefined,
+): void {
+  if (!at) return;
+  const ctx = canvasEl.getContext("2d");
+  if (!ctx) return;
+  ctx.save();
+  ctx.strokeStyle = "#ff3b30";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
+  ctx.moveTo(at.x - 14, at.y);
+  ctx.lineTo(at.x + 14, at.y);
+  ctx.moveTo(at.x, at.y - 14);
+  ctx.lineTo(at.x, at.y + 14);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Follow the chosen feature across the clip and write keyframes that hold it
+ * still.
+ *
+ * Shares stabilisation's sampling rules for the same reasons: every frame,
+ * because sparse keyframes are interpolated between and the interpolation is
+ * exactly what would smooth the tracking away; and a frame cap rather than a
+ * coarser rate, because a coarse result looks like a tracker that simply is not
+ * very good.
+ */
+async function trackClipFeature(clip: TimelineClip): Promise<void> {
+  const seq = activeSequence();
+  const asset = findAsset(clip.assetId);
+  const start = trackTargets.get(clip.id);
+  if (!seq || !asset || asset.kind !== "video") {
+    toast("Tracking needs a video clip.", true);
+    return;
+  }
+  if (!start) {
+    toast("Click the feature to follow first.", true);
+    return;
+  }
+  if (
+    (clip.animations ?? []).some((track) =>
+      STABILISE_PROPERTIES.has(track.property),
+    )
+  ) {
+    toast(
+      "This clip is already animated on position, scale or rotation. Clear that first — tracking would replace it.",
+      true,
+    );
+    return;
+  }
+
+  const media = mediaCache.get(assetUri(asset));
+  if (!(media instanceof HTMLVideoElement)) {
+    toast("That clip's video is not loaded.", true);
+    return;
+  }
+
+  const fps = seq.frameRate.numerator / seq.frameRate.denominator;
+  const durationUs = BigInt(clip.timelineDurationUs);
+  const frames = Number((durationUs * BigInt(Math.round(fps))) / 1_000_000n);
+  if (frames < 2) {
+    toast("This clip is too short to track.", true);
+    return;
+  }
+  if (frames > STABILISE_MAX_FRAMES) {
+    toast(
+      `Tracking analyses up to ${STABILISE_MAX_FRAMES} frames and this clip is ${frames}. Split it and track each part.`,
+      true,
+    );
+    return;
+  }
+
+  const height = Math.max(
+    2,
+    Math.round((STABILISE_ANALYSIS_WIDTH * seq.height) / seq.width),
+  );
+  const probe = document.createElement("canvas");
+  probe.width = STABILISE_ANALYSIS_WIDTH;
+  probe.height = height;
+  const pctx = probe.getContext("2d", { willReadFrequently: true })!;
+
+  const sourceIn = BigInt(clip.sourceInUs);
+  const path: { timeUs: string; at: TrackPoint }[] = [];
+  let previousFrame: ReturnType<typeof toFlowFrame> | null = null;
+  let here: TrackPoint = start;
+  let lostAt = -1;
+
+  toast(`Tracking ${frames} frames…`);
+  for (let i = 0; i < frames; i += 1) {
+    const offsetUs = (durationUs * BigInt(i)) / BigInt(frames);
+    try {
+      await seekVideoFrame(media, Number(sourceIn + offsetUs) / 1_000_000);
+    } catch {
+      break;
+    }
+    pctx.drawImage(media, 0, 0, STABILISE_ANALYSIS_WIDTH, height);
+    const frame = toFlowFrame(
+      pctx.getImageData(0, 0, STABILISE_ANALYSIS_WIDTH, height).data,
+      STABILISE_ANALYSIS_WIDTH,
+      height,
+    );
+
+    if (previousFrame !== null) {
+      const result = trackFlowPoint(previousFrame, frame, here);
+      if (result.lost) {
+        // Stopping is the honest answer. Carrying on from a lost point follows
+        // whatever happens to be there instead, which produces a confident
+        // path to nowhere.
+        lostAt = i;
+        break;
+      }
+      here = result.point;
+    }
+    path.push({ timeUs: offsetUs.toString(), at: here });
+    previousFrame = frame;
+  }
+
+  if (path.length < 2) {
+    // Distinguishing these matters: one is a decode problem and the other is
+    // the picture. A region with structure in only one direction — a stripe, a
+    // straight edge, a smooth wall — cannot be followed at all, because there
+    // is no way to tell where along it you are. Reporting that as "could not
+    // read frames" sends the user to look for a fault that is not there.
+    toast(
+      lostAt >= 0
+        ? "Lost the feature straight away. Pick something with detail in both directions — a corner or a marking, not a smooth area or a straight edge."
+        : "Could not read enough frames to track this clip.",
+      true,
+    );
+    return;
+  }
+
+  // Hold the feature still: move the picture against its travel. Positions are
+  // fractions of the frame, and a fraction is the same number at any
+  // resolution, so the analysis frame's own size is the right divisor.
+  const origin = path[0]!.at;
+  const xs = path.map((p) => ({
+    timeUs: p.timeUs,
+    value: -(p.at.x - origin.x) / STABILISE_ANALYSIS_WIDTH,
+  }));
+  const ys = path.map((p) => ({
+    timeUs: p.timeUs,
+    value: -(p.at.y - origin.y) / height,
+  }));
+
+  session.beginGesture();
+  const applied = commit(
+    buildUpdateClipAnimations(nextCtx(), {
+      sequenceId: activeSequenceId,
+      clipId: clip.id,
+      animations: [
+        { property: "transform.position_x" as const, keyframes: xs },
+        { property: "transform.position_y" as const, keyframes: ys },
+      ].map((track, t) => ({
+        id: `track-${t}-${crypto.randomUUID().slice(0, 8)}`,
+        property: track.property,
+        keyframes: track.keyframes.map((k, i) => ({
+          id: `track-${t}-${i}`,
+          timeUs: k.timeUs,
+          value: k.value,
+          easing: "linear" as const,
+        })),
+      })),
+    }),
+  );
+  session.endGesture();
+
+  if (!applied) {
+    toast(
+      `Tracking was refused: ${session.getLastError()?.message ?? "unknown"}`,
+      true,
+    );
+    return;
+  }
+
+  toast(
+    lostAt === -1
+      ? `Tracked ${path.length} frames.`
+      : `Tracked ${path.length} of ${frames} frames — lost the feature after that, so the rest is untouched.`,
+  );
+  updateUI();
+}
+
+/**
+ * The tracking panel: a frame to pick on, and a button to follow it.
+ *
+ * The picking canvas is the analysis frame, at the analysis size, so a click is
+ * already a tracker coordinate — see `drawTrackPicker`.
+ */
+function trackSection(clip: TimelineClip): HTMLElement {
+  const box = section("Track a feature");
+
+  const seq = activeSequence();
+  const height = seq
+    ? Math.max(2, Math.round((STABILISE_ANALYSIS_WIDTH * seq.height) / seq.width))
+    : 270;
+
+  const picker = document.createElement("canvas");
+  picker.id = "track-picker";
+  picker.className = "track-picker";
+  picker.width = STABILISE_ANALYSIS_WIDTH;
+  picker.height = height;
+  picker.title = "Click the thing to follow";
+
+  const repaint = (): void => {
+    void drawTrackPicker(picker, clip).then((ok) => {
+      if (ok) drawTrackMarker(picker, trackTargets.get(clip.id));
+    });
+  };
+  repaint();
+
+  picker.addEventListener("click", (event) => {
+    const rect = picker.getBoundingClientRect();
+    // The canvas is displayed at whatever width the panel allows, so the click
+    // is scaled back to the canvas's own pixels — which are analysis pixels.
+    trackTargets.set(clip.id, {
+      x: ((event.clientX - rect.left) / rect.width) * picker.width,
+      y: ((event.clientY - rect.top) / rect.height) * picker.height,
+    });
+    repaint();
+    button.disabled = false;
+  });
+
+  const button = document.createElement("button");
+  button.id = "btn-track";
+  button.className = "tool";
+  button.textContent = "\u25ce Track and hold";
+  button.disabled = !trackTargets.has(clip.id);
+  button.title =
+    "Follow the marked feature and write keyframes that keep it still in frame.";
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    button.textContent = "Tracking\u2026";
+    void trackClipFeature(clip).finally(() => {
+      button.disabled = !trackTargets.has(clip.id);
+      button.textContent = "\u25ce Track and hold";
+    });
+  });
+
+  const control = document.createElement("div");
+  control.className = "control";
+  control.appendChild(button);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "Click the frame to mark what to follow, then Track. The clip moves to keep that point still, so a moving subject stays put and the world moves around it. Pick something with detail \u2014 a flat wall has nothing to lock onto and the track will stop.";
+
+  box.append(picker, control, note);
+  return box;
+}
+
+/**
  * Stabilise, beside the animation controls rather than beside Clip speed.
  *
  * It writes position, rotation and scale keyframes, so it belongs with the
@@ -6059,6 +6363,7 @@ function renderInspector(): void {
   inspectorEl.appendChild(speedSection(clip));
   if (findAsset(clip.assetId)?.kind === "video") {
     inspectorEl.appendChild(stabiliseSection(clip));
+    inspectorEl.appendChild(trackSection(clip));
   }
   if (asset && asset.kind !== "audio") {
     inspectorEl.appendChild(masksSection(clip));
