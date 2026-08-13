@@ -28,6 +28,13 @@ export {
 } from "./dng.js";
 
 export {
+  demosaicBilinear,
+  toRgba,
+  srgbEncode,
+  type RgbImage,
+} from "./demosaic.js";
+
+export {
   unpackImage,
   unpackRows,
   normaliseSamples,
