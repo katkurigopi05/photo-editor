@@ -5,6 +5,7 @@ import {
   previewSignature,
   setMode,
   signatureDistance,
+  boxInView,
 } from "./helpers.js";
 
 /**
@@ -58,8 +59,9 @@ async function dragCurve(
   // first sends the drag to empty space outside the window.
   await canvas.scrollIntoViewIfNeeded();
   await page.waitForTimeout(200);
-  const box = await canvas.boundingBox();
-  if (!box) throw new Error("curve canvas has no box");
+  // scrollIntoView first: the curve editor sits far down the inspector and
+  // page.mouse takes viewport coordinates. See boxInView.
+  const box = await boxInView(canvas);
   const at = (p: { x: number; y: number }) => ({
     x: box.x + p.x * box.width,
     y: box.y + (1 - p.y) * box.height,

@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { importMedia, seekFraction, setMode } from "./helpers.js";
+import {
+  boxInView,
+  importMedia,
+  seekFraction,
+  setMode,
+} from "./helpers.js";
 
 /**
  * Markers.
@@ -89,10 +94,10 @@ test("a marker rides the clip through a trim", async ({ page }) => {
 
   // Trim the tail in: the clip gets shorter, so the marker's *fraction* along
   // it grows while the moment it marks does not move.
-  const box = await page.locator(".clip").first().boundingBox();
-  await page.mouse.move(box!.x + box!.width - 3, box!.y + box!.height / 2);
+  const box = await boxInView(page.locator(".clip").first());
+  await page.mouse.move(box.x + box.width - 3, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box!.x + box!.width - 120, box!.y + box!.height / 2, {
+  await page.mouse.move(box.x + box.width - 120, box.y + box.height / 2, {
     steps: 6,
   });
   await page.mouse.up();

@@ -30,6 +30,9 @@ manual remains correct.
 - `video-mode.png`: selected video, transport, and timeline.
 - `animation-mode.png`: generated shape, animation controls, and timeline.
 - `gif-mode.png`: populated timeline and GIF export controls.
+- `track-feature.png`: the Stabilise and Track panels in the Inspector, with a
+  feature marked on the picker. Not a mode view — these sit below the fold, so
+  the mode screenshots cannot show them.
 
 Capture screenshots at a consistent desktop viewport and verify that no local
 paths, secrets, or personal media are visible.
