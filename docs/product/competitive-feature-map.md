@@ -246,9 +246,13 @@ session, **M** a few sessions, **L** a phase.
     settled: *both*, chosen automatically from the file's bytes. A DNG never
     pays for a multi-megabyte download when built-in code can read it, and a
     vendor format cannot be read without one, so the choice follows the file
-    rather than a setting. `packages/raw-decode` holds the identification and
-    the routing; the two decoders land behind its interface. Remaining: the DNG
-    reader in TypeScript, the LibRaw WASM adapter, and the colour pipeline.
+    rather than a setting. `packages/raw-decode` holds the identification,
+    the routing, a complete DNG path (structure, unpacking, demosaic, colour)
+    and the LibRaw adapter. Remaining: a LibRaw WebAssembly *binary*, which is a
+    deployment decision rather than source and is not committed here; support
+    for compressed DNG, which is most of them in practice and is currently
+    reported as undecodable with a reason rather than failing; and wiring the
+    whole thing into the app's import path.
 
     Original entry, kept because the correction matters — **L**, and larger than
     this entry used to claim.

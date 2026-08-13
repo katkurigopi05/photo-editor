@@ -28,6 +28,13 @@ export {
 } from "./dng.js";
 
 export {
+  createLibRawDecoder,
+  LIBRAW_UNAVAILABLE,
+  type LibRawModule,
+  type LibRawDecoder,
+} from "./libraw.js";
+
+export {
   cameraToSrgb,
   applyColourTransform,
   invert3,
