@@ -146,31 +146,63 @@ export class TiffReader {
     return this.u32(at);
   }
 
-  /** One numeric value from an entry, by index. Zero when out of bounds or of
-   * a type that is not a plain integer. */
+  /** Reinterpret an unsigned value of `bits` as two's-complement signed. */
+  private signed(value: number, bits: number): number {
+    const limit = 2 ** (bits - 1);
+    return value >= limit ? value - 2 ** bits : value;
+  }
+
+  /**
+   * One numeric value from an entry, by index. Zero when out of bounds or of a
+   * type that is not a number.
+   *
+   * The signed types are read as signed, which matters more than it sounds: a
+   * DNG's colour matrices are SRATIONAL and roughly half their entries are
+   * negative. Reading them unsigned turns −0.49 into about 4.29 billion, and
+   * the resulting matrix inverts to nonsense rather than failing.
+   */
   value(entry: IfdEntry, index = 0): number {
     if (!entry.inBounds || index >= entry.count) return 0;
     const size = TYPE_SIZE[entry.type] ?? 0;
     const at = entry.valueOffset + index * size;
     switch (entry.type) {
-      case 1:
-      case 2:
-      case 6:
-      case 7:
+      case 1: // BYTE
+      case 2: // ASCII
+      case 7: // UNDEFINED
         return this.u8(at);
-      case 3:
-      case 8:
+      case 6: // SBYTE
+        return this.signed(this.u8(at), 8);
+      case 3: // SHORT
         return this.u16(at);
-      case 4:
-      case 9:
+      case 8: // SSHORT
+        return this.signed(this.u16(at), 16);
+      case 4: // LONG
         return this.u32(at);
-      case 5:
-      case 10: {
-        // A rational is two longs. Division by zero gives 0 rather than
+      case 9: // SLONG
+        return this.signed(this.u32(at), 32);
+      case 5: {
+        // RATIONAL: two unsigned longs. Division by zero gives 0 rather than
         // Infinity, which would poison anything downstream that averages it.
         const denominator = this.u32(at + 4);
         return denominator === 0 ? 0 : this.u32(at) / denominator;
       }
+      case 10: {
+        // SRATIONAL: two *signed* longs.
+        const denominator = this.signed(this.u32(at + 4), 32);
+        return denominator === 0
+          ? 0
+          : this.signed(this.u32(at), 32) / denominator;
+      }
+      case 11: // FLOAT
+        return new DataView(
+          this.bytes.buffer,
+          this.bytes.byteOffset,
+        ).getFloat32(at, this.littleEndian);
+      case 12: // DOUBLE
+        return new DataView(
+          this.bytes.buffer,
+          this.bytes.byteOffset,
+        ).getFloat64(at, this.littleEndian);
       default:
         return 0;
     }

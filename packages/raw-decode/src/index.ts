@@ -28,6 +28,16 @@ export {
 } from "./dng.js";
 
 export {
+  cameraToSrgb,
+  applyColourTransform,
+  invert3,
+  multiply3,
+  XYZ_D50_TO_SRGB,
+  type Matrix3,
+  type ColourTransform,
+} from "./colour.js";
+
+export {
   demosaicBilinear,
   toRgba,
   srgbEncode,
