@@ -28,6 +28,27 @@ args = ["-y", "@playwright/mcp@latest", "--extension"]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
 
+# Gives Codex the same command-driven editing surface the web app uses: every
+# change to a project goes through a validated command with an exact inverse,
+# attributed in the operation log and reversible with Undo. An agent editing
+# .director.json as text would bypass validation, canonical serialization and
+# history all at once — this is what stops that being the easy path.
+#
+# `--root` is a containment boundary the server already enforces: every project
+# path must stay inside it. It is deliberately a narrow directory rather than
+# the checkout root, and director-projects/ is gitignored.
+#
+# Paths are relative, so Codex must be launched at the checkout root. dist/ is
+# gitignored, so a fresh clone has nothing to run until:
+#   pnpm --filter @director/mcp-server build
+[mcp_servers.director]
+command = "node"
+args = [
+  "packages/mcp-server/dist/index.js",
+  "--root", "director-projects",
+  "--actor", "mcp:codex",
+]
+
 # Serves the knowledge graph built by /graphify. The graph path is omitted so it
 # defaults to graphify-out/graph.json relative to the project, rather than being
 # pinned to one checkout. graphify-out/ is gitignored — run /graphify once before
