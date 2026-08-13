@@ -242,7 +242,16 @@ session, **M** a few sessions, **L** a phase.
 12. ~~**O1 · More codecs**~~ — done. VP9 and AV1 into WebM beside H.264 into
     MP4, with the set offered probed from the browser at the chosen size rather
     than assumed. See `docs/phases/codecs.md`.
-13. **C4 · Raw development** — **L**, and larger than this entry used to claim.
+13. **C4 · Raw development** — **L**, in progress. The decision below is
+    settled: *both*, chosen automatically from the file's bytes. A DNG never
+    pays for a multi-megabyte download when built-in code can read it, and a
+    vendor format cannot be read without one, so the choice follows the file
+    rather than a setting. `packages/raw-decode` holds the identification and
+    the routing; the two decoders land behind its interface. Remaining: the DNG
+    reader in TypeScript, the LibRaw WASM adapter, and the colour pipeline.
+
+    Original entry, kept because the correction matters — **L**, and larger than
+    this entry used to claim.
     "Exists in the Python track" was wrong: `core/document.py` calls
     `rawpy.imread(path).postprocess()` behind an optional dependency, which is
     LibRaw *decoding* a file with default settings. There is no exposure, white
