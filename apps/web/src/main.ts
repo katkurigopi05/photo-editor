@@ -100,6 +100,7 @@ import {
 } from "./theme.js";
 import { layoutTextLines } from "./text-overlay.js";
 import { rasterizeClipMask, blendThroughMask } from "./mask-raster.js";
+import { geometricCoverage, maskIsGeometric } from "./mask-cache.js";
 import type { JsonValue } from "@director/canonical-json";
 import {
   describeCapabilities,
@@ -4148,25 +4149,6 @@ function gpuLutRenderer(): GpuLutRenderer | null {
 }
 
 /**
- * Mask kinds whose coverage depends only on geometry, not on the picture.
- *
- * `luminance_range` and `color_range` read the frame's own pixels, so their
- * coverage depends on *when* in the chain they are rasterised — the CPU path
- * computes each mask at its first use, against the partly-graded image at that
- * moment. Reproducing that on the GPU would need a readback per pass, which is
- * the cost this exists to avoid. A geometric mask has no such dependence, so it
- * can be rasterised up front and the whole chain stays on the card.
- */
-const GEOMETRIC_MASK_KINDS: ReadonlySet<string> = new Set([
-  "linear",
-  "radial",
-  "brush",
-]);
-
-const maskIsGeometric = (mask: ClipMask): boolean =>
-  mask.contributions.every((c) => GEOMETRIC_MASK_KINDS.has(c.kind));
-
-/**
  * A masked pointwise stack, run entirely on the GPU — or null to use the CPU.
  *
  * **One pass per effect, never one table for the stack.** The CPU path blends
@@ -4215,13 +4197,7 @@ function gpuMaskedGrade(
 
     let coverage = coverages.get(mask.id);
     if (coverage === undefined) {
-      // Geometric contributions never read the pixels, so there are none to
-      // give — and fetching them would cost the readback this path avoids.
-      coverage = rasterizeClipMask(mask, {
-        width,
-        height,
-        data: new Uint8ClampedArray(0),
-      }).data;
+      coverage = geometricCoverage(mask, width, height).data;
       coverages.set(mask.id, coverage);
     }
     passes.push({ lut, coverage });
@@ -4303,7 +4279,12 @@ function gradeUncached(
     }
     let coverage = rasterized.get(mask.id);
     if (!coverage) {
-      coverage = rasterizeClipMask(mask, raster);
+      // A geometric mask is the same shape whatever the pixels are doing, so it
+      // survives between calls. A range mask reads this frame at this point in
+      // the chain and must be rebuilt.
+      coverage = maskIsGeometric(mask)
+        ? geometricCoverage(mask, raster.width, raster.height)
+        : rasterizeClipMask(mask, raster);
       rasterized.set(mask.id, coverage);
     }
     raster = blendThroughMask(raster, adjusted, coverage);
