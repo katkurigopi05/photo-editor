@@ -198,6 +198,7 @@ import {
   type SpeedRamp,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
+import { createGpuLutRenderer, type GpuLutRenderer } from "./gpu-lut.js";
 import {
   boomerangOrder,
   clampGifFps,
@@ -4091,6 +4092,24 @@ function isLutable(
   return gradingFx.every((fx) => POINTWISE_GRADING_TYPES.has(fx.type));
 }
 
+/**
+ * The GPU colour-table renderer, built once and only if it is ever wanted.
+ *
+ * `null` is a settled answer, not a retry-later: a machine without WebGL2 will
+ * not grow it, and asking again every frame would cost a context creation per
+ * frame on exactly the machines least able to afford one. The CPU path is
+ * complete on its own, so this is only ever an accelerator.
+ */
+let gpuLut: GpuLutRenderer | null = null;
+let gpuLutTried = false;
+function gpuLutRenderer(): GpuLutRenderer | null {
+  if (!gpuLutTried) {
+    gpuLutTried = true;
+    gpuLut = createGpuLutRenderer();
+  }
+  return gpuLut;
+}
+
 function gradeUncached(
   source: CanvasImageSource,
   width: number,
@@ -4102,8 +4121,6 @@ function gradeUncached(
   off.width = width;
   off.height = height;
   const octx = off.getContext("2d", { willReadFrequently: true })!;
-  octx.drawImage(source, 0, 0, width, height);
-  const image = octx.getImageData(0, 0, width, height);
 
   // A pointwise stack costs one pass instead of one per effect: the chain is
   // run once over a 33-cube of colours — about 36k pixels however many effects
@@ -4114,11 +4131,35 @@ function gradeUncached(
     let cube = identityCubeImage();
     for (const fx of gradingFx) cube = gradeImage(cube, fx);
     const lut = cubeImageToLut(cube);
-    const out = applyLut3d({ width, height, data: image.data }, lut);
-    image.data.set(out.data);
-    octx.putImageData(image, 0, 0);
+
+    // That lookup is what sampling hardware does natively, so hand it over
+    // where there is any. The table is still built on the CPU by the same code
+    // as before — only the per-pixel part, the part that grows with
+    // resolution, moves. `apps/web/e2e/gpu-lut.spec.ts` pins the two to the
+    // same answer.
+    //
+    // The source goes straight to the GPU: reading it back with getImageData
+    // first would pay the cost this exists to avoid.
+    const gpu = gpuLutRenderer();
+    const drawn = gpu ? gpu.apply(source, width, height, lut) : null;
+    if (drawn !== null) {
+      // Copied out rather than returned: the renderer draws into one canvas it
+      // reuses, and `gradeCache` keeps what it is given, so handing back that
+      // canvas would make every cached grade alias the most recent one.
+      octx.drawImage(drawn, 0, 0);
+      return off;
+    }
+
+    octx.drawImage(source, 0, 0, width, height);
+    const flat = octx.getImageData(0, 0, width, height);
+    const out = applyLut3d({ width, height, data: flat.data }, lut);
+    flat.data.set(out.data);
+    octx.putImageData(flat, 0, 0);
     return off;
   }
+
+  octx.drawImage(source, 0, 0, width, height);
+  const image = octx.getImageData(0, 0, width, height);
 
   let raster: RasterImage = { width, height, data: image.data };
   // One rasterization per mask, however many effects reference it: turning

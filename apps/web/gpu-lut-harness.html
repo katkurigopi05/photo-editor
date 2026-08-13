@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>GPU LUT parity harness</title>
+  </head>
+  <body>
+    <!--
+      A dev-only page for `e2e/gpu-lut.spec.ts`.
+
+      The parity check needs both colour-table appliers and nothing else — not
+      the editor, not a project, not media. Giving it its own page keeps the
+      test hook out of `main.ts` entirely: there is no branch in the app that
+      exists only for tests, and nothing to strip from a production build.
+      Vite's dev server, which is what the e2e run uses, serves this.
+
+      The recipes below call the grading functions in `raster-tools` directly.
+      `gradeImage` in main.ts is a dispatcher over these same functions, so the
+      tables built here are the tables the app builds — without importing the
+      whole editor to get one.
+    -->
+    <p>Parity harness for the GPU colour-table path. Not part of the editor.</p>
+    <script type="module">
+      import {
+        LUT_SIZE,
+        identityCubeImage,
+        cubeImageToLut,
+        applyLut3d,
+        whiteBalance,
+        levels,
+        vibrance,
+      } from "@director/raster-tools";
+      import { createGpuLutRenderer } from "./src/gpu-lut.ts";
+
+      const renderer = createGpuLutRenderer();
+
+      /** Named grading chains, run over the cube exactly as the app runs them. */
+      const RECIPES = {
+        levels: (image) => levels(image, 20, 235, 1.4),
+        stack: (image) =>
+          vibrance(levels(whiteBalance(image, 30, -15), 10, 245, 0.8), 40),
+      };
+
+      const buildLut = (recipe) => cubeImageToLut(RECIPES[recipe](identityCubeImage()));
+      const identityLut = () => cubeImageToLut(identityCubeImage());
+
+      const applyCpu = (image, lut) =>
+        applyLut3d(
+          { width: image.width, height: image.height, data: image.data },
+          lut,
+        ).data;
+
+      const applyGpu = (image, lut) => {
+        if (renderer === null) return null;
+        // ImageData is not a TexImageSource, so it goes via a canvas — the same
+        // route the app's own grade path uses.
+        const src = document.createElement("canvas");
+        src.width = image.width;
+        src.height = image.height;
+        src.getContext("2d").putImageData(image, 0, 0);
+
+        const out = renderer.apply(src, image.width, image.height, lut);
+        if (out === null) return null;
+
+        // Read the drawn frame back as pixels to compare against the CPU array.
+        const read = document.createElement("canvas");
+        read.width = image.width;
+        read.height = image.height;
+        const rctx = read.getContext("2d", { willReadFrequently: true });
+        rctx.drawImage(out, 0, 0);
+        return rctx.getImageData(0, 0, image.width, image.height).data;
+      };
+
+      window.__gpuLutTest = {
+        LUT_SIZE,
+        buildLut,
+        identityLut,
+        applyCpu,
+        applyGpu,
+        available: renderer !== null,
+      };
+    </script>
+  </body>
+</html>
