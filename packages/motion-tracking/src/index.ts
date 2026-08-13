@@ -29,6 +29,14 @@ export {
 
 export { trackPoint } from "./lucas-kanade.js";
 export { solveStabilisation, samplingGrid } from "./stabilise.js";
+export {
+  planStabilisation,
+  type FrameMotion,
+  type StabilisationPlan,
+  type StabilisationOptions,
+  type PlannedTrack,
+  type PlannedKeyframe,
+} from "./plan-stabilisation.js";
 
 import type { FlowFrame } from "./types.js";
 
