@@ -82,7 +82,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Scopes: waveform, vectorscope, histogram | Resolve, Premiere, Capture One | ✓ | all three, off by default |
 | LUT import and export | Resolve, Premiere | ✗ | step C3 |
 | Colour management, log/HDR handling | Resolve, Capture One | ✗ | step C6, large |
-| Raw photo development | Lightroom, Capture One, Affinity | ✗ | exists in the Python track only; step C4 |
+| Raw photo development | Lightroom, Capture One, Affinity | ✗ | nothing anywhere: the Python track only *decodes* raw, via one `rawpy.postprocess()` call; step C4 |
 | Lens correction, chromatic aberration | Lightroom, Capture One | ✗ | needs a profile database; step C5 |
 | Perspective / keystone correction | Photoshop, Lightroom | ✗ | step C5 |
 | Match colour between shots | Resolve, Premiere | ✗ | step C7 |
@@ -242,8 +242,15 @@ session, **M** a few sessions, **L** a phase.
 12. ~~**O1 · More codecs**~~ — done. VP9 and AV1 into WebM beside H.264 into
     MP4, with the set offered probed from the browser at the chosen size rather
     than assumed. See `docs/phases/codecs.md`.
-13. **C4 · Raw development** — **L**. Exists in the Python track; bringing it to
-    the web stack means a decoder and a colour pipeline.
+13. **C4 · Raw development** — **L**, and larger than this entry used to claim.
+    "Exists in the Python track" was wrong: `core/document.py` calls
+    `rawpy.imread(path).postprocess()` behind an optional dependency, which is
+    LibRaw *decoding* a file with default settings. There is no exposure, white
+    balance, highlight recovery or demosaic control to port — that is the actual
+    feature, and none of it is written. Bringing it to the web stack also needs
+    a decoder decision first, since the browser has no LibRaw: ship a WASM build
+    of it (large binary, broad format support) or write a DNG-only decoder in
+    TypeScript (small, narrow). **That decision blocks starting.**
 14. ~~**M1 · Magnetic timeline**~~ — done as *per-track* magnetism rather than
     Final Cut's primary storyline, so it coexists with lanes, adjustment layers,
     compound clips and three-point editing instead of replacing what a track is.
