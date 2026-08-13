@@ -177,6 +177,8 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
 
+  packages/motion-tracking: {}
+
   packages/playback-controller:
     dependencies:
       '@director/project-schema':
