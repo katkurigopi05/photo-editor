@@ -1,3 +1,5 @@
+import { TiffReader, findTag } from "./tiff.js";
+
 /**
  * Recognising a raw file from its bytes.
  *
@@ -37,15 +39,9 @@ export interface RawIdentification {
   make?: string;
 }
 
-const TIFF_LE = [0x49, 0x49, 0x2a, 0x00];
-const TIFF_BE = [0x4d, 0x4d, 0x00, 0x2a];
-
 /** TIFF tag 0xC612. Its presence *is* the definition of a DNG. */
 const TAG_DNG_VERSION = 0xc612;
 const TAG_MAKE = 0x010f;
-
-const startsWith = (bytes: Uint8Array, prefix: readonly number[]): boolean =>
-  prefix.every((b, i) => bytes[i] === b);
 
 const ascii = (bytes: Uint8Array, at: number, length: number): string => {
   let out = "";
@@ -57,79 +53,23 @@ const ascii = (bytes: Uint8Array, at: number, length: number): string => {
   return out;
 };
 
-class Reader {
-  constructor(
-    private readonly bytes: Uint8Array,
-    private readonly littleEndian: boolean,
-  ) {}
-
-  u16(at: number): number {
-    const a = this.bytes[at];
-    const b = this.bytes[at + 1];
-    if (a === undefined || b === undefined) return 0;
-    return this.littleEndian ? a | (b << 8) : (a << 8) | b;
-  }
-
-  u32(at: number): number {
-    const a = this.bytes[at];
-    const b = this.bytes[at + 1];
-    const c = this.bytes[at + 2];
-    const d = this.bytes[at + 3];
-    if (
-      a === undefined ||
-      b === undefined ||
-      c === undefined ||
-      d === undefined
-    )
-      return 0;
-    return this.littleEndian
-      ? (a | (b << 8) | (c << 16) | (d << 24)) >>> 0
-      : ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
-  }
-}
-
 /**
- * Read IFD0's tags, stopping at the first sign the file is malformed.
+ * Read IFD0 far enough to route the file.
  *
- * Deliberately shallow: this only needs two tags to route a file, and walking
- * the whole tree of a raw file to answer "which decoder" would be doing the
- * decoder's job before deciding whether to call it.
+ * Deliberately shallow: two tags settle which decoder to use, and walking the
+ * whole tree would be doing the decoder's job before deciding whether to call
+ * it. The reading itself goes through the shared `TiffReader`, so there is one
+ * bounds-checked TIFF parser in this package rather than one per caller.
  */
-function readIfd0(
-  bytes: Uint8Array,
-  littleEndian: boolean,
-): { hasDngVersion: boolean; make?: string } {
-  const r = new Reader(bytes, littleEndian);
-  const ifdOffset = r.u32(4);
-  // A plausible offset only; a corrupt one is treated as "not identifiable"
-  // rather than followed into arbitrary memory.
-  if (ifdOffset < 8 || ifdOffset + 2 > bytes.length)
-    return { hasDngVersion: false };
-
-  const count = r.u16(ifdOffset);
-  // 12 bytes per entry. A count that cannot fit is a broken header.
-  if (count === 0 || ifdOffset + 2 + count * 12 > bytes.length) {
-    return { hasDngVersion: false };
-  }
-
-  let hasDngVersion = false;
-  let make: string | undefined;
-
-  for (let i = 0; i < count; i += 1) {
-    const entry = ifdOffset + 2 + i * 12;
-    const tag = r.u16(entry);
-    if (tag === TAG_DNG_VERSION) hasDngVersion = true;
-    if (tag === TAG_MAKE) {
-      const length = r.u32(entry + 4);
-      // Values of four bytes or fewer live in the entry itself; longer ones are
-      // stored elsewhere and the entry holds an offset.
-      const at = length <= 4 ? entry + 8 : r.u32(entry + 8);
-      if (at + Math.min(length, 64) <= bytes.length) {
-        make = ascii(bytes, at, Math.min(length, 64)).trim();
-      }
-    }
-  }
-  return { hasDngVersion, ...(make !== undefined ? { make } : {}) };
+function readIfd0(r: TiffReader): { hasDngVersion: boolean; make?: string } {
+  const entries = r.readIfd(r.firstIfdOffset());
+  if (entries.length === 0) return { hasDngVersion: false };
+  const makeEntry = findTag(entries, TAG_MAKE);
+  const make = makeEntry ? r.string(makeEntry) : "";
+  return {
+    hasDngVersion: findTag(entries, TAG_DNG_VERSION) !== undefined,
+    ...(make ? { make } : {}),
+  };
 }
 
 /** Vendor TIFF variants, keyed by what `Make` says. */
@@ -165,11 +105,8 @@ export function sniffRaw(bytes: Uint8Array): RawIdentification | null {
     return { format: "cr3", isDng: false, make: "Canon" };
   }
 
-  const littleEndian = startsWith(bytes, TIFF_LE);
-  const bigEndian = startsWith(bytes, TIFF_BE);
-
   // Panasonic RW2 and Olympus ORF use their own magic number in place of
-  // TIFF's 42, so they are not caught by the check above.
+  // TIFF's 42, so TiffReader.open would reject them.
   if (bytes[0] === 0x49 && bytes[1] === 0x49) {
     const magic = bytes[2]! | (bytes[3]! << 8);
     if (magic === 0x0055)
@@ -179,14 +116,15 @@ export function sniffRaw(bytes: Uint8Array): RawIdentification | null {
     }
   }
 
-  if (!littleEndian && !bigEndian) return null;
+  const r = TiffReader.open(bytes);
+  if (r === null) return null;
 
   // Canon CR2 marks itself in the header, before any IFD.
-  if (littleEndian && ascii(bytes, 8, 2) === "CR") {
+  if (r.littleEndian && ascii(bytes, 8, 2) === "CR") {
     return { format: "cr2", isDng: false, make: "Canon" };
   }
 
-  const { hasDngVersion, make } = readIfd0(bytes, littleEndian);
+  const { hasDngVersion, make } = readIfd0(r);
   // DNGVersion wins over everything. A Nikon-made DNG is a DNG: it is readable
   // by any conforming decoder, and routing it by `Make` would send it to a NEF
   // path that cannot read it.

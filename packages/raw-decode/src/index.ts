@@ -20,6 +20,16 @@ export {
 } from "./sniff.js";
 
 export {
+  readDng,
+  DNG_COMPRESSION,
+  type CfaColour,
+  type DngImageLayout,
+  type DngMetadata,
+} from "./dng.js";
+
+export { TiffReader, findTag, type IfdEntry } from "./tiff.js";
+
+export {
   routeRaw,
   type RawDecoderInfo,
   type RawRouteOutcome,
