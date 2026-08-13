@@ -50,7 +50,7 @@
           lut,
         ).data;
 
-      const applyGpu = (image, lut) => {
+      const applyGpuChain = (image, passes) => {
         if (renderer === null) return null;
         // ImageData is not a TexImageSource, so it goes via a canvas — the same
         // route the app's own grade path uses.
@@ -59,7 +59,7 @@
         src.height = image.height;
         src.getContext("2d").putImageData(image, 0, 0);
 
-        const out = renderer.apply(src, image.width, image.height, lut);
+        const out = renderer.applyChain(src, image.width, image.height, passes);
         if (out === null) return null;
 
         // Read the drawn frame back as pixels to compare against the CPU array.
@@ -71,12 +71,59 @@
         return rctx.getImageData(0, 0, image.width, image.height).data;
       };
 
+      const applyGpu = (image, lut) => applyGpuChain(image, [{ lut }]);
+
+      /**
+       * The CPU semantics a masked chain must match: each effect is applied to
+       * the whole frame and then blended back through its own coverage, before
+       * the next one sees the pixels. Deliberately written out here rather than
+       * imported, so the test compares the GPU against the *rule* and not
+       * against a shared helper that could be wrong in both places.
+       */
+      const applyCpuChain = (image, passes) => {
+        let data = new Uint8ClampedArray(image.data);
+        for (const pass of passes) {
+          const graded = applyLut3d(
+            { width: image.width, height: image.height, data },
+            pass.lut,
+          ).data;
+          const next = new Uint8ClampedArray(data);
+          for (let p = 0, i = 0; i < data.length; i += 4, p += 1) {
+            const cover = pass.coverage ? pass.coverage[p] / 255 : 1;
+            for (let c = 0; c < 3; c += 1) {
+              next[i + c] = Math.round(
+                data[i + c] + (graded[i + c] - data[i + c]) * cover,
+              );
+            }
+            next[i + 3] = data[i + 3];
+          }
+          data = next;
+        }
+        return data;
+      };
+
+      /** A soft-edged vertical ramp: fully masked on the left, fully unmasked on
+       * the right, and every partial value in between — which is where a
+       * collapsed stack would disagree with a sequential one. */
+      const rampCoverage = (width, height) => {
+        const cov = new Uint8ClampedArray(width * height);
+        for (let y = 0; y < height; y += 1) {
+          for (let x = 0; x < width; x += 1) {
+            cov[y * width + x] = Math.round((x / (width - 1)) * 255);
+          }
+        }
+        return cov;
+      };
+
       window.__gpuLutTest = {
         LUT_SIZE,
         buildLut,
         identityLut,
         applyCpu,
         applyGpu,
+        applyCpuChain,
+        applyGpuChain,
+        rampCoverage,
         available: renderer !== null,
       };
     </script>

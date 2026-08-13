@@ -98,3 +98,15 @@ Symptom: the GPU/CPU colour-table parity spec passed with the shader's half-texe
 Root cause: the tolerance was reasoned to, not measured. "Texture filtering rounds differently from float64, call it 4 levels" sounded careful and was never checked. But one cell of a 33-sample axis is 255/32 ≈ 8 levels, so a half-texel lookup skew is also ≈4. The bound and the defect were the same size, so the test could not tell them apart.
 Fix: measure first. The correct shader agrees exactly — max 0, mean 0 over 49,152 channels — so the bound became 1, four times below the defect. Then re-run the mutation and confirm it fails.
 Why: a tolerance is a claim about noise, and a claim about noise needs a measurement, not an argument. Two further things worth copying. The mutation is what exposed it — the spec looked rigorous and was not, and only breaking the code on purpose showed which assertions had teeth. And of five checks, only the *identity table* caught it: a strong grade compresses a lookup error below the noise floor, while identity has slope 1 and shows it at full size. When testing a transform, include the case where the transform does nothing.
+
+## 2026-08-13: a guard that matches too much stops being a guard
+Symptom: the pre-flight check before every Playwright run — `pgrep -f playwright` — started reporting BUSY with no test running, and port 5199 free.
+Root cause: `.codex/config.toml` registers `@playwright/mcp` as an MCP server for Codex, so a long-lived `npm exec @playwright/mcp@latest` process now always matches `-f playwright`. The guard was written against the word, not the thing.
+Fix: match the runner (`pgrep -f "playwright test"`), and keep the port check, which is the resource actually contended.
+Why: this is the failure mode that makes safety checks worse than none. A guard that fires when nothing is wrong trains you to bypass it, and the one time it is right you bypass it too. Match the narrowest thing that identifies the hazard — here, the test runner and the port — not a substring that happens to appear in it.
+
+## 2026-08-13: an even number of passes hid the bug the test was for
+Symptom: `gpu-lut.spec.ts` gained a three-pass identity-chain check whose comment said it caught orientation errors in the ping-pong. Mutating the renderer to flip on every pass left it passing.
+Root cause: a stray flip adds one per pass *after the first*, so three passes add two, and two flips cancel. The test was structurally incapable of detecting the defect it documented — with an odd pass count the picture comes back upright by accident.
+Fix: four passes. Three extra flips is odd, and the mutation now fails it.
+Why: found only by running the mutation, not by reading the test — the comment was confident and wrong. When a check involves anything that can cancel (a flip, a negation, a swap, a double inversion), the count matters as much as the presence, and parity is exactly the kind of thing that makes a test agree with a bug. Prefer a case where the error accumulates over one where it can pair off.
