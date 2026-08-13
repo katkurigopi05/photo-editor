@@ -505,6 +505,11 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-13:** Reviewed; no user-visible change. Masked grading no longer
+  redraws the mask on every frame while a slider is moving, so adjusting a
+  masked effect is markedly more responsive on large frames. The picture is
+  identical.
+
 - **2026-08-13:** Playback speed in the transport — watch at 0.25× to 2×
   without changing the clips or the export.
 - **2026-08-13:** Reviewed; no user-visible change. Masked colour grading now
