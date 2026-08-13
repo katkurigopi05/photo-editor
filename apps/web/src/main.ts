@@ -63,6 +63,12 @@ import {
   setRate,
 } from "@director/playback-controller";
 import {
+  planStabilisation,
+  solveStabilisation,
+  toFlowFrame,
+  type FrameMotion,
+} from "@director/motion-tracking";
+import {
   browserPresetUnsupportedReason,
   planExport,
   planVideoFrames,
@@ -5176,6 +5182,227 @@ function blendSection(clip: TimelineClip): HTMLElement {
  * ripple the clips after it. Speeding up ripples too, closing the gap the
  * shorter clip would otherwise leave.
  */
+/**
+ * Width the shot is analysed at.
+ *
+ * Optical flow does not need full resolution — it needs structure, and a 480px
+ * frame has plenty. Analysing 4K would cost sixty-four times the sampling for a
+ * measurement that is no better, and would make this unusable on the machines
+ * that most want it.
+ *
+ * Translations come back in analysis pixels and are scaled up; rotation and
+ * scale are ratios and need no conversion. It also widens the reach: the
+ * tracker's ~28px limit at this size is ~224px at 4K.
+ */
+const STABILISE_ANALYSIS_WIDTH = 480;
+
+/**
+ * Most frames analysed in one go.
+ *
+ * Stabilisation needs a measurement *per frame* — keyframes sampled sparsely
+ * are interpolated between, and the interpolation smooths out exactly the
+ * high-frequency shake the feature exists to remove. So the sample rate cannot
+ * be traded away, and the length has to be capped instead.
+ *
+ * Longer clips are refused rather than analysed coarsely, because a coarse
+ * result looks like a working stabiliser that simply is not very good.
+ */
+const STABILISE_MAX_FRAMES = 240;
+
+/** Transform properties a stabilisation writes. Used to spot work it would
+ * overwrite. */
+const STABILISE_PROPERTIES: ReadonlySet<string> = new Set([
+  "transform.position_x",
+  "transform.position_y",
+  "transform.rotation",
+  "transform.scale",
+]);
+
+/**
+ * Measure a clip's camera motion and write the correction as keyframes.
+ *
+ * Refusals come first and are specific, because the analysis takes real time
+ * and finding out afterwards that it could never have worked is worse than
+ * being told immediately.
+ */
+async function stabiliseClip(clip: TimelineClip): Promise<void> {
+  const seq = activeSequence();
+  const asset = findAsset(clip.assetId);
+  if (!seq || !asset || asset.kind !== "video") {
+    toast("Stabilisation needs a video clip.", true);
+    return;
+  }
+  if (
+    (clip.animations ?? []).some((track) =>
+      STABILISE_PROPERTIES.has(track.property),
+    )
+  ) {
+    // Overwriting a Ken Burns move or a hand-keyed reframe would destroy work
+    // that took longer to make than this takes to run.
+    toast(
+      "This clip is already animated on position, scale or rotation. Clear that first — stabilising would replace it.",
+      true,
+    );
+    return;
+  }
+
+  const media = mediaCache.get(assetUri(asset));
+  if (!(media instanceof HTMLVideoElement)) {
+    toast("That clip's video is not loaded.", true);
+    return;
+  }
+
+  const fps = seq.frameRate.numerator / seq.frameRate.denominator;
+  const durationUs = BigInt(clip.timelineDurationUs);
+  const frames = Number((durationUs * BigInt(Math.round(fps))) / 1_000_000n);
+  if (frames < 3) {
+    toast("This clip is too short to stabilise.", true);
+    return;
+  }
+  if (frames > STABILISE_MAX_FRAMES) {
+    toast(
+      `Stabilisation analyses up to ${STABILISE_MAX_FRAMES} frames (${Math.floor(STABILISE_MAX_FRAMES / fps)}s at this rate) and this clip is ${frames}. Split it and stabilise each part.`,
+      true,
+    );
+    return;
+  }
+
+  const height = Math.max(
+    2,
+    Math.round((STABILISE_ANALYSIS_WIDTH * seq.height) / seq.width),
+  );
+  const probe = document.createElement("canvas");
+  probe.width = STABILISE_ANALYSIS_WIDTH;
+  probe.height = height;
+  const pctx = probe.getContext("2d", { willReadFrequently: true })!;
+
+  const motions: FrameMotion[] = [];
+  let previous: ReturnType<typeof toFlowFrame> | null = null;
+  const sourceIn = BigInt(clip.sourceInUs);
+
+  toast(`Analysing ${frames} frames…`);
+  for (let i = 0; i < frames; i += 1) {
+    const offsetUs = (durationUs * BigInt(i)) / BigInt(frames);
+    const sourceUs = sourceIn + offsetUs;
+    try {
+      await seekVideoFrame(media, Number(sourceUs) / 1_000_000);
+    } catch {
+      // A seek that never lands is a decode that died; stopping with what we
+      // have beats hanging on a frame that will not arrive.
+      break;
+    }
+    pctx.drawImage(media, 0, 0, STABILISE_ANALYSIS_WIDTH, height);
+    const frame = toFlowFrame(
+      pctx.getImageData(0, 0, STABILISE_ANALYSIS_WIDTH, height).data,
+      STABILISE_ANALYSIS_WIDTH,
+      height,
+    );
+
+    motions.push({
+      timeUs: offsetUs.toString(),
+      transform:
+        previous === null
+          ? { dx: 0, dy: 0, rotationRad: 0, scale: 1, confidence: 0 }
+          : solveStabilisation(previous, frame),
+    });
+    previous = frame;
+  }
+
+  if (motions.length < 3) {
+    toast("Could not read enough frames to stabilise this clip.", true);
+    return;
+  }
+
+  // The plan is built in analysis pixels, so it is given the analysis frame's
+  // size. Keyframe positions are fractions of the frame, and a fraction is the
+  // same number at any resolution — which is why no rescaling is needed here,
+  // and why using the sequence size would have quietly shrunk every correction
+  // by the analysis ratio.
+  const plan = planStabilisation(motions, {
+    width: STABILISE_ANALYSIS_WIDTH,
+    height,
+  });
+  if (plan.tracks.length === 0) {
+    toast("Found no camera motion to correct.", true);
+    return;
+  }
+
+  session.beginGesture();
+  const applied = commit(
+    buildUpdateClipAnimations(nextCtx(), {
+      sequenceId: activeSequenceId,
+      clipId: clip.id,
+      animations: plan.tracks.map((track, t) => ({
+        id: `stab-${t}-${crypto.randomUUID().slice(0, 8)}`,
+        property: track.property,
+        keyframes: track.keyframes.map((k, i) => ({
+          id: `stab-${t}-${i}`,
+          timeUs: k.timeUs,
+          value: k.value,
+          easing: "linear" as const,
+        })),
+      })),
+    }),
+  );
+  session.endGesture();
+
+  if (!applied) {
+    toast(
+      `Stabilisation was refused: ${session.getLastError()?.message ?? "unknown"}`,
+      true,
+    );
+    return;
+  }
+
+  const cropPercent = Math.round((plan.requiredScale - 1) * 100);
+  toast(
+    cropPercent > 0
+      ? `Stabilised. Scale up by about ${cropPercent}% to hide the edges it uncovers.`
+      : "Stabilised.",
+  );
+  updateUI();
+}
+
+/**
+ * Stabilise, beside the animation controls rather than beside Clip speed.
+ *
+ * It writes position, rotation and scale keyframes, so it belongs with the
+ * other things that move a clip — and putting it under Speed would suggest it
+ * retimes, which it does not.
+ */
+function stabiliseSection(clip: TimelineClip): HTMLElement {
+  const box = section("Stabilise");
+  const control = document.createElement("div");
+  control.className = "control";
+
+  const button = document.createElement("button");
+  button.id = "btn-stabilise";
+  button.className = "tool";
+  button.textContent = "\u2317 Stabilise shot";
+  button.title =
+    "Measure the camera shake and write keyframes that cancel it. Leaves an intended pan alone.";
+  button.addEventListener("click", () => {
+    // Disabled for the duration: the analysis seeks the same element the
+    // preview draws from, so a second run would fight the first for it.
+    button.disabled = true;
+    button.textContent = "Analysing\u2026";
+    void stabiliseClip(clip).finally(() => {
+      button.disabled = false;
+      button.textContent = "\u2317 Stabilise shot";
+    });
+  });
+
+  control.appendChild(button);
+  box.appendChild(control);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "Removes shake and keeps a deliberate pan. Correcting a shake uncovers the frame edge, so the result usually needs a small scale-up \u2014 the amount is reported when it finishes.";
+  box.appendChild(note);
+  return box;
+}
+
 function speedSection(clip: TimelineClip): HTMLElement {
   const speed = section("Speed");
   const control = document.createElement("div");
@@ -5830,6 +6057,9 @@ function renderInspector(): void {
     inspectorEl.appendChild(blendSection(clip));
   }
   inspectorEl.appendChild(speedSection(clip));
+  if (findAsset(clip.assetId)?.kind === "video") {
+    inspectorEl.appendChild(stabiliseSection(clip));
+  }
   if (asset && asset.kind !== "audio") {
     inspectorEl.appendChild(masksSection(clip));
   }
