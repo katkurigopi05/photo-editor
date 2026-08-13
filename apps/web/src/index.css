@@ -2615,3 +2615,29 @@ select {
   filter: none;
   background: color-mix(in oklab, var(--accent) 20%, transparent);
 }
+
+/* Watching speed, in the transport. Kept quiet: it is a viewing aid that sits
+   beside the controls you press constantly, so it should not compete with them
+   for attention until you go looking for it. */
+.playback-rate {
+  /* Sized to its content, never to the space available. Without this the
+     select takes a share of the transport's flex row and squeezes the seek
+     bar, which is the control that actually needs the width. */
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  border: 1px solid var(--line, rgb(0 0 0 / 12%));
+  border-radius: 6px;
+  background: none;
+  padding: 3px 6px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color var(--dur-fast, 150ms) ease;
+}
+.playback-rate:hover,
+.playback-rate:focus-visible {
+  color: var(--text);
+}

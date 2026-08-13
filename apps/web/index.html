@@ -328,6 +328,26 @@
               value="0"
             />
             <span id="duration" class="duration">/ 00:00.000</span>
+            <!-- Watching speed, not editing speed. Deliberately here in the
+                 transport rather than in the Inspector beside Clip speed: this
+                 changes nothing about the project or the export. -->
+            <label class="visually-hidden" for="playback-rate">
+              Playback speed
+            </label>
+            <select
+              id="playback-rate"
+              class="playback-rate"
+              title="How fast to play the preview. Does not change the clips or the export."
+            >
+              <option value="1/4">0.25×</option>
+              <option value="1/2">0.5×</option>
+              <option value="3/4">0.75×</option>
+              <option value="1/1" selected>1×</option>
+              <option value="5/4">1.25×</option>
+              <option value="3/2">1.5×</option>
+              <option value="7/4">1.75×</option>
+              <option value="2/1">2×</option>
+            </select>
             <!-- Level meter: peak bar, RMS fill and a falling peak-hold mark,
                  per channel, with a clip light that latches. -->
             <canvas

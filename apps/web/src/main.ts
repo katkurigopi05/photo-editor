@@ -60,6 +60,7 @@ import {
   audioEnvelopeCurve,
   type PlaybackState,
   resolveAtTimeDeep,
+  setRate,
 } from "@director/playback-controller";
 import {
   browserPresetUnsupportedReason,
@@ -195,6 +196,7 @@ import {
   rateAtClipOffset,
   rampTimelineDurationUs,
   sourceAtClipOffset,
+  type Rational,
   type SpeedRamp,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
@@ -1407,6 +1409,37 @@ const durationEl = $<HTMLSpanElement>("duration");
 const versionBadge = $<HTMLSpanElement>("version-badge");
 const seekEl = $<HTMLInputElement>("seek");
 const playBtn = $<HTMLButtonElement>("btn-play");
+const rateEl = $<HTMLSelectElement>("playback-rate");
+
+/**
+ * How fast the preview plays — *watching* speed, not editing speed.
+ *
+ * The project already has two things called speed and this is neither. Clip
+ * speed and speed ramps are edits: commands, undoable, and baked into the
+ * exported file. This changes only how quickly the playhead moves while you
+ * watch, exactly like a video player's speed menu, and leaves the project
+ * untouched. It is session state alongside the playhead and the raster session,
+ * so it is not a command, does not undo, and is not saved.
+ *
+ * The transport already carried a `rate` and `tick` already applied it — the
+ * playback controller has supported this since the beginning and nothing ever
+ * offered it. Rationals rather than floats, for the same reason everything else
+ * in the transport is exact: 1/4 and 3/4 have no float representation, and a
+ * playhead that drifts by a rounding error every frame drifts visibly over a
+ * minute.
+ */
+function monitorRate(): Rational {
+  const [n, d] = rateEl.value.split("/");
+  const numerator = Number(n);
+  const denominator = Number(d);
+  // A tampered or unexpected value falls back to real time rather than dividing
+  // by zero or freezing the playhead.
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator)) {
+    return { numerator: 1, denominator: 1 };
+  }
+  if (numerator <= 0 || denominator <= 0) return { numerator: 1, denominator: 1 };
+  return { numerator, denominator };
+}
 const fileInput = $<HTMLInputElement>("file-input");
 const paletteEl = $<HTMLDivElement>("effects-palette");
 const looksRow = $<HTMLDivElement>("looks-row");
@@ -8083,7 +8116,19 @@ function syncAudioMonitors(): void {
       loc.clip,
       BigInt(playback.currentTimeUs) - BigInt(loc.clip.timelineStartUs),
     );
-    el.playbackRate = rate.numerator / rate.denominator;
+    // Two rates multiply, they do not replace one another: a 2× clip watched at
+    // half speed plays at real speed. Overwriting here would make the monitor
+    // control silently discard the clip's own retime.
+    const watch = playback.rate.numerator / playback.rate.denominator;
+    el.playbackRate = (rate.numerator / rate.denominator) * watch;
+    // Pitch is preserved only when *watching* off-speed. A clip's own retime
+    // deliberately shifts pitch, because that is what the exported mixdown does
+    // and monitoring should match the file. Watching at 2× is not something the
+    // file will ever contain, so the useful behaviour there is the one a video
+    // player has: keep speech intelligible. The two cannot both hold on one
+    // element, and off-speed monitoring is already not what the export sounds
+    // like, so nothing true is being given up.
+    el.preservesPitch = watch !== 1;
 
     // Resync the element clock only when it has drifted (or just started /
     // was seeked); small drift is left alone so playback stays smooth.
@@ -9807,6 +9852,13 @@ function bindEvents(): void {
   });
   $("btn-prev").addEventListener("click", () => stepFrame(-1));
   $("btn-next").addEventListener("click", () => stepFrame(1));
+
+  rateEl.addEventListener("change", () => {
+    playback = setRate(playback, monitorRate());
+    // Applied to the media elements immediately, not on the next tick: paused,
+    // there is no next tick, and the change should hold when play is pressed.
+    syncAudioMonitors();
+  });
 
   seekEl.addEventListener("input", () => {
     const dur = Number(playback.durationUs);
