@@ -143,6 +143,18 @@ when the system asks for reduced motion.
   entirely different things: playback speed is how fast *you watch*, and clip
   speed below is how fast *the clip runs in the finished film*. If you want the
   export to change, use Clip speed.
+- Stabilise (Inspector, video clips) measures the camera shake in a shot and
+  writes keyframes that cancel it. It removes the shake and leaves a deliberate
+  pan alone, so a slow move you meant to make survives. Analysis reads every
+  frame and takes roughly as long as the clip itself — about 30 seconds for a
+  five-second shot.
+- Correcting a shake moves the picture and uncovers the frame edge, so a
+  stabilised shot usually needs a small scale-up. The amount is reported when
+  the analysis finishes; apply it with Scale under Animation.
+- Stabilise is refused if the clip is already animated on position, scale or
+  rotation, because applying it would replace that work. Clear the animation
+  first. Clips longer than 240 frames are refused too — split them and
+  stabilise each part.
 - Clip speed (0.25×–4×) under Speed in the Inspector, for any clip.
 - Speed ramps: a clip can change speed partway through. Under Speed, move the
   playhead to the moment the action should change and press ＋ Speed change at
@@ -504,6 +516,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-13:** Stabilise, in the Inspector for video clips — measures camera
+  shake and writes keyframes that cancel it, keeping an intended pan.
 
 - **2026-08-13:** Reviewed; no user-visible change. Masked grading no longer
   redraws the mask on every frame while a slider is moving, so adjusting a

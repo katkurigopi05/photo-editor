@@ -23,6 +23,7 @@
     "@director/command-schema": "workspace:^",
     "@director/editor-state": "workspace:*",
     "@director/export-engine": "workspace:*",
+    "@director/motion-tracking": "workspace:*",
     "@director/playback-controller": "workspace:*",
     "@director/project-schema": "workspace:*",
     "@director/raster-tools": "workspace:*",

@@ -71,6 +71,9 @@ importers:
       '@director/export-engine':
         specifier: workspace:*
         version: link:../../packages/export-engine
+      '@director/motion-tracking':
+        specifier: workspace:*
+        version: link:../../packages/motion-tracking
       '@director/playback-controller':
         specifier: workspace:*
         version: link:../../packages/playback-controller
