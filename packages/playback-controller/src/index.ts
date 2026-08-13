@@ -40,9 +40,4 @@ export {
   type ResolvedAudioFades,
 } from "./audio-envelope.js";
 
-export {
-  SEQUENCE_URI_PREFIX,
-  nestedSequenceId,
-  compoundCycle,
-  resolveAtTimeDeep,
-} from "./compound.js";
+export { resolveAtTimeDeep } from "./compound.js";

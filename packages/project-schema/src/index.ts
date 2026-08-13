@@ -9,3 +9,5 @@ export * from "./speed-ramp.js";
 export * from "./animations.js";
 export * from "./transitions.js";
 export * from "./entities.js";
+export * from "./compound.js";
+export * from "./magnetic.js";

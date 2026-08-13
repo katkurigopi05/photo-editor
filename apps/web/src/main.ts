@@ -41,6 +41,8 @@ import {
   planRippleTrim,
   usToPixels,
   type CommandContext,
+  buildUpdateClipEffects,
+  buildSetTrackMagnetic,
 } from "@director/ui-kit";
 import {
   createPlaybackState,
@@ -57,6 +59,7 @@ import {
   audioEnvelopeGain,
   audioEnvelopeCurve,
   type PlaybackState,
+  resolveAtTimeDeep,
 } from "@director/playback-controller";
 import {
   browserPresetUnsupportedReason,
@@ -184,7 +187,10 @@ import {
   TRANSITION_DIRECTIONS,
   TRANSITION_KINDS,
   compositeOperation,
+  dissolveBlockers,
+  dissolveCompound,
   isAudioEffectType,
+  nestedSequenceId,
   normalizeKeyword,
   rateAtClipOffset,
   rampTimelineDurationUs,
@@ -780,11 +786,44 @@ function defaultParams(spec: EffectSpec): Record<string, JsonValue> {
 // Application state
 // ==========================================================================
 const PROJECT_ID = "project-1";
+/** The sequence `seed()` creates. The project's root, and the only sequence
+ * whose id is known ahead of time — every other one is a compound clip's. */
 const SEQUENCE_ID = "sequence-1";
 const VIDEO_TRACK = "video-1";
 const AUDIO_TRACK = "audio-1";
 const ACTOR = { type: "user", id: "user-1" } as const;
 const FRAME_RATE = { numerator: 30, denominator: 1 };
+
+/**
+ * Which sequence the timeline, inspector and export are looking at.
+ *
+ * Session state, not project state — like playback position and the raster
+ * session, it is where you are standing rather than part of the edit, so it is
+ * not a command and does not undo. Two people opening the same project file
+ * both start at the root.
+ *
+ * It exists so that a compound clip can be opened and edited from the inside.
+ * Until something moves it, it is `SEQUENCE_ID` and every read of it is exactly
+ * the constant it replaced.
+ */
+let activeSequenceId: string = SEQUENCE_ID;
+
+/** One compound clip stepped into: what to show in the breadcrumb, and where
+ * the playhead was outside so stepping back out returns to that frame. */
+interface SequenceStep {
+  id: string;
+  name: string;
+  returnTimeUs: string;
+}
+
+/**
+ * The compound clips currently stood inside, outermost first. Empty at the
+ * root, so its length is the depth and `SEQUENCE_ID` needs no entry.
+ *
+ * A path rather than a single id because stepping out has to know *where to*,
+ * and because a compound clip can contain another one.
+ */
+let sequencePath: SequenceStep[] = [];
 
 const session = new EditorSession();
 /** GIF is a third output mode, not a third editor: it shares the timeline and
@@ -1513,8 +1552,27 @@ async function checksumFile(
   });
 }
 
+/**
+ * The sequence being edited, healing itself if that sequence has gone.
+ *
+ * `activeSequenceId` is session state pointing at project state, and the
+ * project can move underneath it: a compound clip's sequence exists because a
+ * command created it, so undoing far enough removes it while you are standing
+ * inside. Falling back to the root turns that into a step outward rather than
+ * an editor showing nothing and refusing every command.
+ */
 function activeSequence(): Sequence | undefined {
-  return session.getProject()?.sequences.find((s) => s.id === SEQUENCE_ID);
+  const sequences = session.getProject()?.sequences;
+  if (sequences === undefined) return undefined;
+  const here = sequences.find((s) => s.id === activeSequenceId);
+  if (here !== undefined) return here;
+  if (activeSequenceId !== SEQUENCE_ID) {
+    activeSequenceId = SEQUENCE_ID;
+    // The breadcrumb has to go with it, or it would offer a way back into a
+    // sequence that no longer exists.
+    sequencePath = [];
+  }
+  return sequences.find((s) => s.id === SEQUENCE_ID);
 }
 
 function findAsset(id: string): MediaAsset | undefined {
@@ -1643,7 +1701,7 @@ function curveEditor(clip: TimelineClip, fx: EffectInstance): HTMLElement {
   const commitPoints = (): void => {
     commit(
       buildUpdateEffectParams(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         effectId: fx.id,
         // The params object is JSON by construction — the curve is an array of
@@ -1811,6 +1869,31 @@ function locateClip(clipId: string | null): ClipLocation | null {
   for (const track of seq.tracks) {
     const clip = track.clips.find((c) => c.id === clipId);
     if (clip) return { clip, track };
+  }
+  return null;
+}
+
+/**
+ * Find a clip in *any* sequence, not only the one being edited.
+ *
+ * Deep resolution returns clips from inside compound clips, and those live in
+ * another sequence — so looking them up with `locateClip` finds nothing and the
+ * renderer silently draws a black frame. That is exactly what happened: the
+ * compound clip was correct in state, the resolver returned its contents, and
+ * the draw loop dropped every one of them on the floor.
+ *
+ * Only the render paths use this. Selection and the inspector deliberately keep
+ * to `locateClip`, because a clip you cannot see on this timeline is not one
+ * you can select or edit here.
+ */
+function locateClipAnywhere(clipId: string | null): ClipLocation | null {
+  const here = locateClip(clipId);
+  if (here || !clipId) return here;
+  for (const sequence of session.getProject()?.sequences ?? []) {
+    for (const track of sequence.tracks) {
+      const clip = track.clips.find((c) => c.id === clipId);
+      if (clip) return { clip, track };
+    }
   }
   return null;
 }
@@ -2087,7 +2170,7 @@ async function addAdjustmentLayer(): Promise<void> {
   if (top.clips.length > 0) {
     const added = commit(
       buildAddTrack(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         track: {
           id: newTrackId,
           kind: "video",
@@ -2103,7 +2186,7 @@ async function addAdjustmentLayer(): Promise<void> {
     for (const clip of top.clips) {
       commit(
         buildMoveClip(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: clip.id,
           targetTrackId: newTrackId,
           timelineStartUs: clip.timelineStartUs,
@@ -2135,7 +2218,7 @@ async function addAdjustmentLayer(): Promise<void> {
     // part of the cut would look like it had simply failed on the rest.
     commit(
       buildAddClip(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         trackId: top.id,
         clip: {
           id: clipId,
@@ -2198,7 +2281,7 @@ function addAssetToTimeline(
     playbackRate: { numerator: 1, denominator: 1 } as const,
   };
   const payload = {
-    sequenceId: SEQUENCE_ID,
+    sequenceId: activeSequenceId,
     trackId,
     clip,
     splitClipId: `clip-${crypto.randomUUID().slice(0, 8)}`,
@@ -2211,7 +2294,7 @@ function addAssetToTimeline(
         : // Append has nothing to ripple or replace, so it stays the plain add
           // it always was — and `add_clip` takes no splitClipId.
           buildAddClip(nextCtx(), {
-            sequenceId: SEQUENCE_ID,
+            sequenceId: activeSequenceId,
             trackId,
             clip,
           }),
@@ -2219,10 +2302,499 @@ function addAssetToTimeline(
   if (added) selectClip(clipId);
 }
 
+/**
+ * Turn the selected clips into one compound clip.
+ *
+ * The selection moves into a new sequence and is replaced by a single clip that
+ * plays it — Final Cut's compound clip, Premiere's nested sequence. Useful when
+ * a run of clips has become one thing you want to move, retime or grade as a
+ * unit.
+ *
+ * Built from existing commands inside one gesture, so it is one Undo. There is
+ * no cross-sequence move command, so each clip is added to the inner sequence
+ * and deleted from the outer one.
+ *
+ * `add_clip` deliberately takes no effects, animations, speed or blend mode —
+ * those exist only through their own commands — so each is carried across
+ * afterwards with the atomic "set the whole thing" command that owns it.
+ * Without that, compounding would silently discard a grade, which is the kind of
+ * loss someone notices much later and cannot undo their way out of.
+ */
+async function makeCompoundClip(): Promise<void> {
+  const seq = activeSequence();
+  const clipIds = selectionClipIds();
+  if (!seq || clipIds.length === 0) {
+    toast("Select the clips to compound first.", true);
+    return;
+  }
+
+  const located = clipIds
+    .map((id) => locateClip(id))
+    .filter((l): l is NonNullable<typeof l> => l !== null);
+  if (located.length === 0) return;
+
+  // The compound clip occupies the span the selection covered.
+  const startUs = located.reduce(
+    (min, l) =>
+      BigInt(l.clip.timelineStartUs) < min ? BigInt(l.clip.timelineStartUs) : min,
+    BigInt(located[0]!.clip.timelineStartUs),
+  );
+  const endUs = located.reduce((max, l) => {
+    const end =
+      BigInt(l.clip.timelineStartUs) + BigInt(l.clip.timelineDurationUs);
+    return end > max ? end : max;
+  }, 0n);
+  const spanUs = endUs - startUs;
+  if (spanUs <= 0n) return;
+
+  const innerId = `sequence-${crypto.randomUUID().slice(0, 8)}`;
+  const innerVideo = `video-${crypto.randomUUID().slice(0, 8)}`;
+  const innerAudio = `audio-${crypto.randomUUID().slice(0, 8)}`;
+  const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  const compoundClipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+  const checksum = await checksumBlob(
+    new Blob([new TextEncoder().encode(`compound:${innerId}`)]),
+  );
+  assetNames.set(assetId, "Compound clip");
+
+  session.beginGesture();
+  const built = commit(
+    buildCreateSequence(nextCtx(), {
+      sequence: {
+        id: innerId,
+        name: "Compound",
+        width: seq.width,
+        height: seq.height,
+        frameRate: seq.frameRate,
+      },
+    }),
+  );
+  if (!built) {
+    session.endGesture();
+    return;
+  }
+  for (const [id, kind] of [
+    [innerVideo, "video"],
+    [innerAudio, "audio"],
+  ] as const) {
+    commit(
+      buildAddTrack(nextCtx(), {
+        sequenceId: innerId,
+        track: { id, kind, name: kind === "video" ? "V1" : "A1", index: kind === "video" ? 0 : 1 },
+      }),
+    );
+  }
+
+  for (const loc of located) {
+    const clip = loc.clip;
+    const innerClipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+    const placed = commit(
+      buildAddClip(nextCtx(), {
+        sequenceId: innerId,
+        trackId: loc.track.kind === "audio" ? innerAudio : innerVideo,
+        clip: {
+          id: innerClipId,
+          assetId: clip.assetId,
+          // Rebased so the selection starts at zero inside.
+          timelineStartUs: (BigInt(clip.timelineStartUs) - startUs).toString(),
+          sourceInUs: clip.sourceInUs,
+          sourceOutUs: clip.sourceOutUs,
+          playbackRate: { numerator: 1, denominator: 1 },
+        },
+      }),
+    );
+    // Deleting the original only after its copy exists. Skipping the delete on
+    // failure leaves the clip where it was, which is recoverable; deleting it
+    // anyway would lose the clip entirely.
+    if (!placed) {
+      const why = session.getLastError();
+      toast(
+        `Could not move ${clip.id} into the compound: ${why?.message ?? "unknown"}`,
+        true,
+      );
+      continue;
+    }
+
+    // Carry across what add_clip does not take. Each of these is the command
+    // that owns that part of a clip, so the copy goes through the engine rather
+    // than around it.
+    if (clip.effects.length > 0) {
+      commit(
+        buildUpdateClipEffects(nextCtx(), {
+          sequenceId: innerId,
+          clipId: innerClipId,
+          effects: structuredClone(clip.effects),
+        }),
+      );
+    }
+    if ((clip.animations ?? []).length > 0) {
+      commit(
+        buildUpdateClipAnimations(nextCtx(), {
+          sequenceId: innerId,
+          clipId: innerClipId,
+          animations: structuredClone(clip.animations ?? []),
+        }),
+      );
+    }
+    if (clip.blendMode !== undefined) {
+      commit(
+        buildSetClipBlendMode(nextCtx(), {
+          sequenceId: innerId,
+          clipId: innerClipId,
+          blendMode: clip.blendMode,
+        }),
+      );
+    }
+    if (
+      clip.playbackRate.numerator !== 1 ||
+      clip.playbackRate.denominator !== 1
+    ) {
+      commit(
+        buildSetClipSpeed(nextCtx(), {
+          sequenceId: innerId,
+          clipId: innerClipId,
+          playbackRate: clip.playbackRate,
+        }),
+      );
+    }
+
+    commit(
+      buildDeleteClip(nextCtx(), {
+        sequenceId: activeSequenceId,
+        clipId: clip.id,
+      }),
+    );
+  }
+
+  const registered = commit(
+    buildRegisterAsset(nextCtx(), {
+      asset: {
+        id: assetId,
+        projectId: PROJECT_ID,
+        kind: "sequence",
+        originalUri: `sequence:${innerId}`,
+        checksum,
+        metadata: { fileSizeBytes: "0", durationUs: spanUs.toString() },
+        createdAt: new Date().toISOString(),
+      },
+    }),
+  );
+  if (registered) {
+    commit(
+      buildAddClip(nextCtx(), {
+        sequenceId: activeSequenceId,
+        trackId: located[0]!.track.id,
+        clip: {
+          id: compoundClipId,
+          assetId,
+          timelineStartUs: startUs.toString(),
+          sourceInUs: "0",
+          sourceOutUs: spanUs.toString(),
+          playbackRate: { numerator: 1, denominator: 1 },
+        },
+      }),
+    );
+  }
+  session.endGesture();
+  selectedClipIds.clear();
+  selectClip(compoundClipId);
+  toast("Compound clip made — its contents live in their own sequence.");
+}
+
+/** Whether a span is free on a track, ignoring one clip that is about to go. */
+function trackHasRoom(
+  track: Track,
+  startUs: bigint,
+  endUs: bigint,
+  ignoreClipId: string,
+): boolean {
+  return track.clips.every((c) => {
+    if (c.id === ignoreClipId) return true;
+    const s = BigInt(c.timelineStartUs);
+    return s + BigInt(c.timelineDurationUs) <= startUs || s >= endUs;
+  });
+}
+
+/**
+ * Put a compound clip's contents back on this timeline — the inverse of
+ * `makeCompoundClip`.
+ *
+ * The order is forced and is the opposite of compounding's. The inner clips
+ * land exactly where the compound clip sat, so it has to go *first* or every
+ * add would be refused as an overlap. That removes the safety compounding had
+ * (delete only once the copy exists), so instead everything is checked before
+ * anything is written: the blockers, and that each target track has room. By
+ * the time the first command is dispatched there is nothing left to discover.
+ *
+ * Audio and video contents may need different tracks from the one the compound
+ * clip sat on, and the outer sequence need not have one — so a missing track is
+ * added rather than treated as a refusal.
+ */
+function dissolveCompoundClip(): void {
+  const project = session.getProject();
+  const seq = activeSequence();
+  const loc = locateClip(selectedClipId);
+  if (!project || !seq || !loc) {
+    toast("Select a compound clip to dissolve.", true);
+    return;
+  }
+
+  const asset = findAsset(loc.clip.assetId);
+  if (!asset || nestedSequenceId(asset) === null) {
+    toast("That is not a compound clip.", true);
+    return;
+  }
+
+  const blockers = dissolveBlockers(loc.clip);
+  if (blockers.length > 0) {
+    toast(
+      `Cannot dissolve this compound clip because ${blockers.join(", and ")}. Remove those first.`,
+      true,
+    );
+    return;
+  }
+
+  const placements = dissolveCompound(project, loc.clip);
+  if (placements.length === 0) {
+    toast("This compound clip is empty — delete it instead.", true);
+    return;
+  }
+
+  // Pick a destination per placement before writing anything. The compound
+  // clip's own track takes whatever matches its kind, so the common case (a
+  // video compound on a video track) puts the clips back where they came from.
+  const targets = new Map<string, string>();
+  const pendingTracks: { id: string; kind: Track["kind"] }[] = [];
+  for (const p of placements) {
+    if (targets.has(p.trackKind)) continue;
+    const existing =
+      loc.track.kind === p.trackKind
+        ? loc.track
+        : seq.tracks.find((t) => t.kind === p.trackKind);
+    if (existing) {
+      targets.set(p.trackKind, existing.id);
+      continue;
+    }
+    const id = `track-${crypto.randomUUID().slice(0, 8)}`;
+    pendingTracks.push({ id, kind: p.trackKind });
+    targets.set(p.trackKind, id);
+  }
+
+  // Room check on the tracks that already exist. A track about to be created is
+  // empty by construction, so it has room for anything.
+  const existingIds = new Set(seq.tracks.map((t) => t.id));
+  for (const p of placements) {
+    const targetId = targets.get(p.trackKind)!;
+    if (!existingIds.has(targetId)) continue;
+    const track = seq.tracks.find((t) => t.id === targetId)!;
+    const start = BigInt(p.timelineStartUs);
+    const end = start + BigInt(p.timelineDurationUs);
+    if (!trackHasRoom(track, start, end, loc.clip.id)) {
+      toast(
+        `Cannot dissolve: ${track.name} already has a clip where ${p.source.id} would land. Move it out of the way first.`,
+        true,
+      );
+      return;
+    }
+  }
+
+  session.beginGesture();
+  for (const t of pendingTracks) {
+    commit(
+      buildAddTrack(nextCtx(), {
+        sequenceId: activeSequenceId,
+        track: {
+          id: t.id,
+          kind: t.kind,
+          name: t.kind === "audio" ? "A1" : "V1",
+          index: seq.tracks.length + pendingTracks.indexOf(t),
+        },
+      }),
+    );
+  }
+
+  commit(
+    buildDeleteClip(nextCtx(), {
+      sequenceId: activeSequenceId,
+      clipId: loc.clip.id,
+    }),
+  );
+
+  const restored: string[] = [];
+  for (const p of placements) {
+    const newId = `clip-${crypto.randomUUID().slice(0, 8)}`;
+    const placed = commit(
+      buildAddClip(nextCtx(), {
+        sequenceId: activeSequenceId,
+        trackId: targets.get(p.trackKind)!,
+        clip: {
+          id: newId,
+          assetId: p.source.assetId,
+          timelineStartUs: p.timelineStartUs,
+          sourceInUs: p.sourceInUs,
+          sourceOutUs: p.sourceOutUs,
+          playbackRate: { numerator: 1, denominator: 1 },
+        },
+      }),
+    );
+    if (!placed) {
+      const why = session.getLastError();
+      toast(
+        `Could not restore ${p.source.id}: ${why?.message ?? "unknown"}`,
+        true,
+      );
+      continue;
+    }
+    restored.push(newId);
+
+    // Same reasoning as compounding: `add_clip` takes none of this, so each
+    // part is carried across by the command that owns it. Dropping a grade on
+    // the way out would be exactly the loss compounding was careful to avoid on
+    // the way in.
+    if (p.source.effects.length > 0) {
+      commit(
+        buildUpdateClipEffects(nextCtx(), {
+          sequenceId: activeSequenceId,
+          clipId: newId,
+          effects: structuredClone(p.source.effects),
+        }),
+      );
+    }
+    if ((p.source.animations ?? []).length > 0) {
+      commit(
+        buildUpdateClipAnimations(nextCtx(), {
+          sequenceId: activeSequenceId,
+          clipId: newId,
+          animations: structuredClone(p.source.animations ?? []),
+        }),
+      );
+    }
+    if (p.source.blendMode !== undefined) {
+      commit(
+        buildSetClipBlendMode(nextCtx(), {
+          sequenceId: activeSequenceId,
+          clipId: newId,
+          blendMode: p.source.blendMode,
+        }),
+      );
+    }
+    if (
+      p.source.playbackRate.numerator !== p.source.playbackRate.denominator
+    ) {
+      commit(
+        buildSetClipSpeed(nextCtx(), {
+          sequenceId: activeSequenceId,
+          clipId: newId,
+          playbackRate: p.source.playbackRate,
+        }),
+      );
+    }
+    if (p.source.audioGainDb !== 0) {
+      commit(
+        buildSetClipAudioGain(nextCtx(), {
+          sequenceId: activeSequenceId,
+          clipId: newId,
+          gainDb: p.source.audioGainDb,
+        }),
+      );
+    }
+    if (p.source.audioPan !== 0) {
+      commit(
+        buildSetClipAudioPan(nextCtx(), {
+          sequenceId: activeSequenceId,
+          clipId: newId,
+          pan: p.source.audioPan,
+        }),
+      );
+    }
+  }
+  session.endGesture();
+
+  selectedClipIds.clear();
+  selectClip(restored[0] ?? null);
+  toast(
+    `Dissolved into ${restored.length} clip${restored.length === 1 ? "" : "s"}.`,
+  );
+}
+
+/**
+ * Step inside the selected compound clip and edit its contents.
+ *
+ * Not a command and not undoable: this moves the viewer, not the project. The
+ * inner sequence has been editable since compound clips landed — what was
+ * missing was any way to point the editor at it.
+ *
+ * The playhead follows the frame rather than resetting, because stepping in is
+ * meant to feel like looking closer at what you were already watching. Inside,
+ * that instant is `playhead − clipStart + sourceIn`, which is the same
+ * translation the resolver does; stepping back out restores the outer time we
+ * left, so a round trip lands on the frame it started from.
+ */
+function openCompoundClip(): void {
+  const loc = locateClip(selectedClipId);
+  if (!loc) {
+    toast("Select a compound clip to open it.", true);
+    return;
+  }
+  const asset = findAsset(loc.clip.assetId);
+  const inner = asset ? nestedSequenceId(asset) : null;
+  if (inner === null) {
+    toast("That is not a compound clip.", true);
+    return;
+  }
+  if (session.getProject()?.sequences.some((s) => s.id === inner) !== true) {
+    toast("This compound clip's contents are missing.", true);
+    return;
+  }
+
+  const outerNow = BigInt(playback.currentTimeUs);
+  const clipStart = BigInt(loc.clip.timelineStartUs);
+  const clipEnd = clipStart + BigInt(loc.clip.timelineDurationUs);
+  // Only meaningful while the playhead is actually over the clip; from outside
+  // it, the head of what the clip plays is the honest place to land.
+  const insideUs =
+    outerNow >= clipStart && outerNow < clipEnd
+      ? outerNow - clipStart + BigInt(loc.clip.sourceInUs)
+      : BigInt(loc.clip.sourceInUs);
+
+  sequencePath = [
+    ...sequencePath,
+    {
+      id: inner,
+      name: assetNames.get(asset!.id) ?? "Compound",
+      returnTimeUs: playback.currentTimeUs,
+    },
+  ];
+  activeSequenceId = inner;
+  selectedClipId = null;
+  selectedClipIds.clear();
+  playback = seek(playback, insideUs.toString());
+  updateUI();
+  toast(`Inside ${sequencePath[sequencePath.length - 1]!.name}.`);
+}
+
+/**
+ * Step back out to `depth` levels of nesting — 0 being the root sequence.
+ *
+ * Takes a depth rather than "up one" so the breadcrumb can jump several levels
+ * in a single click, and so the two callers cannot disagree about what a step
+ * means.
+ */
+function goToSequenceDepth(depth: number): void {
+  if (depth < 0 || depth >= sequencePath.length) return;
+  const returnTimeUs = sequencePath[depth]!.returnTimeUs;
+  sequencePath = sequencePath.slice(0, depth);
+  activeSequenceId = sequencePath[depth - 1]?.id ?? SEQUENCE_ID;
+  selectedClipId = null;
+  selectedClipIds.clear();
+  playback = seek(playback, returnTimeUs);
+  updateUI();
+}
+
 /** Remove a clip from the timeline via the command engine (undoable). */
 function deleteClip(clipId: string): void {
   if (selectedClipId === clipId) selectedClipId = null;
-  commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId }));
+  commit(buildDeleteClip(nextCtx(), { sequenceId: activeSequenceId, clipId }));
 }
 
 /** Select a clip and move the playhead onto it, so the preview shows the clip
@@ -2258,7 +2830,13 @@ function drawPreview(): void {
   cctx.clearRect(0, 0, cw, ch);
 
   const seq = activeSequence();
-  const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
+  // Deep: a compound clip plays a whole sequence, and what the viewer must see
+  // is the media inside it, positioned in this timeline.
+  const previewProject = session.getProject();
+  const layers =
+    seq && previewProject
+      ? resolveAtTimeDeep(previewProject, seq.id, playback.currentTimeUs)
+      : [];
   const visual = layers.filter((l) => {
     const a = findAsset(l.assetId);
     return a && a.kind !== "audio";
@@ -2282,7 +2860,7 @@ function drawPreview(): void {
   // an adjustment layer read the canvas and find everything beneath it already
   // painted and nothing above it painted yet.
   for (const layer of [...visual].reverse()) {
-    const loc = locateClip(layer.clipId);
+    const loc = locateClipAnywhere(layer.clipId);
     if (loc) {
       paintLayer(
         cctx,
@@ -3668,6 +4246,44 @@ function drawWaveform(
   }
 }
 
+/**
+ * The trail of compound clips currently stood inside, as buttons back out.
+ *
+ * Hidden entirely at the root, where it would be a permanent label reading
+ * "Main" that never does anything. It appears only when there is somewhere to
+ * go back to, which is also the only time you need telling that the timeline
+ * below is not the whole edit.
+ */
+function renderSequencePath(): void {
+  const nav = $("sequence-path");
+  nav.innerHTML = "";
+  nav.hidden = sequencePath.length === 0;
+  if (sequencePath.length === 0) return;
+
+  const crumb = (label: string, depth: number, current: boolean): void => {
+    if (nav.childElementCount > 0) {
+      const sep = document.createElement("span");
+      sep.className = "sequence-path-sep";
+      sep.textContent = "›";
+      sep.setAttribute("aria-hidden", "true");
+      nav.append(sep);
+    }
+    const el = document.createElement("button");
+    el.className = `sequence-crumb${current ? " current" : ""}`;
+    el.textContent = label;
+    // The one you are on is not a destination, so it is not a control.
+    el.disabled = current;
+    if (current) el.setAttribute("aria-current", "true");
+    else el.addEventListener("click", () => goToSequenceDepth(depth));
+    nav.append(el);
+  };
+
+  crumb("Main", 0, false);
+  sequencePath.forEach((step, i) => {
+    crumb(step.name, i + 1, i === sequencePath.length - 1);
+  });
+}
+
 function renderTimeline(): void {
   const seq = activeSequence();
   timelineBody.innerHTML = "";
@@ -3682,7 +4298,33 @@ function renderTimeline(): void {
 
     const head = document.createElement("div");
     head.className = "track-head";
-    head.textContent = `${track.name} (${track.kind})`;
+    const headName = document.createElement("span");
+    headName.textContent = `${track.name} (${track.kind})`;
+    head.appendChild(headName);
+
+    // Magnetic is a property of the track, so it is toggled where the track is
+    // named rather than from a global menu that would have to ask which one.
+    const magnet = document.createElement("button");
+    magnet.className = "track-magnet";
+    magnet.textContent = "🧲";
+    magnet.dataset.trackId = track.id;
+    const on = track.magnetic === true;
+    magnet.setAttribute("aria-pressed", String(on));
+    magnet.setAttribute("aria-label", `Magnetic ${track.name}`);
+    magnet.title = on
+      ? "Magnetic: clips stay packed end to end. Click to allow gaps."
+      : "Click to make this track magnetic — gaps close and clips reorder.";
+    magnet.addEventListener("click", (event) => {
+      event.stopPropagation();
+      commit(
+        buildSetTrackMagnetic(nextCtx(), {
+          sequenceId: activeSequenceId,
+          trackId: track.id,
+          magnetic: !on,
+        }),
+      );
+    });
+    head.appendChild(magnet);
     row.appendChild(head);
 
     const lane = document.createElement("div");
@@ -3753,6 +4395,14 @@ function renderTimeline(): void {
       label.className = "clip-label";
       label.textContent = asset ? assetName(asset) : clip.id;
       el.appendChild(label);
+
+      // A compound clip says so. Opening it on double-click is handled in
+      // `startClipDrag`, not with a `dblclick` listener here — see there.
+      if (asset && nestedSequenceId(asset) !== null) {
+        el.classList.add("compound");
+        el.dataset.compound = "true";
+        el.title = "Compound clip — double-click to edit inside it";
+      }
 
       for (const localTimeUs of uniqueKeyframeTimes(clip)) {
         const count = (clip.animations ?? []).reduce(
@@ -3867,6 +4517,12 @@ function snapToleranceUs(): string {
   return String(Math.round((SNAP_TOLERANCE_PX / zoom) * 1_000_000));
 }
 
+/** How close together two presses on the same clip count as a double-click.
+ * Matches the platform default closely enough that it feels like one. */
+const DOUBLE_CLICK_MS = 400;
+/** The last press on a clip, by id rather than by element — see startClipDrag. */
+let lastClipPress: { clipId: string; at: number } | null = null;
+
 /** Drag a clip horizontally to move it (dispatches timeline.move_clip).
  * The drop position snaps to clip edges, the playhead and the sequence start;
  * hold Alt to place it exactly where the pointer is instead. */
@@ -3880,6 +4536,29 @@ function startClipDrag(
     toggleClipSelection(clip.id);
     return;
   }
+
+  // Double-click to open a compound clip, detected here rather than with a
+  // `dblclick` listener on the element. Selecting a clip re-renders the
+  // timeline, so by the second press the first element is gone and the browser
+  // never pairs the two clicks into a `dblclick` at all — it fires two
+  // singles. Tracking the clip *id* survives the re-render; the element does
+  // not.
+  const now = Date.now();
+  const isSecond =
+    lastClipPress !== null &&
+    lastClipPress.clipId === clip.id &&
+    now - lastClipPress.at <= DOUBLE_CLICK_MS;
+  lastClipPress = { clipId: clip.id, at: now };
+  if (isSecond) {
+    const asset = findAsset(clip.assetId);
+    if (asset && nestedSequenceId(asset) !== null) {
+      lastClipPress = null;
+      selectClip(clip.id);
+      openCompoundClip();
+      return;
+    }
+  }
+
   selectClip(clip.id);
   const startX = e.clientX;
   let moved = false;
@@ -3893,7 +4572,7 @@ function startClipDrag(
     if (!moved) return;
     const drag = resolveClipDrag({
       kind: "move",
-      sequenceId: SEQUENCE_ID,
+      sequenceId: activeSequenceId,
       clip,
       targetTrackId: track.id,
       deltaPixels: ev.clientX - startX,
@@ -3955,7 +4634,7 @@ function startClipTrim(
 
     const drag = resolveClipDrag({
       kind: side === "left" ? "trim-left" : "trim-right",
-      sequenceId: SEQUENCE_ID,
+      sequenceId: activeSequenceId,
       clip,
       deltaPixels: ev.clientX - startX,
       pixelsPerSecond: zoom,
@@ -3978,7 +4657,7 @@ function startClipTrim(
         const start = BigInt(clip.timelineStartUs) + headShift;
         commit(
           buildMoveClip(nextCtx(), {
-            sequenceId: SEQUENCE_ID,
+            sequenceId: activeSequenceId,
             clipId: clip.id,
             targetTrackId: track.id,
             timelineStartUs: (start < 0n ? 0n : start).toString(),
@@ -3988,7 +4667,7 @@ function startClipTrim(
       for (const move of ripple.moves) {
         commit(
           buildMoveClip(nextCtx(), {
-            sequenceId: SEQUENCE_ID,
+            sequenceId: activeSequenceId,
             clipId: move.clipId,
             targetTrackId: track.id,
             timelineStartUs: move.timelineStartUs,
@@ -4054,13 +4733,13 @@ function deleteSelection(ripple: boolean): void {
     const plan = ripple
       ? planRippleDelete(loc.track, clipId)
       : { deleteClipId: clipId, moves: [] };
-    if (!commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId })))
+    if (!commit(buildDeleteClip(nextCtx(), { sequenceId: activeSequenceId, clipId })))
       continue;
     for (const move of plan.moves) {
       if (clipIds.includes(move.clipId)) continue; // about to be deleted too
       commit(
         buildMoveClip(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: move.clipId,
           targetTrackId: loc.track.id,
           timelineStartUs: move.timelineStartUs,
@@ -4106,7 +4785,7 @@ function upsertAnimationKeyframe(
   if (track && exact) {
     commit(
       buildUpdateKeyframe(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         animationId: track.id,
         keyframeId: exact.id,
@@ -4120,7 +4799,7 @@ function upsertAnimationKeyframe(
 
   commit(
     buildAddKeyframe(nextCtx(), {
-      sequenceId: SEQUENCE_ID,
+      sequenceId: activeSequenceId,
       clipId: clip.id,
       animationId: track?.id ?? crypto.randomUUID(),
       property,
@@ -4146,7 +4825,7 @@ function toggleAnimationKeyframe(
   if (track && exact) {
     commit(
       buildRemoveKeyframe(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         animationId: track.id,
         keyframeId: exact.id,
@@ -4321,7 +5000,7 @@ function blendSection(clip: TimelineClip): HTMLElement {
     if (!loc) return;
     commit(
       buildSetClipBlendMode(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         blendMode: select.value as (typeof BLEND_MODES)[number],
       }),
@@ -4551,7 +5230,7 @@ function setSpeedRamp(
     for (const move of ripple.moves) {
       commit(
         buildMoveClip(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: move.clipId,
           targetTrackId: loc.track.id,
           timelineStartUs: move.timelineStartUs,
@@ -4562,7 +5241,7 @@ function setSpeedRamp(
   if (movesFirst) applyMoves();
   const ramped = commit(
     buildSetClipSpeedRamp(nextCtx(), {
-      sequenceId: SEQUENCE_ID,
+      sequenceId: activeSequenceId,
       clipId: clip.id,
       ramp,
     }),
@@ -4591,7 +5270,7 @@ function setClipSpeed(
     for (const move of ripple.moves) {
       commit(
         buildMoveClip(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: move.clipId,
           targetTrackId: loc.track.id,
           timelineStartUs: move.timelineStartUs,
@@ -4602,7 +5281,7 @@ function setClipSpeed(
   if (movesFirst) applyMoves();
   const retimed = commit(
     buildSetClipSpeed(nextCtx(), {
-      sequenceId: SEQUENCE_ID,
+      sequenceId: activeSequenceId,
       clipId: clip.id,
       playbackRate: rate,
     }),
@@ -4663,7 +5342,7 @@ function animationSection(clip: TimelineClip): HTMLElement {
     if (
       commit(
         buildUpdateClipAnimations(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: clip.id,
           animations,
         }),
@@ -4677,7 +5356,7 @@ function animationSection(clip: TimelineClip): HTMLElement {
     if (
       commit(
         buildUpdateClipAnimations(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: clip.id,
           animations: [],
         }),
@@ -4741,7 +5420,7 @@ function commitTransition(
 ): void {
   commit(
     buildSetClipTransition(nextCtx(), {
-      sequenceId: SEQUENCE_ID,
+      sequenceId: activeSequenceId,
       clipId: clip.id,
       side,
       transition,
@@ -5035,7 +5714,7 @@ function renderInspector(): void {
       (v) =>
         commit(
           buildSetClipAudioGain(nextCtx(), {
-            sequenceId: SEQUENCE_ID,
+            sequenceId: activeSequenceId,
             clipId: clip.id,
             gainDb: v,
           }),
@@ -5052,7 +5731,7 @@ function renderInspector(): void {
       (v) =>
         commit(
           buildSetClipAudioPan(nextCtx(), {
-            sequenceId: SEQUENCE_ID,
+            sequenceId: activeSequenceId,
             clipId: clip.id,
             pan: v,
           }),
@@ -5109,7 +5788,7 @@ function markersSection(clip: TimelineClip): HTMLElement {
       }
       commit(
         buildUpdateMarker(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: clip.id,
           markerId: marker.id,
           name: name.value.trim(),
@@ -5124,7 +5803,7 @@ function markersSection(clip: TimelineClip): HTMLElement {
     remove.addEventListener("click", () =>
       commit(
         buildRemoveMarker(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: clip.id,
           markerId: marker.id,
         }),
@@ -5139,7 +5818,7 @@ function markersSection(clip: TimelineClip): HTMLElement {
       done.addEventListener("change", () =>
         commit(
           buildUpdateMarker(nextCtx(), {
-            sequenceId: SEQUENCE_ID,
+            sequenceId: activeSequenceId,
             clipId: clip.id,
             markerId: marker.id,
             done: done.checked,
@@ -5209,7 +5888,7 @@ function addMarkerAtPlayhead(kind: MarkerKind = "standard"): void {
   if (
     commit(
       buildAddMarker(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         marker: {
           id: `marker-${crypto.randomUUID().slice(0, 8)}`,
@@ -5300,7 +5979,7 @@ function masksSection(clip: TimelineClip): HTMLElement {
     remove.addEventListener("click", () =>
       commit(
         buildRemoveMask(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: clip.id,
           maskId: mask.id,
         }),
@@ -5328,7 +6007,7 @@ function masksSection(clip: TimelineClip): HTMLElement {
     const maskId = `mask-${masks.length + 1}-${Date.now().toString(36)}`;
     commit(
       buildAddMask(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         mask: {
           id: maskId,
@@ -5358,7 +6037,7 @@ function maskControls(clip: TimelineClip, mask: ClipMask): HTMLElement[] {
   const push = (patch: Partial<MaskContribution>): void => {
     commit(
       buildUpdateMask(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         maskId: mask.id,
         contributions: [
@@ -5506,7 +6185,7 @@ function appendEffectRows(
     remove.addEventListener("click", () =>
       commit(
         buildRemoveEffect(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: clip.id,
           effectId: fx.id,
         }),
@@ -5551,7 +6230,7 @@ function maskPicker(clip: TimelineClip, fx: EffectInstance): HTMLElement {
   select.addEventListener("change", () =>
     commit(
       buildSetEffectMask(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         effectId: fx.id,
         maskId: select.value === "" ? null : select.value,
@@ -5606,7 +6285,7 @@ function paramControl(
     params[p.name] = value;
     commit(
       buildUpdateEffectParams(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId,
         effectId: fx.id,
         params,
@@ -5946,7 +6625,7 @@ function addEffectByType(type: EffectType): void {
     if (
       commit(
         buildAddEffect(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId,
           effect,
         }),
@@ -6055,7 +6734,7 @@ function applyLook(look: Look): void {
       if (
         commit(
           buildAddEffect(nextCtx(), {
-            sequenceId: SEQUENCE_ID,
+            sequenceId: activeSequenceId,
             clipId,
             effect,
           }),
@@ -6693,7 +7372,7 @@ function removeAsset(assetId: string): void {
     }
   }
   for (const id of clipIds) {
-    commit(buildDeleteClip(nextCtx(), { sequenceId: SEQUENCE_ID, clipId: id }));
+    commit(buildDeleteClip(nextCtx(), { sequenceId: activeSequenceId, clipId: id }));
   }
   removedAssets.add(assetId);
   updateUI();
@@ -6874,6 +7553,11 @@ async function openProjectFile(file: File): Promise<void> {
 
   selectedClipId = null;
   selectedClipIds.clear();
+  // Where you were standing belonged to the project you just closed. The
+  // sequence you were inside may not exist in this one, and even if an id
+  // collides it is a different sequence.
+  activeSequenceId = SEQUENCE_ID;
+  sequencePath = [];
   browserRanges.clear();
   playback = seek(playback, "0");
   projectDirty = false;
@@ -7237,7 +7921,7 @@ function syncAudioMonitors(): void {
     // element that is actually being heard.
     const el = mediaCache.get(assetUri(asset));
     if (!(el instanceof HTMLMediaElement)) continue;
-    const loc = locateClip(layer.clipId);
+    const loc = locateClipAnywhere(layer.clipId);
     if (!loc) continue;
 
     const route = audioRouteFor(el);
@@ -7325,6 +8009,7 @@ function updateUI(): void {
   renderEffectsPalette();
   renderLooks();
   renderHistory();
+  renderSequencePath();
   renderTimeline();
   renderInspector();
   renderGifPanel();
@@ -8833,13 +9518,13 @@ async function applyRasterEdit(): Promise<void> {
       const newClipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
       commit(
         buildDeleteClip(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           clipId: old.id,
         }),
       );
       const added = commit(
         buildAddClip(nextCtx(), {
-          sequenceId: SEQUENCE_ID,
+          sequenceId: activeSequenceId,
           trackId: freshLoc.track.id,
           clip: {
             id: newClipId,
@@ -8855,7 +9540,7 @@ async function applyRasterEdit(): Promise<void> {
         for (const fx of old.effects) {
           commit(
             buildAddEffect(nextCtx(), {
-              sequenceId: SEQUENCE_ID,
+              sequenceId: activeSequenceId,
               clipId: newClipId,
               effect: fx,
             }),
@@ -8864,7 +9549,7 @@ async function applyRasterEdit(): Promise<void> {
         if (old.audioGainDb !== 0) {
           commit(
             buildSetClipAudioGain(nextCtx(), {
-              sequenceId: SEQUENCE_ID,
+              sequenceId: activeSequenceId,
               clipId: newClipId,
               gainDb: old.audioGainDb,
             }),
@@ -8873,7 +9558,7 @@ async function applyRasterEdit(): Promise<void> {
         if (old.audioPan !== 0) {
           commit(
             buildSetClipAudioPan(nextCtx(), {
-              sequenceId: SEQUENCE_ID,
+              sequenceId: activeSequenceId,
               clipId: newClipId,
               pan: old.audioPan,
             }),
@@ -9013,7 +9698,7 @@ function bindEvents(): void {
     const index = seq.tracks.length;
     commit(
       buildAddTrack(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         track: {
           id: `track-${crypto.randomUUID().slice(0, 8)}`,
           kind: "video",
@@ -9083,6 +9768,11 @@ function bindEvents(): void {
   document
     .getElementById("system-capabilities")
     ?.addEventListener("toggle", renderCapabilities);
+  $("btn-make-compound").addEventListener("click", () => void makeCompoundClip());
+  $("btn-open-compound").addEventListener("click", () => openCompoundClip());
+  $("btn-dissolve-compound").addEventListener("click", () =>
+    dissolveCompoundClip(),
+  );
   $("btn-add-adjustment").addEventListener(
     "click",
     () => void addAdjustmentLayer(),
@@ -9280,7 +9970,7 @@ function splitSelectedClip(): void {
   if (
     !commit(
       buildTrimClip(nextCtx(), {
-        sequenceId: SEQUENCE_ID,
+        sequenceId: activeSequenceId,
         clipId: clip.id,
         sourceInUs: clip.sourceInUs,
         sourceOutUs: splitSource.toString(),
@@ -9292,7 +9982,7 @@ function splitSelectedClip(): void {
   // ...and add a new clip for the remainder.
   commit(
     buildAddClip(nextCtx(), {
-      sequenceId: SEQUENCE_ID,
+      sequenceId: activeSequenceId,
       trackId: track.id,
       clip: {
         id: `clip-${crypto.randomUUID().slice(0, 8)}`,
@@ -9330,7 +10020,11 @@ function downloadBlob(blob: Blob, filename: string): void {
  * awaits the frame the way the GIF and MP4 loops already do. */
 async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   const seq = activeSequence();
-  const layers = seq ? resolveAtTime(seq, playback.currentTimeUs) : [];
+  const exportProject = session.getProject();
+  const layers =
+    seq && exportProject
+      ? resolveAtTimeDeep(exportProject, seq.id, playback.currentTimeUs)
+      : [];
   const visual = layers.filter((l) => {
     const a = findAsset(l.assetId);
     return a && a.kind !== "audio";
@@ -9361,7 +10055,7 @@ async function renderExportFrame(): Promise<HTMLCanvasElement | null> {
   out.height = Math.round(sh);
   const octx = out.getContext("2d")!;
   for (const layer of [...visual].reverse()) {
-    const loc = locateClip(layer.clipId);
+    const loc = locateClipAnywhere(layer.clipId);
     if (!loc) continue;
     const layerAsset = findAsset(loc.clip.assetId);
     const layerMedia = layerAsset
@@ -9608,7 +10302,7 @@ async function runVideoExport(
     return { status: "failed", message: unsupported };
   }
 
-  const result = planExport(project, SEQUENCE_ID, preset);
+  const result = planExport(project, activeSequenceId, preset);
   if (!result.ok) {
     return { status: "failed", message: result.error.message };
   }
@@ -9739,7 +10433,7 @@ async function runVideoExport(
     const BATCH = 30;
     outer: for (let start = 0; start < plan.framesTotal; start += BATCH) {
       const count = Math.min(BATCH, plan.framesTotal - start);
-      const requests = planVideoFrames(project, SEQUENCE_ID, preset, start, count);
+      const requests = planVideoFrames(project, activeSequenceId, preset, start, count);
       for (const req of requests) {
         if (abort.cancelled) break outer;
         offCtx.clearRect(0, 0, offCanvas.width, offCanvas.height);
@@ -9748,7 +10442,7 @@ async function runVideoExport(
           return a && a.kind !== "audio";
         });
         for (const layer of [...visual].reverse()) {
-          const loc = locateClip(layer.clipId);
+          const loc = locateClipAnywhere(layer.clipId);
           if (!loc) continue;
           const asset = findAsset(loc.clip.assetId);
           const media = asset ? mediaFor(asset) : undefined;
@@ -9910,7 +10604,7 @@ function updateExportSummary(): void {
   }
   startBtn.disabled = false;
 
-  const result = planExport(project, SEQUENCE_ID, fields.preset);
+  const result = planExport(project, activeSequenceId, fields.preset);
   const where = streamingExportSupported()
     ? "written straight to the file you choose"
     : "held in memory until it downloads";
@@ -10132,7 +10826,10 @@ function gifStatusText(): string {
 
 /** Output size: the source frame's aspect at the chosen width. */
 function gifOutputSize(seq: Sequence): { width: number; height: number } | null {
-  const visual = resolveAtTime(seq, "0").filter((l) => {
+  const sizeProject = session.getProject();
+  const visual = (
+    sizeProject ? resolveAtTimeDeep(sizeProject, seq.id, "0") : []
+  ).filter((l) => {
     const a = findAsset(l.assetId);
     return a && a.kind !== "audio";
   });
@@ -10233,13 +10930,16 @@ async function runGifExport(): Promise<void> {
 
     for (let i = 0; i < frameCount; i++) {
       const timeUs = frameToStartTimeUs(i, { numerator: fps, denominator: 1 });
-      const visual = resolveAtTime(seq, timeUs).filter((l) => {
+      const gifProject = session.getProject();
+      const visual = (
+        gifProject ? resolveAtTimeDeep(gifProject, seq.id, timeUs) : []
+      ).filter((l) => {
         const a = findAsset(l.assetId);
         return a && a.kind !== "audio";
       });
       offCtx.clearRect(0, 0, off.width, off.height);
       for (const layer of [...visual].reverse()) {
-        const loc = locateClip(layer.clipId);
+        const loc = locateClipAnywhere(layer.clipId);
         if (!loc) continue;
         const asset = findAsset(loc.clip.assetId);
         const media = asset ? mediaFor(asset) : undefined;

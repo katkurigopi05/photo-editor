@@ -1,65 +1,24 @@
-import type { MediaAsset, Project, Sequence } from "@director/project-schema";
+import {
+  nestedSequenceId,
+  type MediaAsset,
+  type Project,
+  type Sequence,
+} from "@director/project-schema";
 import { resolveAtTime, type ActiveClip } from "./timeline.js";
 
 /**
- * Compound clips: a clip that plays a whole sequence.
+ * Resolving a compound clip: following it down into the sequence it plays.
  *
- * Modelled as an asset kind, the way adjustment layers were — a compound clip
- * is an ordinary clip whose asset happens to name a sequence rather than a
- * file, so add, trim, move, effects and every reducer work on it unchanged.
- *
- * What is genuinely new is resolution. The picture at an instant may come from
- * inside another sequence, and that sequence may contain another. So this walks
- * down, translating each level's timing into the timeline the caller asked
- * about, and returns only clips that actually carry media.
+ * The graph half — what a compound asset points at, and whether the nesting
+ * contains a cycle — lives in `@director/project-schema`, because the reducer
+ * needs it and cannot depend on this package.
  */
-
-/** How a compound asset names the sequence it plays. */
-export const SEQUENCE_URI_PREFIX = "sequence:";
-
-/** The sequence a compound asset points at, or null if it is not one. */
-export function nestedSequenceId(asset: MediaAsset): string | null {
-  if (asset.kind !== "sequence") return null;
-  if (!asset.originalUri.startsWith(SEQUENCE_URI_PREFIX)) return null;
-  const id = asset.originalUri.slice(SEQUENCE_URI_PREFIX.length);
-  return id.length > 0 ? id : null;
-}
 
 const findSequence = (project: Project, id: string): Sequence | undefined =>
   project.sequences.find((s) => s.id === id);
 
 const findAsset = (project: Project, id: string): MediaAsset | undefined =>
   project.assets.find((a) => a.id === id);
-
-/**
- * The first cycle reachable from `sequenceId`, named, or `null` if there is
- * none.
- *
- * A sequence that contains itself — directly or round a longer ring — cannot be
- * rendered, only recursed into forever. The reducer refuses to create one, and
- * this is what it asks.
- */
-export function compoundCycle(
-  project: Project,
-  sequenceId: string,
-  seen: readonly string[] = [],
-): string | null {
-  if (seen.includes(sequenceId)) return [...seen, sequenceId].join(" → ");
-  const sequence = findSequence(project, sequenceId);
-  if (sequence === undefined) return null;
-  const trail = [...seen, sequenceId];
-  for (const track of sequence.tracks) {
-    for (const clip of track.clips) {
-      const asset = findAsset(project, clip.assetId);
-      if (asset === undefined) continue;
-      const inner = nestedSequenceId(asset);
-      if (inner === null) continue;
-      const found = compoundCycle(project, inner, trail);
-      if (found !== null) return found;
-    }
-  }
-  return null;
-}
 
 /** Deep enough for any sane edit, and a hard stop for one that is not. */
 const MAX_NESTING = 8;

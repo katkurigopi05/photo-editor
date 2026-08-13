@@ -59,8 +59,8 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | --- | --- | --- | --- |
 | Multi-track timeline | all | ✓ | |
 | Ripple / roll / slip / slide trims | Premiere, Resolve, FCP | ◐ | ripple only; roll, slip and slide missing |
-| Magnetic timeline, connected clips | FCP | ✗ | an architecture, not a feature — see step M1 |
-| Compound clips / nested sequences | all pro | ✗ | step T3 |
+| Magnetic timeline, connected clips | FCP | ◐ | per-track magnetic packing; connected clips not built — step M1 |
+| Compound clips / nested sequences | all pro | ✓ | make one, render and mix through it, open and edit inside with a breadcrumb back out, dissolve it back; renaming is the only gap |
 | Multicam editing | Premiere, Resolve, FCP | ✗ | needs sync + angle switching; step T7 |
 | Roles / lanes / track groups | FCP, Premiere | ✗ | step T4 |
 | Three-point editing, insert/overwrite | all pro | ✓ | append, insert and overwrite from the bin; step T1 |
@@ -226,8 +226,16 @@ session, **M** a few sessions, **L** a phase.
 
 ### Later — bigger bets
 
-10. **T3 · Compound clips** — **L**. Needs nesting in the schema and the render
-    path.
+10. ~~**T3 · Compound clips**~~ — done. A sequence asset kind, deep resolution
+    with cycle refusal, audio mixed through nesting, a Compound button that
+    carries effects across, ⧈ Dissolve to put the contents back — windowed to
+    what a trimmed compound clip was playing, and refused rather than
+    approximated when the compound clip carries something acting on the
+    composite — and ⤵ Open to edit inside, with a breadcrumb back out. Opening
+    needed the editor to stop assuming one sequence: `activeSequenceId` is now
+    session state, landed as a separate provably behaviour-preserving refactor
+    before anything could move it. Renaming is the remaining gap. See
+    `docs/phases/compound-clips.md`.
 11. **A2 · Motion tracking** and **A3 · Stabilisation** — **L** each. Both need
     real optical-flow work; both are the sort of thing a native pipeline does
     far better than canvas 2D.
@@ -236,8 +244,10 @@ session, **M** a few sessions, **L** a phase.
     than assumed. See `docs/phases/codecs.md`.
 13. **C4 · Raw development** — **L**. Exists in the Python track; bringing it to
     the web stack means a decoder and a colour pipeline.
-14. **M1 · Magnetic timeline** — **L**, and a decision before a task: it changes
-    what a track *is*, and the overlap rules in the reducer with it.
+14. ~~**M1 · Magnetic timeline**~~ — done as *per-track* magnetism rather than
+    Final Cut's primary storyline, so it coexists with lanes, adjustment layers,
+    compound clips and three-point editing instead of replacing what a track is.
+    Connected clips are not built. See `docs/phases/magnetic-tracks.md`.
 15. **P5 · GPU rendering** — **L**. There is no GPU code at all: no WebGL, no
     WebGPU, and no `crates/render-engine` — that crate is in the roadmap's
     planned layout but was never created. What the GPU does today is only what

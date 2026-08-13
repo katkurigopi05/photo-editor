@@ -139,6 +139,27 @@ export const removeTrackInverseSchema = internal(
     .strict(),
 );
 
+/**
+ * Restores a track's magnetic flag *and* the clip positions it packed.
+ *
+ * Turning a track magnetic moves every clip on it, and turning it off does not
+ * move them back — so undo has to carry where they were. Recomputing is not an
+ * option: the packing is lossy, and the gaps it closed cannot be derived from
+ * the packed result.
+ */
+export const setTrackMagneticInverseSchema = internal(
+  "internal.set_track_magnetic",
+  z
+    .object({
+      sequenceId: z.string().min(1),
+      trackId: z.string().min(1),
+      magnetic: z.boolean().nullable(),
+      clips: z.array(timelineClipSchema),
+      restoreUpdatedAt: isoInstantSchema,
+    })
+    .strict(),
+);
+
 export const removeClipInverseSchema = internal(
   "internal.remove_clip",
   z
@@ -415,6 +436,7 @@ export const internalCommandSchema = z.discriminatedUnion("commandType", [
   removeSequenceInverseSchema,
   removeTrackInverseSchema,
   removeClipInverseSchema,
+  setTrackMagneticInverseSchema,
   insertClipInverseSchema,
   moveClipInverseSchema,
   setClipSourceInverseSchema,

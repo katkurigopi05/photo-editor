@@ -248,6 +248,35 @@ Features:
 - Trim handles on each clip edge change the in/out point. Hold Shift while
   trimming to ripple: later clips on the track shift by the same amount.
 - Ripple Delete removes the selection and closes the gap behind it.
+- The 🧲 button on a track makes it magnetic: its clips stay packed end to end,
+  so deleting one closes the gap, adding one pushes the rest along, and dragging
+  one past a neighbour swaps them. Other tracks are unaffected — magnetic is per
+  track, and an ordinary track still allows gaps.
+- ⧉ Compound turns the selected clips into a single clip that plays them. Their
+  effects, animations, speed and blend mode come along, and the whole thing is
+  one Undo. Useful when a run of clips has become one thing you want to move,
+  trim or grade together.
+- ⤵ Open edits inside a compound clip. Double-clicking the clip does the same.
+  The timeline below switches to the clip's own contents, and a trail appears
+  above it reading `Main › Compound clip` — click `Main` to come back out.
+  Everything works in there as it does anywhere else: trim, grade, add clips,
+  add tracks. The playhead follows the frame in and back out, so a round trip
+  leaves you looking at what you were looking at.
+- Compound clips are drawn in blue with a stacked right edge, so a clip holding
+  a whole sequence is distinguishable from one holding a single piece of media.
+- Stepping in and out is not an edit and does not appear in Undo. If you undo
+  far enough to remove the compound clip while you are inside it, the editor
+  steps you back out to the main sequence rather than showing nothing.
+- ⧈ Dissolve is the way back: it puts a compound clip's contents onto this
+  timeline again, where it was playing them, with their effects and animations
+  intact. If you had trimmed the compound clip, you get back only the part it
+  was showing — a clip the trim ran through comes back shortened, not whole.
+  Dissolving is one Undo.
+- Dissolve is refused, with a message naming the reason, if the compound clip
+  itself carries an effect, an animation, a mask, a blend mode or a speed
+  change. Those apply to the combined picture and have no per-clip equivalent,
+  so putting the clips back would quietly change what you see. Remove them from
+  the compound clip first, then dissolve.
 - Shift-click or Cmd/Ctrl-click selects several clips. Effects, Looks, Delete
   and Ripple Delete all apply to every selected clip, and each apply is a single
   Undo step however many clips and effects it touched. The Inspector still edits
@@ -459,6 +488,19 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-12:** ⤵ Open (or double-click) edits inside a compound clip, with a
+  breadcrumb above the timeline to come back out. Compound clips are now drawn
+  in blue with a stacked edge.
+- **2026-08-12:** Reviewed; no user-visible change. Internally the editor now
+  tracks *which* sequence it is showing instead of assuming there is only one.
+  Nothing yet moves it off the main sequence, so the editor behaves exactly as
+  before; this is the groundwork for opening a compound clip to edit inside it.
+- **2026-08-12:** ⧈ Dissolve puts a compound clip's contents back on the
+  timeline. Compounding is no longer one-way.
+- **2026-08-12:** Tracks can be made magnetic with the 🧲 button on the track
+  head — clips stay packed end to end, and gaps close by themselves.
+- **2026-08-12:** Added compound clips — select a run of clips and press ⧉
+  Compound to replace them with one clip that plays them all.
 - **2026-08-12:** Export can write VP9 and AV1 into WebM as well as H.264 into
   MP4. The Video codec list shows what this browser can actually encode at the
   chosen size; anything it cannot is listed with the reason rather than hidden.

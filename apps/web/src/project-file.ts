@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { projectOperationSchema } from "@director/command-schema";
+import {
+  projectOperationSchema,
+  type ProjectOperation,
+} from "@director/command-schema";
 
 /**
  * The project file.
@@ -31,21 +34,38 @@ export const mediaHintSchema = z
 
 export type MediaHint = z.infer<typeof mediaHintSchema>;
 
-export const projectFileSchema = z
+/**
+ * The save file's shape, written out rather than inferred.
+ *
+ * `operations` holds `ProjectOperation`, whose command is a union over every
+ * public command — and that union is now large enough that TypeScript refuses
+ * to serialize the inferred type of this schema at all ("exceeds the maximum
+ * length the compiler will serialize"). Declaring the type and annotating the
+ * schema with it keeps the checker's work bounded, and the schema still
+ * validates exactly what it did.
+ */
+export interface ProjectFile {
+  format: typeof PROJECT_FILE_FORMAT;
+  formatVersion: number;
+  savedAt: string;
+  /** How many leading operations are app scaffolding — the project, sequence
+   * and tracks created at boot. Undo stops here, in this session and in any
+   * session that opens the file. */
+  baseline: number;
+  operations: ProjectOperation[];
+  media: MediaHint[];
+}
+
+export const projectFileSchema: z.ZodType<ProjectFile> = z
   .object({
     format: z.literal(PROJECT_FILE_FORMAT),
     formatVersion: z.number().int().positive(),
     savedAt: z.string().min(1),
-    /** How many leading operations are app scaffolding — the project, sequence
-     * and tracks created at boot. Undo stops here, in this session and in any
-     * session that opens the file. */
     baseline: z.number().int().nonnegative(),
     operations: z.array(projectOperationSchema),
     media: z.array(mediaHintSchema),
   })
   .strict();
-
-export type ProjectFile = z.infer<typeof projectFileSchema>;
 
 export type ParseResult =
   | { ok: true; file: ProjectFile }

@@ -130,6 +130,10 @@ export const trackSchema = z
     kind: trackKindSchema,
     name: z.string(),
     index: nonNegativeSafeIntSchema,
+    // A magnetic track keeps its clips packed end to end: no gaps, no
+    // overlaps. Optional and absent by default, so every project written before
+    // this parses byte-for-byte identically and an ordinary track is unchanged.
+    magnetic: z.boolean().optional(),
     clips: z.array(timelineClipSchema),
   })
   .strict();

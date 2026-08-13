@@ -6,6 +6,7 @@ import {
   addEffectPayloadSchema,
   addKeyframePayloadSchema,
   addTrackPayloadSchema,
+  setTrackMagneticPayloadSchema,
   assetRegisterPayloadSchema,
   createSequencePayloadSchema,
   deleteClipPayloadSchema,
@@ -96,6 +97,19 @@ const COMMAND_TOOLS: CommandTool[] = [
     title: "Add track",
     description: "Add a video or audio track to a sequence.",
     schema: addTrackPayloadSchema,
+  },
+  {
+    name: "set_track_magnetic",
+    commandType: "timeline.set_track_magnetic",
+    title: "Make a track magnetic",
+    description:
+      "A magnetic track keeps its clips packed end to end: deleting one closes " +
+      "the gap, inserting one pushes the rest along, and moving one past a " +
+      "neighbour reorders them. An ordinary track allows gaps and refuses " +
+      "overlaps, which is the default and is unchanged. Turning this on packs " +
+      "the track immediately; turning it off leaves the clips where the packing " +
+      "put them.",
+    schema: setTrackMagneticPayloadSchema,
   },
   {
     name: "set_asset_rating",

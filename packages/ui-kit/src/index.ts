@@ -18,6 +18,7 @@ export {
   buildRemoveKeywordRange,
   buildCreateSequence,
   buildAddTrack,
+  buildSetTrackMagnetic,
   buildAddClip,
   buildMoveClip,
   buildTrimClip,

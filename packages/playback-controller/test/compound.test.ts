@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Project, Sequence } from "@director/project-schema";
-import { resolveAtTimeDeep, compoundCycle } from "../src/compound.js";
+import { resolveAtTimeDeep } from "../src/compound.js";
+import { compoundCycle } from "@director/project-schema";
 
 /**
  * Compound clips: a clip that plays a whole sequence.
