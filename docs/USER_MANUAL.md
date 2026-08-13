@@ -49,7 +49,7 @@ Basic workflow:
 | Media panel | Imports files, lists assets, creates cartoon clips, applies Looks and effects, and shows history. |
 | Preview | Displays the composited result. Hold Before / After to compare with the source view. |
 | Inspector | Edits animation, transitions, effects, and audio gain/pan for the selected clip. |
-| Transport | Start, previous frame, play/pause, next frame, seek, timecode, and duration. |
+| Transport | Start, previous frame, play/pause, next frame, seek, timecode, duration, and playback speed. |
 | Timeline | Adds tracks and arranges clips. Split, delete, ripple delete, trim, snap-assisted drag, multi-select, and zoom are available. |
 | Top bar | Theme and skin controls, Save, Save As, Open, Recent, Undo, Redo, version badge, and Export. |
 
@@ -133,6 +133,16 @@ when the system asks for reduced motion.
 - Masks: confine any visual effect to part of the frame. Add a Radial, Linear,
   Luminance range, or Colour range mask under Masks, then pick it in an
   effect's Mask control. Several effects can share one mask.
+- Playback speed, in the transport beside the duration: watch at 0.25× up to 2×,
+  the way a video player's speed menu works. This is a *viewing* control. It
+  changes nothing about the clips, does not appear in History, is not saved with
+  the project, and has no effect on what you export — use it to check a fast
+  move frame by frame, or to skim a long take. Audio follows, and keeps its
+  pitch while you are off-speed so speech stays intelligible.
+- **Playback speed is not Clip speed.** The two are easy to confuse and do
+  entirely different things: playback speed is how fast *you watch*, and clip
+  speed below is how fast *the clip runs in the finished film*. If you want the
+  export to change, use Clip speed.
 - Clip speed (0.25×–4×) under Speed in the Inspector, for any clip.
 - Speed ramps: a clip can change speed partway through. Under Speed, move the
   playhead to the moment the action should change and press ＋ Speed change at
@@ -494,6 +504,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-13:** Playback speed in the transport — watch at 0.25× to 2×
+  without changing the clips or the export.
 
 - **2026-08-13:** Colour grading is much faster where the browser supports
   WebGL2. A stack of pointwise adjustments is applied by the graphics card
