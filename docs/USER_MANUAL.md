@@ -507,6 +507,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 - **2026-08-13:** Playback speed in the transport — watch at 0.25× to 2×
   without changing the clips or the export.
+- **2026-08-13:** Reviewed; no user-visible change. Masked colour grading now
+  runs on the graphics card where one is available, and falls back to the
+  previous path where it is not. The picture is identical either way — that is
+  tested rather than assumed — so nothing about using the editor changes.
 
 - **2026-08-13:** Colour grading is much faster where the browser supports
   WebGL2. A stack of pointwise adjustments is applied by the graphics card

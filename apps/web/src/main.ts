@@ -200,7 +200,11 @@ import {
   type SpeedRamp,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
-import { createGpuLutRenderer, type GpuLutRenderer } from "./gpu-lut.js";
+import {
+  createGpuLutRenderer,
+  type GpuLutRenderer,
+  type LutPass,
+} from "./gpu-lut.js";
 import {
   boomerangOrder,
   clampGifFps,
@@ -4143,6 +4147,89 @@ function gpuLutRenderer(): GpuLutRenderer | null {
   return gpuLut;
 }
 
+/**
+ * Mask kinds whose coverage depends only on geometry, not on the picture.
+ *
+ * `luminance_range` and `color_range` read the frame's own pixels, so their
+ * coverage depends on *when* in the chain they are rasterised — the CPU path
+ * computes each mask at its first use, against the partly-graded image at that
+ * moment. Reproducing that on the GPU would need a readback per pass, which is
+ * the cost this exists to avoid. A geometric mask has no such dependence, so it
+ * can be rasterised up front and the whole chain stays on the card.
+ */
+const GEOMETRIC_MASK_KINDS: ReadonlySet<string> = new Set([
+  "linear",
+  "radial",
+  "brush",
+]);
+
+const maskIsGeometric = (mask: ClipMask): boolean =>
+  mask.contributions.every((c) => GEOMETRIC_MASK_KINDS.has(c.kind));
+
+/**
+ * A masked pointwise stack, run entirely on the GPU — or null to use the CPU.
+ *
+ * **One pass per effect, never one table for the stack.** The CPU path blends
+ * each effect through its mask before the next one sees the pixels, so where a
+ * mask is feathered `blend(blend(x, A), B)` is not `blend(x, B∘A)`. Collapsing
+ * would change the picture in exactly the soft edges masks exist to create.
+ * Matching the sequence is what keeps the two paths agreeing.
+ *
+ * Every reason to decline returns null, and null costs nothing but the CPU path
+ * that ran before this existed.
+ */
+function gpuMaskedGrade(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  gradingFx: readonly EffectInstance[],
+  masks: readonly ClipMask[],
+): HTMLCanvasElement | null {
+  // Worth doing only for a stack that is entirely pointwise: one neighbourhood
+  // effect and the whole thing has to be pixels anyway.
+  if (gradingFx.length === 0) return null;
+  if (!gradingFx.every((fx) => POINTWISE_GRADING_TYPES.has(fx.type)))
+    return null;
+  // No mask at all is the LUT-collapse case, handled above and cheaper.
+  if (!gradingFx.some((fx) => fx.maskId !== undefined)) return null;
+
+  const gpu = gpuLutRenderer();
+  if (gpu === null) return null;
+
+  const coverages = new Map<string, Uint8ClampedArray>();
+  const passes: LutPass[] = [];
+  for (const fx of gradingFx) {
+    const cube = gradeImage(identityCubeImage(), fx);
+    const lut = cubeImageToLut(cube);
+    if (fx.maskId === undefined) {
+      passes.push({ lut });
+      continue;
+    }
+    const mask = masks.find((m) => m.id === fx.maskId);
+    // An effect naming a mask that is not there is refused rather than treated
+    // as unmasked, which would silently grade the whole frame.
+    if (mask === undefined) return null;
+    // Checked here as well as by the caller's guard: this is the point where
+    // being wrong produces a quietly different picture rather than an error.
+    if (!maskIsGeometric(mask)) return null;
+
+    let coverage = coverages.get(mask.id);
+    if (coverage === undefined) {
+      // Geometric contributions never read the pixels, so there are none to
+      // give — and fetching them would cost the readback this path avoids.
+      coverage = rasterizeClipMask(mask, {
+        width,
+        height,
+        data: new Uint8ClampedArray(0),
+      }).data;
+      coverages.set(mask.id, coverage);
+    }
+    passes.push({ lut, coverage });
+  }
+
+  return gpu.applyChain(source, width, height, passes);
+}
+
 function gradeUncached(
   source: CanvasImageSource,
   width: number,
@@ -4174,7 +4261,7 @@ function gradeUncached(
     // The source goes straight to the GPU: reading it back with getImageData
     // first would pay the cost this exists to avoid.
     const gpu = gpuLutRenderer();
-    const drawn = gpu ? gpu.apply(source, width, height, lut) : null;
+    const drawn = gpu ? gpu.applyChain(source, width, height, [{ lut }]) : null;
     if (drawn !== null) {
       // Copied out rather than returned: the renderer draws into one canvas it
       // reuses, and `gradeCache` keeps what it is given, so handing back that
@@ -4188,6 +4275,12 @@ function gradeUncached(
     const out = applyLut3d({ width, height, data: flat.data }, lut);
     flat.data.set(out.data);
     octx.putImageData(flat, 0, 0);
+    return off;
+  }
+
+  const masked = gpuMaskedGrade(source, width, height, gradingFx, masks);
+  if (masked !== null) {
+    octx.drawImage(masked, 0, 0);
     return off;
   }
 
