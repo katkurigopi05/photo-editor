@@ -433,6 +433,13 @@ The editor adapts to the device it finds rather than assuming one:
   quality, whatever machine produced it and however busy it was.
 - Large video is proxied at 540p on import, so editing stays responsive on
   modest hardware; exports still read the original.
+- Colour grading runs on the graphics card where the browser supports WebGL2.
+  A stack of adjustments is combined into one colour table and applied by the
+  card in a single pass instead of pixel by pixel on one thread — roughly 9×
+  faster on an Apple M4 (1080p: 69ms to 7ms; 4K: 301ms to 33ms). It looks
+  identical either way, and a machine without WebGL2 simply uses the older
+  path. Grades that read a pixel's neighbours — Presence and Noise Reduction —
+  cannot be reduced to a table and are unaffected.
 
 ## 7. Export reference
 
@@ -487,6 +494,13 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-13:** Colour grading is much faster where the browser supports
+  WebGL2. A stack of pointwise adjustments is applied by the graphics card
+  instead of pixel by pixel on one thread — measured at roughly 9× on an Apple
+  M4 (1080p: 69ms to 7ms; 4K: 301ms to 33ms). Nothing changes about how it
+  looks or how it is used, and machines without WebGL2 keep the previous path
+  unchanged.
 
 - **2026-08-12:** ⤵ Open (or double-click) edits inside a compound clip, with a
   breadcrumb above the timeline to come back out. Compound clips are now drawn

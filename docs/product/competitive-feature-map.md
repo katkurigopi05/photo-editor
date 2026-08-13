@@ -164,7 +164,7 @@ Legend: **✓** shipped · **◐** partial · **✗** missing · **⊘** decline
 | Undo history panel | all | ✓ | one entry per gesture, click to travel — step P2 |
 | Customisable shortcuts | all pro | ✗ | step P3 |
 | Templates and presets | CapCut, Canva-likes, Lightroom | ◐ | Looks and motion presets ship; nothing is user-definable — step P4 |
-| GPU-accelerated rendering | all pro | ✗ | canvas 2D throughout; step P5, large |
+| GPU-accelerated rendering | all pro | ◐ | pointwise colour grading runs as a WebGL2 shader, ~9× on an M4; artistic passes, masks and neighbourhood grades still canvas 2D — step P5 |
 
 ## Declined
 
@@ -248,15 +248,22 @@ session, **M** a few sessions, **L** a phase.
     Final Cut's primary storyline, so it coexists with lanes, adjustment layers,
     compound clips and three-point editing instead of replacing what a track is.
     Connected clips are not built. See `docs/phases/magnetic-tracks.md`.
-15. **P5 · GPU rendering** — **L**. There is no GPU code at all: no WebGL, no
-    WebGPU, and no `crates/render-engine` — that crate is in the roadmap's
-    planned layout but was never created. What the GPU does today is only what
-    the browser gives for free (canvas compositing, `ctx.filter`, blend modes,
-    and hardware H.264 via WebCodecs). The ten `GRADING_TYPES` effects, mask
-    rasterisation and the artistic passes are all `getImageData` → JS loop →
-    `putImageData` on one thread. The win is WebGL2/WebGPU shaders for that
-    pipeline inside `apps/web`, not the native crate: native `media-core` work
-    was already deferred precisely because it had no effect on the running app.
+15. **P5 · GPU rendering** — started. The first GPU code in the project:
+    pointwise colour grading is applied by a WebGL2 fragment shader, measured at
+    **9.4× at 1080p and 9.2× at 4K** on an Apple M4 (69ms → 7ms, 301ms → 33ms).
+    The smallest change that captures most of the win — `isLutable` already
+    reduces a pointwise stack to one 33³ table, and a trilinear lookup is what
+    sampling hardware does natively, so only the per-pixel part moved and the
+    table is still built by the same CPU code. Falls back to the existing path
+    wherever WebGL2 is missing. See `docs/phases/gpu-grading.md`.
+
+    Still canvas 2D on one thread: mask rasterisation, the artistic passes, and
+    the two neighbourhood grades (Presence, Noise Reduction). Each of those
+    needs its own shader rather than a lookup, and they are the remaining **L**.
+    Note also that `crates/render-engine` still does not exist — it is in the
+    roadmap's planned layout and was never created. The win stayed inside
+    `apps/web` for the same reason native `media-core` work was deferred: it is
+    where the running app actually spends its time.
 
 ## What this map says about the project
 
