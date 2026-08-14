@@ -6,8 +6,22 @@ When a mode, visible control, editing tool, effect, animation, transition,
 import behavior, or export option changes:
 
 1. Update `docs/USER_MANUAL.md`, the editable source of truth.
-2. Update `docs/Project_Director_User_Manual.docx` so users receive the same
-   instructions in Word format.
+2. Add the same text to `docs/Project_Director_User_Manual.docx`. The script
+   below updates **both** manuals from one command and verifies each afterwards,
+   so they cannot drift apart. It checks both anchors before writing either, so
+   a bad anchor leaves the manuals untouched rather than half-updated:
+
+   ```bash
+   node scripts/patch-manual-docx.mjs \
+     --anchor "a phrase that appears exactly once, just after the insert point" \
+     --bullet "The new sentence." --bullet "Another."
+   ```
+
+   Hand-editing went wrong repeatedly in one session and once reached `main`
+   with *neither* manual carrying text both commits claimed was added.
+   `pnpm manual:check` cannot catch that: it checks the files *changed*, not
+   that they say anything in particular. Pass `--docx-only` when the two
+   formats genuinely need different wording; it still verifies.
 3. If `apps/web/index.html`, `apps/web/src/index.css`, or
    `apps/web/src/main.ts` changed, run the editor and replace every affected
    image under `docs/assets/user-manual/`.
@@ -30,6 +44,9 @@ manual remains correct.
 - `video-mode.png`: selected video, transport, and timeline.
 - `animation-mode.png`: generated shape, animation controls, and timeline.
 - `gif-mode.png`: populated timeline and GIF export controls.
+- `lut-panel.png`: the Lookup table panel in the Inspector. Capture with
+  `locator.screenshot()` on the section — it sits below the fold, so a
+  viewport clip region fails with "clipped area is outside the image".
 - `track-feature.png`: the Stabilise and Track panels in the Inspector, with a
   feature marked on the picker. Not a mode view — these sit below the fold, so
   the mode screenshots cannot show them.

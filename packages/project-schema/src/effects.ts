@@ -466,6 +466,27 @@ export const curvesParamsSchema = z
   })
   .strict();
 
+/**
+ * An imported colour lookup table, by reference.
+ *
+ * `assetId` names a registered LUT asset — the file stays on disk and the
+ * project stores a URI and checksum, exactly as it does for media. `amount`
+ * mixes the graded result back over the original, so a look can be dialled
+ * down without re-exporting the table.
+ */
+export const lutParamsSchema = z
+  .object({
+    assetId: z.string().min(1),
+    // Required rather than defaulted, like every other effect's params here.
+    // A default would make the parsed type differ from the stored one, and
+    // canonical JSON depends on those being the same.
+    amount: finiteNumber.refine(
+      (n) => n >= 0 && n <= 1,
+      "amount must be in [0, 1]",
+    ),
+  })
+  .strict();
+
 export const vibranceParamsSchema = z
   .object({
     amount: finiteNumber.refine(
@@ -626,6 +647,10 @@ export const EFFECT_TYPES = [
   "color.levels",
   "color.tone_curve",
   "color.curves",
+  // Applies an imported lookup table. The table itself is not here: the params
+  // name the LUT asset, the way a masked effect names a mask. Inlining ~108KB
+  // per use into the operation log would grow every project that used one.
+  "color.lut",
   "color.vibrance",
   "light.tone",
   "color.hsl_mixer",
@@ -682,6 +707,7 @@ export const effectParamsSchemas = {
   "color.levels": levelsParamsSchema,
   "color.tone_curve": toneCurveParamsSchema,
   "color.curves": curvesParamsSchema,
+  "color.lut": lutParamsSchema,
   "color.vibrance": vibranceParamsSchema,
   "light.tone": toneParamsSchema,
   "color.hsl_mixer": hslMixerParamsSchema,
@@ -744,6 +770,7 @@ export const effectInstanceSchema = z.discriminatedUnion("type", [
   effect("color.levels", levelsParamsSchema),
   effect("color.tone_curve", toneCurveParamsSchema),
   effect("color.curves", curvesParamsSchema),
+  effect("color.lut", lutParamsSchema),
   effect("color.vibrance", vibranceParamsSchema),
   effect("light.tone", toneParamsSchema),
   effect("color.hsl_mixer", hslMixerParamsSchema),
