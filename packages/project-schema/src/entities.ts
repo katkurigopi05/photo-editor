@@ -38,6 +38,11 @@ export const assetKindSchema = z.enum([
   // A compound clip: the asset names a sequence rather than a file, so a clip
   // can play a whole sequence and still be an ordinary clip.
   "sequence",
+  // An imported colour lookup table. An asset because it is exactly the kind of
+  // thing assets already model: a large external file the project references by
+  // URI and checksum rather than copying in, and which Relink repairs when it
+  // moves. It is never placed on a timeline — an effect names it instead.
+  "lut",
 ]);
 export type AssetKind = z.infer<typeof assetKindSchema>;
 
