@@ -53,3 +53,31 @@ manual remains correct.
 
 Capture screenshots at a consistent desktop viewport and verify that no local
 paths, secrets, or personal media are visible.
+
+## Before every push
+
+Run `pnpm sync` on the branch first.
+
+Both manuals are edited by every feature branch and one of them is a zip of XML.
+Git cannot merge a binary file, so any two branches that both touch the Word
+manual conflict — always, by construction. Four PRs in a row hit this and each
+was resolved the same mechanical way: take main's manuals, then put the
+branch's own bullets back.
+
+`pnpm sync` does exactly that. It records what this branch added and the text
+each addition sat above, takes main's version of both manuals, then puts each
+block back above the same text. It stops rather than guessing when:
+
+- anything outside the two manuals conflicts (the merge is aborted)
+- the text an addition sat above is no longer in main
+- a line it was holding is missing from the file it just wrote
+
+After pushing, confirm the pull request actually reports `MERGEABLE`:
+
+```sh
+gh pr view <number> --json mergeable,mergeStateStatus
+```
+
+A clean local merge is not the same claim as a mergeable pull request; the
+second is the one that matters, and it is one command.
+
