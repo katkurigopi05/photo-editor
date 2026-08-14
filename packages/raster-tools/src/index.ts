@@ -19,6 +19,14 @@ export {
 } from "./lut3d.js";
 
 export {
+  parseCube,
+  writeCube,
+  resampleLut,
+  type CubeLut,
+  type CubeParseResult,
+} from "./cube.js";
+
+export {
   type CurvePoint,
   type CurveSet,
   IDENTITY_CURVE,
