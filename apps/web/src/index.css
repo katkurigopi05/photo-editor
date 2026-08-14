@@ -1594,6 +1594,41 @@ input[type="range"]::-moz-range-thumb {
   cursor: default;
   opacity: 0.45;
 }
+/* The hand-drawn easing curve editor. */
+.bezier-editor {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2, rgba(127, 127, 127, 0.06));
+}
+.bezier-canvas {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  margin: 0 auto;
+  /* The handles are grabbed with the pointer, so the browser must not claim the
+     gesture for panning first — on a touchscreen the drag would scroll the
+     inspector instead of moving the control point. */
+  touch-action: none;
+  cursor: grab;
+}
+.bezier-canvas:active {
+  cursor: grabbing;
+}
+.bezier-readout {
+  margin: 6px 0 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  text-align: center;
+}
+.animation-curve-toggle {
+  flex: 0 0 auto;
+}
+.animation-curve-toggle:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
 .keyframe-diamond {
   width: 28px;
   height: 28px;

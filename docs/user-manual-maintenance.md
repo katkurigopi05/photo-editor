@@ -47,6 +47,14 @@ manual remains correct.
 - `lut-panel.png`: the Lookup table panel in the Inspector. Capture with
   `locator.screenshot()` on the section — it sits below the fold, so a
   viewport clip region fails with "clipped area is outside the image".
+- `easing-curve.png`: the hand-drawn easing curve editor, opened on a Scale
+  keyframe of a Star cartoon clip with the loop-pulse preset, with the first
+  handle dragged into an overshoot — overshoot is what the named easings
+  cannot do, so a screenshot of an ordinary curve would not show the point.
+  Capture with `locator.screenshot()` on the animation control. Call
+  `scrollIntoViewIfNeeded()` before reading the canvas box: it sits below the
+  fold, and `page.mouse` coordinates are viewport-relative, so without it the
+  drag lands outside the window and the capture silently shows no curve.
 - `track-feature.png`: the Stabilise and Track panels in the Inspector, with a
   feature marked on the picker. Not a mode view — these sit below the fold, so
   the mode screenshots cannot show them.

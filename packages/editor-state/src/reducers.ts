@@ -2447,8 +2447,16 @@ function updateKeyframe(
   projectOrNull: Project | null,
   command: Extract<ProjectCommand, { commandType: "timeline.update_keyframe" }>,
 ): ForwardResult {
-  const { sequenceId, clipId, animationId, keyframeId, timeUs, value, easing } =
-    command.payload;
+  const {
+    sequenceId,
+    clipId,
+    animationId,
+    keyframeId,
+    timeUs,
+    value,
+    easing,
+    bezier,
+  } = command.payload;
   const resolved = resolveClip(
     projectOrNull,
     command.baseVersion,
@@ -2492,7 +2500,23 @@ function updateKeyframe(
     keyframes: sortAnimationKeyframes(
       track.keyframes.map((keyframe) =>
         keyframe.id === keyframeId
-          ? { ...keyframe, timeUs, value, easing }
+          ? // Rebuilt from the payload rather than spread over the previous
+            // keyframe. Spreading kept whatever `bezier` was already there, so
+            // a hand-drawn curve could be set by `add_keyframe` and then never
+            // changed or removed — and since a curve supersedes `easing`, the
+            // easing control would appear to do nothing for the rest of that
+            // keyframe's life. An update states the whole keyframe, so an
+            // update carrying no curve is how a curve is discarded.
+            //
+            // The key is omitted rather than set to undefined: canonical JSON
+            // distinguishes the two, and byte-exact replay depends on it.
+            {
+              id: keyframe.id,
+              timeUs,
+              value,
+              easing,
+              ...(bezier === undefined ? {} : { bezier }),
+            }
           : keyframe,
       ),
     ),
