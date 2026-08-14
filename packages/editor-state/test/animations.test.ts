@@ -48,6 +48,7 @@ function addKeyframeCommand(
     value: number;
     easing: string;
     clipId: string;
+    bezier: { x1: number; y1: number; x2: number; y2: number };
   }> = {},
 ): ProjectCommand {
   return {
@@ -66,6 +67,7 @@ function addKeyframeCommand(
         timeUs: overrides.timeUs ?? "0",
         value: overrides.value ?? 1,
         easing: overrides.easing ?? "linear",
+        ...(overrides.bezier ? { bezier: overrides.bezier } : {}),
       },
     },
   } as unknown as ProjectCommand;
@@ -81,6 +83,7 @@ function updateKeyframeCommand(
     timeUs: string;
     value: number;
     easing: string;
+    bezier: { x1: number; y1: number; x2: number; y2: number };
   }> = {},
 ): ProjectCommand {
   return {
@@ -97,6 +100,7 @@ function updateKeyframeCommand(
       timeUs: overrides.timeUs ?? "750000",
       value: overrides.value ?? 1.5,
       easing: overrides.easing ?? "ease-in-out",
+      ...(overrides.bezier ? { bezier: overrides.bezier } : {}),
     },
   } as unknown as ProjectCommand;
 }
@@ -392,5 +396,92 @@ describe("animation command rejection", () => {
     mustExecute(clipState(), command);
 
     expect(canonicalStringify(command)).toBe(before);
+  });
+});
+
+describe("hand-drawn easing curves through update_keyframe", () => {
+  const CURVE = { x1: 0.2, y1: 1.6, x2: 0.8, y2: 1 };
+
+  /** A keyframe already carrying a curve, ready to be updated. */
+  function curvedState(): EditorState {
+    return mustExecute(clipState(), addKeyframeCommand({ bezier: CURVE }))
+      .state;
+  }
+
+  it("stores a curve given to update_keyframe", () => {
+    // The payload schema spreads the whole keyframe shape, so a curve is
+    // *accepted* here whether or not the reducer does anything with it. A
+    // reducer that drops it therefore fails silently: the command succeeds,
+    // the version advances, and the animation plays the named easing.
+    const state = mustExecute(clipState(), addKeyframeCommand()).state;
+    const updated = mustExecute(
+      state,
+      updateKeyframeCommand({ baseVersion: 6, bezier: CURVE }),
+    ).state;
+
+    expect(animationsOf(updated)?.[0]?.keyframes[0]?.bezier).toEqual(CURVE);
+  });
+
+  it("replaces a curve already on the keyframe", () => {
+    const other = { x1: 0.1, y1: 0, x2: 0.9, y2: 1 };
+    const updated = mustExecute(
+      curvedState(),
+      updateKeyframeCommand({ baseVersion: 6, bezier: other }),
+    ).state;
+
+    expect(animationsOf(updated)?.[0]?.keyframes[0]?.bezier).toEqual(other);
+  });
+
+  it("discards the curve when the update carries none", () => {
+    // The only way back to a named easing. Spreading the previous keyframe
+    // would preserve the curve forever, and because a curve supersedes
+    // `easing`, the easing dropdown would then appear to do nothing at all.
+    const updated = mustExecute(
+      curvedState(),
+      updateKeyframeCommand({ baseVersion: 6, easing: "ease-in" }),
+    ).state;
+
+    const keyframe = animationsOf(updated)?.[0]?.keyframes[0];
+    expect(keyframe?.easing).toBe("ease-in");
+    expect(keyframe).not.toHaveProperty("bezier");
+  });
+
+  it("leaves no bezier key behind, rather than an undefined one", () => {
+    // Canonical JSON distinguishes absent from present-and-undefined, so a
+    // discarded curve that leaves `bezier: undefined` changes the project's
+    // bytes and breaks byte-exact replay.
+    const updated = mustExecute(
+      curvedState(),
+      updateKeyframeCommand({ baseVersion: 6, easing: "linear" }),
+    ).state;
+
+    expect(canonicalStringify(animationsOf(updated))).not.toContain("bezier");
+  });
+
+  it("restores the curve on undo", () => {
+    const before = curvedState();
+    const after = mustExecute(
+      before,
+      updateKeyframeCommand({ baseVersion: 6, easing: "linear" }),
+    ).state;
+    const back = undo(after);
+
+    expect(back.ok).toBe(true);
+    if (!back.ok) return;
+    expect(animationsOf(back.state)?.[0]?.keyframes[0]?.bezier).toEqual(CURVE);
+  });
+
+  it("replays byte-for-byte with a curve in the log", () => {
+    const state = mustExecute(
+      curvedState(),
+      updateKeyframeCommand({ baseVersion: 6, bezier: CURVE }),
+    ).state;
+    const replayed = replay(state.operationLog);
+
+    expect(replayed.ok).toBe(true);
+    if (!replayed.ok) return;
+    expect(canonicalStringify(replayed.state.project)).toBe(
+      canonicalStringify(state.project),
+    );
   });
 });
