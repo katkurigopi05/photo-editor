@@ -59,6 +59,9 @@ manual remains correct.
   `scrollIntoViewIfNeeded()` before reading the canvas box: it sits below the
   fold, and `page.mouse` coordinates are viewport-relative, so without it the
   drag lands outside the window and the capture silently shows no curve.
+- `raw-import.png`: a developed DNG in the preview. Regenerate by importing
+  `test_media/photos/sensor-ramp-64x48.dng`, which is produced by
+  `node scripts/make_test_dng.mjs`.
 - `shuttle.png`: the transport while J/K/L shuttling, showing the speed badge.
   Press L twice so a speed rather than plain playback is showing, then capture
   `locator.screenshot()` on `.transport`. Note the playback-speed dropdown
@@ -106,6 +109,18 @@ block back above the same text. It stops rather than guessing when:
 - anything outside the two manuals conflicts (the merge is aborted)
 - the text an addition sat above is no longer in main
 - a line it was holding is missing from the file it just wrote
+
+Check the manuals with the branch-scoped form:
+
+```sh
+pnpm manual:check:branch
+```
+
+`pnpm manual:check` on its own compares the working tree against HEAD. Once the
+work is committed there is nothing left to compare, so it passes whatever the
+state of the manuals — a false green that has already let a branch reach CI with
+the Markdown updated and the Word manual not. The branch form compares
+`base...head`, which is the question CI asks.
 
 After pushing, confirm the pull request actually reports `MERGEABLE`:
 

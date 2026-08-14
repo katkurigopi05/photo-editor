@@ -27,6 +27,12 @@ are touched by every branch and the docx is binary, so concurrent branches confl
 by construction, not by chance. After pushing, confirm the PR reports `MERGEABLE`
 (`gh pr view N --json mergeable`) — a clean local merge is a different claim.
 
+## Manual check: use the branch form
+`pnpm manual:check` compares the working tree against HEAD, so once work is committed
+it has nothing to look at and passes trivially — a false green. CI compares
+`base...head`. Use `pnpm manual:check:branch`, which asks CI's question, before
+claiming the manuals are in order.
+
 ## Full gate before commit
 TS: lint, typecheck, test, build, format:check. Rust: fmt --check, clippy -D warnings, test.
 

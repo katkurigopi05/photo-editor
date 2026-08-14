@@ -123,6 +123,8 @@ when the system asks for reduced motion.
 - A drawn curve supersedes the named easing, so choosing a name from the menu (or pressing Use named easing) discards it. Changing the keyframe's value keeps it. A hold cannot be drawn, because a hold is a step rather than a curve.
 - Spill Suppression, in the photo editor's tool rail, removes the colour a green or blue screen throws onto its subject. Keying cuts the background out; it does nothing about the light the background reflected, which survives the key and makes the subject look pasted on. Run it after keying.
 - The panel reports how much of the picture carries a cast before you apply anything, so you can tell whether it is worth using. Amount dials the strength down for a subject that really is green, and Keep brightness puts back the brightness the suppression removes — without it, edges darken into what looks like a bad matte.
+![A developed DNG in the preview](assets/user-manual/raw-import.png)
+
 - Camera raw files are recognised by their contents rather than their
   extension, so a renamed file still opens. A DNG is developed on import —
   black level, colour filter array, white balance and the camera's own colour
