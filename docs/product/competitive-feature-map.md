@@ -242,7 +242,20 @@ session, **M** a few sessions, **L** a phase.
 12. ~~**O1 · More codecs**~~ — done. VP9 and AV1 into WebM beside H.264 into
     MP4, with the set offered probed from the browser at the chosen size rather
     than assumed. See `docs/phases/codecs.md`.
-13. **C4 · Raw development** — **L**, and larger than this entry used to claim.
+13. **C4 · Raw development** — **L**, in progress. The decision below is
+    settled: *both*, chosen automatically from the file's bytes. A DNG never
+    pays for a multi-megabyte download when built-in code can read it, and a
+    vendor format cannot be read without one, so the choice follows the file
+    rather than a setting. `packages/raw-decode` holds the identification,
+    the routing, a complete DNG path (structure, unpacking, demosaic, colour)
+    and the LibRaw adapter. Remaining: a LibRaw WebAssembly *binary*, which is a
+    deployment decision rather than source and is not committed here; support
+    for compressed DNG, which is most of them in practice and is currently
+    reported as undecodable with a reason rather than failing; and wiring the
+    whole thing into the app's import path.
+
+    Original entry, kept because the correction matters — **L**, and larger than
+    this entry used to claim.
     "Exists in the Python track" was wrong: `core/document.py` calls
     `rawpy.imread(path).postprocess()` behind an optional dependency, which is
     LibRaw *decoding* a file with default settings. There is no exposure, white

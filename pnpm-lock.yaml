@@ -199,6 +199,8 @@ importers:
 
   packages/raster-tools: {}
 
+  packages/raw-decode: {}
+
   packages/ui-kit:
     dependencies:
       '@director/command-schema':
