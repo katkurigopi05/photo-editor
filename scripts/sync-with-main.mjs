@@ -15,6 +15,12 @@
  * bullet that belonged under "Camera raw files…" is still under it, even if
  * main has since added six paragraphs elsewhere.
  *
+ * A branch that *replaces* text rather than adding it deletes lines too, and
+ * those deletions have to be carried as well. Taking main's manual and
+ * re-applying only the additions brings the replaced sentence back, so the
+ * manual ends up asserting a thing and its opposite a paragraph apart — which
+ * is worse than either version alone and reads as deliberate.
+ *
  * It refuses rather than improvises:
  *   - a conflict in any file other than the two manuals stops everything,
  *     because those need judgement and this has none
@@ -119,6 +125,31 @@ export function addedBlocks(before, after) {
   return blocks.filter((block) => block.lines.length > 0);
 }
 
+/**
+ * Remove a block this branch deleted, from main's copy.
+ *
+ * Absent entirely means main deleted it too, which is agreement, not a
+ * problem. Present but broken up means main rewrote the passage, and deleting
+ * a partial match there would take out somebody else's sentence — so that
+ * stops, like every other case this cannot decide.
+ */
+export function removeBlock(lines, block, describe) {
+  const [first] = block.lines;
+  if (first === undefined) return lines;
+
+  for (let at = 0; at <= lines.length - block.lines.length; at += 1) {
+    if (block.lines.every((line, offset) => lines[at + offset] === line)) {
+      return [...lines.slice(0, at), ...lines.slice(at + block.lines.length)];
+    }
+  }
+  if (!lines.includes(first)) return lines;
+  throw new Error(
+    `cannot remove ${describe} — main has rewritten the passage around it:\n` +
+      `  ${first.slice(0, 70)}…\n` +
+      "Resolve this manual by hand.",
+  );
+}
+
 /** Put a block back above the line it used to precede. */
 function reinsert(lines, block, describe) {
   if (block.follows === null) return [...lines, ...block.lines];
@@ -133,19 +164,27 @@ function reinsert(lines, block, describe) {
   return [...lines.slice(0, at), ...block.lines, ...lines.slice(at)];
 }
 
+const escapeXml = (text) =>
+  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
 const bulletXml = (text) =>
   `<w:p><w:pPr><w:pStyle w:val="ListBullet"/></w:pPr><w:r>` +
-  `<w:t xml:space="preserve">${text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")}</w:t></w:r></w:p>`;
+  `<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
 
 function resolveMarkdown(base, head, onto) {
-  const blocks = addedBlocks(
-    fileAt(base, MARKDOWN).split("\n"),
-    fileAt(head, MARKDOWN).split("\n"),
-  );
+  const before = fileAt(base, MARKDOWN).split("\n");
+  const after = fileAt(head, MARKDOWN).split("\n");
+  const blocks = addedBlocks(before, after);
+  // Swapping the arguments gives what the branch removed rather than added.
+  const removed = addedBlocks(after, before);
+
   let lines = fileAt(onto, MARKDOWN).split("\n");
+  // Removals first: an addition's anchor is a line that survived in the branch,
+  // so it is never one of these, and doing it in this order keeps the anchors
+  // valid either way.
+  for (const block of removed) {
+    lines = removeBlock(lines, block, "a bullet dropped from USER_MANUAL.md");
+  }
   for (const block of blocks) {
     lines = reinsert(lines, block, "a bullet in USER_MANUAL.md");
   }
@@ -154,20 +193,31 @@ function resolveMarkdown(base, head, onto) {
 }
 
 function resolveDocx(base, head, onto) {
-  const blocks = addedBlocks(
-    paragraphTexts(documentXmlAt(base)),
-    paragraphTexts(documentXmlAt(head)),
-  );
+  const before = paragraphTexts(documentXmlAt(base));
+  const after = paragraphTexts(documentXmlAt(head));
+  const blocks = addedBlocks(before, after);
+  const removed = addedBlocks(after, before);
 
-  // Start from main's docx on disk, then insert this branch's paragraphs.
+  // Start from main's docx on disk, then apply this branch's changes.
   git(["checkout", onto, "--", DOCX]);
-  if (blocks.length === 0) return [];
+  if (blocks.length === 0 && removed.length === 0) return [];
 
   const work = mkdtempSync(path.join(tmpdir(), "sync-out-"));
   try {
     execFileSync("unzip", ["-q", path.join(ROOT, DOCX), "-d", work]);
     const documentPath = path.join(work, "word", "document.xml");
     let xml = readFileSync(documentPath, "utf8");
+
+    for (const block of removed) {
+      for (const text of block.lines) {
+        const at = xml.indexOf(escapeXml(text));
+        if (at === -1) continue;
+        const paragraphStart = xml.lastIndexOf("<w:p>", at);
+        const close = xml.indexOf("</w:p>", at);
+        if (paragraphStart === -1 || close === -1) continue;
+        xml = xml.slice(0, paragraphStart) + xml.slice(close + "</w:p>".length);
+      }
+    }
 
     for (const block of blocks) {
       if (block.follows === null || block.follows.trim() === "") {
