@@ -12,6 +12,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "manual:check": "node scripts/check-user-manual-sync.mjs",
+    "manual:check:branch": "MANUAL_SYNC_BASE=$(git merge-base HEAD origin/main) MANUAL_SYNC_HEAD=$(git rev-parse HEAD) node scripts/check-user-manual-sync.mjs",
     "sync": "node scripts/sync-with-main.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json",

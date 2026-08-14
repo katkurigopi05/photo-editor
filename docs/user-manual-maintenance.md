@@ -87,6 +87,18 @@ block back above the same text. It stops rather than guessing when:
 - the text an addition sat above is no longer in main
 - a line it was holding is missing from the file it just wrote
 
+Check the manuals with the branch-scoped form:
+
+```sh
+pnpm manual:check:branch
+```
+
+`pnpm manual:check` on its own compares the working tree against HEAD. Once the
+work is committed there is nothing left to compare, so it passes whatever the
+state of the manuals — a false green that has already let a branch reach CI with
+the Markdown updated and the Word manual not. The branch form compares
+`base...head`, which is the question CI asks.
+
 After pushing, confirm the pull request actually reports `MERGEABLE`:
 
 ```sh
