@@ -241,6 +241,9 @@ import {
   unsharpMask,
   diffusionFill,
   colorKeyAlpha,
+  suppressSpill,
+  spillFraction,
+  type SpillChannel,
   cornerKeyColor,
   cropImage,
   resizeImage,
@@ -285,8 +288,13 @@ import {
   type CurvePoint,
   type CurveSet,
   applyLut3d,
+  parseCube,
+  writeCube,
+  resampleLut,
+  type Lut3d,
   cubeImageToLut,
   identityCubeImage,
+  LUT_SIZE,
 } from "@director/raster-tools";
 import {
   biasSubjectMask,
@@ -1355,6 +1363,7 @@ type RasterTool =
   | "sharpen"
   | "smartfill"
   | "bgremove"
+  | "spill"
   | "aibgremove";
 let rasterSession: RasterSession | null = null;
 let rasterEditingClipId: string | null = null;
@@ -1391,6 +1400,9 @@ const rasterOptions = {
   bgKeyColor: "#00ff00",
   bgThreshold: 0.12,
   bgSoftness: 0.1,
+  spillChannel: "green" as SpillChannel,
+  spillAmount: 1,
+  spillPreserveLuminance: true,
   aiModel: "fast" as "fast" | "accurate",
 };
 
@@ -3887,6 +3899,9 @@ function runsAsPixels(fx: EffectInstance): boolean {
  * experiment rather than assertion.
  */
 const POINTWISE_GRADING_TYPES: ReadonlySet<string> = new Set([
+  // A lookup table is pointwise by construction, so a stack containing one
+  // still collapses into a single table and still reaches the GPU.
+  "color.lut",
   "color.white_balance",
   "color.levels",
   "color.tone_curve",
@@ -3898,6 +3913,7 @@ const POINTWISE_GRADING_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 const GRADING_TYPES: ReadonlySet<string> = new Set([
+  "color.lut",
   "color.white_balance",
   "color.levels",
   "color.tone_curve",
@@ -3944,6 +3960,23 @@ function maskSignature(
     .filter((mask) => used.has(mask.id))
     .map((mask) => `${mask.id}:${JSON.stringify(mask.contributions)}`)
     .join("|");
+}
+
+/**
+ * Parsed lookup tables, by the asset that names them.
+ *
+ * The project stores a LUT as a reference — a file on disk with a checksum —
+ * so the table itself lives here, in session memory, exactly as decoded media
+ * does. Filled when a `.cube` is imported or relinked; a `color.lut` effect
+ * whose asset is not here renders as a no-op rather than an error, which is the
+ * same thing that happens to a clip whose media is missing.
+ */
+const lutTables = new Map<string, Lut3d>();
+
+/** The table an effect names, or null when the file is not loaded. */
+function lutFor(fx: EffectInstance): Lut3d | null {
+  const id = (fx.params as { assetId?: unknown }).assetId;
+  return typeof id === "string" ? (lutTables.get(id) ?? null) : null;
 }
 
 function gradeImage(image: RasterImage, fx: EffectInstance): RasterImage {
@@ -4025,6 +4058,28 @@ function gradeImage(image: RasterImage, fx: EffectInstance): RasterImage {
       getParamNumber(fx, "whitePoint", 1),
       getParamNumber(fx, "gamma", 1),
     );
+  }
+  if (fx.type === "color.lut") {
+    const table = lutFor(fx);
+    // A missing table is the same situation as missing media: the reference is
+    // sound, the file is not here. Rendering the picture unchanged beats
+    // rendering it wrong, and Relink is the repair.
+    if (table === null) return image;
+    const graded = applyLut3d(image, table);
+    const amount = getParamNumber(fx, "amount", 1);
+    if (amount >= 1) return graded;
+    // Mixing back towards the original is what makes a look dialled down rather
+    // than all-or-nothing, and it is done here rather than by editing the table
+    // so the table stays exactly what the file said.
+    const data = new Uint8ClampedArray(image.data);
+    for (let i = 0; i < data.length; i += 4) {
+      for (let c = 0; c < 3; c += 1) {
+        data[i + c] =
+          image.data[i + c]! +
+          (graded.data[i + c]! - image.data[i + c]!) * amount;
+      }
+    }
+    return { width: image.width, height: image.height, data };
   }
   if (fx.type === "color.curves") {
     return applyCurves(image, curveSetOf(fx));
@@ -5678,6 +5733,176 @@ function trackSection(clip: TimelineClip): HTMLElement {
 }
 
 /**
+ * Load a `.cube` and attach it to the selected clip.
+ *
+ * The file is registered as an asset — URI and checksum, no table in the
+ * project — and the parsed table is kept in `lutTables` for this session. That
+ * is the same arrangement media has, and it means a LUT that later goes missing
+ * shows up in Relink rather than silently changing the picture.
+ *
+ * Imported tables are resampled to the pipeline's size on the way in, so
+ * everything downstream sees one shape. A 17³ file grades slightly more coarsely
+ * than a 33³ one and always did; resampling neither adds nor removes that.
+ */
+async function importLutFile(file: File, clip: TimelineClip): Promise<void> {
+  const text = await file.text();
+  const parsed = parseCube(text);
+  if (!parsed.ok) {
+    // The parser names the line and the reason; passing that through is the
+    // difference between a fixable problem and "invalid LUT".
+    toast(`${file.name}: ${parsed.error}`, true);
+    return;
+  }
+
+  const table = resampleLut(parsed.lut.table, parsed.lut.size, LUT_SIZE);
+  const checksum = await checksumBlob(file);
+  const assetId = `asset-${crypto.randomUUID().slice(0, 8)}`;
+  const name = parsed.lut.title?.trim() || file.name.replace(/\.[^.]+$/, "");
+
+  lutTables.set(assetId, table);
+  assetNames.set(assetId, name);
+
+  session.beginGesture();
+  const registered = commit(
+    buildRegisterAsset(nextCtx(), {
+      asset: {
+        id: assetId,
+        projectId: PROJECT_ID,
+        kind: "lut",
+        originalUri: `file:///${file.name}`,
+        checksum,
+        metadata: { fileSizeBytes: String(file.size) },
+        createdAt: new Date().toISOString(),
+      },
+    }),
+  );
+  const applied =
+    registered &&
+    commit(
+      buildAddEffect(nextCtx(), {
+        sequenceId: activeSequenceId,
+        clipId: clip.id,
+        effect: {
+          id: `fx-${crypto.randomUUID().slice(0, 8)}`,
+          type: "color.lut",
+          enabled: true,
+          params: { assetId, amount: 1 },
+        } as unknown as EffectInstance,
+      }),
+    );
+  session.endGesture();
+
+  if (!applied) {
+    lutTables.delete(assetId);
+    toast(`Could not add ${name}: ${session.getLastError()?.message ?? "unknown"}`, true);
+    return;
+  }
+  toast(`Applied ${name}.`);
+  updateUI();
+}
+
+/**
+ * Write the clip's current pointwise grade out as a `.cube`.
+ *
+ * Exactly the collapse the renderer already does — run the grading chain over a
+ * cube of colours and read the result back — so what is exported is what is
+ * seen, not a re-derivation that could disagree with it.
+ *
+ * Only pointwise effects can be baked. Presence and Noise Reduction read a
+ * pixel's neighbours, so no colour table can represent them; a stack containing
+ * one is refused rather than exported minus the parts that did not fit.
+ */
+function exportLut(clip: TimelineClip): void {
+  const grading = clip.effects.filter(
+    (fx) => fx.enabled !== false && GRADING_TYPES.has(fx.type),
+  );
+  if (grading.length === 0) {
+    toast("This clip has no colour grade to export.", true);
+    return;
+  }
+  const spatial = grading.filter((fx) => !POINTWISE_GRADING_TYPES.has(fx.type));
+  if (spatial.length > 0) {
+    toast(
+      `A lookup table cannot represent ${spatial.map((fx) => effectSpec(fx.type)?.label ?? fx.type).join(" or ")}, because they read each pixel's neighbours. Disable them to export the rest.`,
+      true,
+    );
+    return;
+  }
+
+  let cube = identityCubeImage();
+  for (const fx of grading) cube = gradeImage(cube, fx);
+  const text = writeCube(
+    cubeImageToLut(cube),
+    LUT_SIZE,
+    (() => {
+      const asset = findAsset(clip.assetId);
+      return asset ? assetName(asset) : "Project Director";
+    })(),
+  );
+
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "grade.cube";
+  link.click();
+  // Revoked on a later tick: revoking immediately can cancel the download in
+  // some browsers before it has read the blob.
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  toast("Exported grade.cube.");
+}
+
+/**
+ * Look-up table controls, in the Inspector beside the other colour tools.
+ *
+ * Import sits next to Export deliberately: the pair is what makes a grade
+ * portable, and separating them would hide half the feature.
+ */
+function lutSection(clip: TimelineClip): HTMLElement {
+  const box = section("Lookup table");
+
+  const control = document.createElement("div");
+  control.className = "control";
+
+  const input = document.createElement("input");
+  input.type = "file";
+  input.id = "lut-file-input";
+  input.accept = ".cube";
+  input.hidden = true;
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    // Cleared so choosing the same file twice fires again — otherwise a failed
+    // import cannot be retried without picking something else first.
+    input.value = "";
+    if (file) void importLutFile(file, clip);
+  });
+
+  const importButton = document.createElement("button");
+  importButton.id = "btn-lut-import";
+  importButton.className = "tool";
+  importButton.textContent = "\u2b06 Import .cube";
+  importButton.title = "Apply a colour lookup table from a .cube file";
+  importButton.addEventListener("click", () => input.click());
+
+  const exportButton = document.createElement("button");
+  exportButton.id = "btn-lut-export";
+  exportButton.className = "tool";
+  exportButton.textContent = "\u2b07 Export .cube";
+  exportButton.title = "Save this clip's colour grade as a .cube file";
+  exportButton.addEventListener("click", () => exportLut(clip));
+
+  control.append(importButton, exportButton, input);
+  box.appendChild(control);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "A .cube from Resolve, Premiere or a LUT pack loads as an ordinary grade you can dial down or remove. Exporting bakes this clip's colour effects into a table other editors can read \u2014 effects that read neighbouring pixels, like Presence and Noise Reduction, cannot be baked and are reported rather than dropped.";
+  box.appendChild(note);
+  return box;
+}
+
+/**
  * Stabilise, beside the animation controls rather than beside Clip speed.
  *
  * It writes position, rotation and scale keyframes, so it belongs with the
@@ -6370,6 +6595,7 @@ function renderInspector(): void {
   if (asset && asset.kind !== "audio") {
     inspectorEl.appendChild(blendSection(clip));
   }
+  inspectorEl.appendChild(lutSection(clip));
   inspectorEl.appendChild(speedSection(clip));
   if (findAsset(clip.assetId)?.kind === "video") {
     inspectorEl.appendChild(stabiliseSection(clip));
@@ -9158,6 +9384,7 @@ const RASTER_TOOLS: Array<{ id: RasterTool; icon: string; label: string }> = [
   { id: "sharpen", icon: "◆", label: "Sharpen" },
   { id: "smartfill", icon: "🩹", label: "Smart Fill" },
   { id: "bgremove", icon: "🪄", label: "Remove Background" },
+  { id: "spill", icon: "💧", label: "Spill Suppression" },
   { id: "aibgremove", icon: "🧠", label: "AI Remove Background" },
 ];
 
@@ -10087,6 +10314,84 @@ function renderRasterPanel(): void {
         renderRasterPanel();
       });
       s.appendChild(apply);
+      body.appendChild(s);
+      break;
+    }
+    case "spill": {
+      const s = section("Spill Suppression");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent =
+        "Removes the colour a green or blue screen throws onto its subject. Keying cuts the background " +
+        "out; it does nothing about the light the background reflected, which survives the key and makes " +
+        "the subject look pasted on. Run this after keying.";
+      s.appendChild(hint);
+
+      const measured = spillFraction(rasterSession.image, rasterOptions.spillChannel);
+      const reading = document.createElement("p");
+      reading.className = "raster-hint";
+      reading.textContent =
+        measured < 0.001
+          ? "No measurable spill in this photo — applying this will change very little."
+          : `About ${(measured * 100).toFixed(1)}% of pixels carry a ${rasterOptions.spillChannel} cast.`;
+      s.appendChild(reading);
+
+      const channelField = document.createElement("div");
+      channelField.className = "control";
+      const channelLabel = document.createElement("label");
+      channelLabel.textContent = "Screen colour";
+      const channelSelect = document.createElement("select");
+      channelSelect.className = "theme-name-input";
+      for (const c of ["green", "blue", "red"] as const) {
+        const option = document.createElement("option");
+        option.value = c;
+        option.textContent = c[0]!.toUpperCase() + c.slice(1);
+        option.selected = rasterOptions.spillChannel === c;
+        channelSelect.appendChild(option);
+      }
+      channelSelect.addEventListener("change", () => {
+        rasterOptions.spillChannel = channelSelect.value as SpillChannel;
+        // Re-rendered so the reading above reflects the channel just chosen.
+        renderRasterPanel();
+      });
+      channelField.append(channelLabel, channelSelect);
+      s.appendChild(channelField);
+
+      s.appendChild(
+        sliderControl("Amount", 0, 1, 0.05, rasterOptions.spillAmount, (v) => (rasterOptions.spillAmount = v)),
+      );
+
+      const lumaRow = document.createElement("label");
+      lumaRow.className = "control";
+      const lumaCb = document.createElement("input");
+      lumaCb.type = "checkbox";
+      lumaCb.checked = rasterOptions.spillPreserveLuminance;
+      lumaCb.addEventListener("change", () => {
+        rasterOptions.spillPreserveLuminance = lumaCb.checked;
+      });
+      lumaRow.append(lumaCb, document.createTextNode(" Keep brightness"));
+      s.appendChild(lumaRow);
+
+      const applySpill = document.createElement("button");
+      applySpill.className = "tool primary";
+      applySpill.textContent = "Apply";
+      // The checkbox row above is inline, so without this the button rides up
+      // alongside its label and overlaps the text.
+      applySpill.style.display = "block";
+      applySpill.style.marginTop = "12px";
+      applySpill.addEventListener("click", () => {
+        if (!rasterSession) return;
+        rasterSession.snapshot();
+        rasterSession.image = suppressSpill(
+          rasterSession.image,
+          rasterOptions.spillChannel,
+          rasterOptions.spillAmount,
+          rasterOptions.spillPreserveLuminance,
+        );
+        redrawRasterCanvas();
+        renderRasterPanel();
+      });
+      s.appendChild(applySpill);
       body.appendChild(s);
       break;
     }

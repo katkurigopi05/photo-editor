@@ -1,5 +1,6 @@
 import type {
   AnimationEasing,
+  CubicBezier,
   AnimationProperty,
   AnimationTrack,
   TimelineClip,
@@ -43,6 +44,48 @@ function cubicBezier(
     else high = midpoint;
   }
   return cubicCoordinate((low + high) / 2, y1, y2);
+}
+
+/**
+ * Apply a hand-drawn easing curve to normalized progress.
+ *
+ * Exposed separately from the named easings because a custom curve supersedes
+ * them rather than joining them: a keyframe carrying one is not "ease-in with
+ * extras", it is a different curve, and the named value stays only so the curve
+ * can be discarded back to something.
+ *
+ * The solver is the same one the named easings already used, so a custom curve
+ * matching CSS's ease-in control points produces exactly what `ease-in` does —
+ * which is a property worth having and is asserted in the tests.
+ */
+export function applyBezierEasing(
+  bezier: CubicBezier,
+  progress: number,
+): number {
+  if (!Number.isFinite(progress)) {
+    throw new RangeError("animation progress must be finite");
+  }
+  const clamped = Math.min(1, Math.max(0, progress));
+  return cubicBezier(clamped, bezier.x1, bezier.y1, bezier.x2, bezier.y2);
+}
+
+/**
+ * The easing a keyframe actually uses.
+ *
+ * One place decides, so the precedence cannot be implemented differently by the
+ * renderer and the exporter and drift apart — which is exactly the kind of
+ * disagreement that shows up as an export not matching the preview.
+ */
+export function easeKeyframe(
+  // `| undefined` because the project compiles with exactOptionalPropertyTypes,
+  // which keeps "absent" and "present but undefined" distinct — the same
+  // distinction canonical JSON depends on.
+  keyframe: { easing: AnimationEasing; bezier?: CubicBezier | undefined },
+  progress: number,
+): number {
+  return keyframe.bezier
+    ? applyBezierEasing(keyframe.bezier, progress)
+    : applyAnimationEasing(keyframe.easing, progress);
 }
 
 /** Apply one supported easing to normalized progress. Ease curves use the CSS
@@ -105,7 +148,10 @@ export function sampleAnimationTrack(
     const rightTime = BigInt(right.timeUs);
     if (time < rightTime) {
       const progress = normalizedProgress(time, BigInt(left.timeUs), rightTime);
-      const eased = applyAnimationEasing(left.easing, progress);
+      // The *left* keyframe's easing governs the span leaving it, so a curve
+      // drawn on a keyframe shapes the move away from it — which is what the
+      // curve appears to do when drawn beside that keyframe.
+      const eased = easeKeyframe(left, progress);
       return left.value + (right.value - left.value) * eased;
     }
   }

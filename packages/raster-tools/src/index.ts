@@ -18,6 +18,16 @@ export {
   isPointwise,
 } from "./lut3d.js";
 
+export { suppressSpill, spillFraction, type SpillChannel } from "./spill.js";
+
+export {
+  parseCube,
+  writeCube,
+  resampleLut,
+  type CubeLut,
+  type CubeParseResult,
+} from "./cube.js";
+
 export {
   type CurvePoint,
   type CurveSet,

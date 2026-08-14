@@ -1,4 +1,8 @@
 # Project Director User Manual
+- Both uncompressed and losslessly compressed DNGs open — the second being what cameras actually write; uncompressed ones are mostly conversions. A vendor format such as Canon CR3 or Nikon NEF is still refused with a message naming the camera and format and saying the extended decoder is not loaded, rather than failing silently or blaming the file.
+- A DNG using lossy JPEG, or one holding an already-demosaiced image, is named rather than refused blankly. A single damaged tile costs that tile and leaves it black; the rest of the photograph still opens.
+- **2026-08-13:** Losslessly compressed DNGs now open — the compression cameras
+  actually write. This supersedes the note below saying only uncompressed ones did.
 
 Photo · Video · Animation · GIF  
 Project version 0.1.0 · Updated August 8, 2026
@@ -115,17 +119,31 @@ when the system asks for reduced motion.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
+- A keyframe can carry a hand-drawn easing curve as well as one of the named easings. Nothing in the interface draws one yet; when it does, the curve will shape the move leaving that keyframe and can overshoot its target and settle, which the named easings cannot.
+- Spill Suppression, in the photo editor's tool rail, removes the colour a green or blue screen throws onto its subject. Keying cuts the background out; it does nothing about the light the background reflected, which survives the key and makes the subject look pasted on. Run it after keying.
+- The panel reports how much of the picture carries a cast before you apply anything, so you can tell whether it is worth using. Amount dials the strength down for a subject that really is green, and Keep brightness puts back the brightness the suppression removes — without it, edges darken into what looks like a bad matte.
 ![A developed DNG in the preview](assets/user-manual/raw-import.png)
 
-- Camera raw files (DNG, and the vendor formats) are recognised by their
-  contents rather than their extension, so a renamed file still opens. A DNG is
-  developed on import — black level, colour filter array, white balance and the
-  camera's own colour matrix — and lands in the bin as an ordinary picture you
-  can grade, animate and export like any other.
-- Only uncompressed DNGs open at present. A compressed DNG, or a vendor format
-  such as Canon CR3 or Nikon NEF, is refused with a message naming the camera
-  and format and saying the extended decoder is not loaded — rather than
-  failing silently or blaming the file.
+- Camera raw files are recognised by their contents rather than their
+  extension, so a renamed file still opens. A DNG is developed on import —
+  black level, colour filter array, white balance and the camera's own colour
+  matrix — and lands in the bin as an ordinary picture you can grade, animate
+  and export like any other.
+![The Lookup table panel](assets/user-manual/lut-panel.png)
+
+- Import a lookup table with ⬆ Import .cube under Lookup table in the
+  Inspector. A `.cube` from Resolve, Premiere or a LUT pack becomes an ordinary
+  effect on the clip: you can dial it down, disable it, reorder it, or remove
+  it. A file that will not load is refused with the reason and the line, not
+  applied.
+- ⬇ Export .cube saves the clip's colour grade as a lookup table other editors
+  can read. Effects that read neighbouring pixels — Presence and Noise
+  Reduction — cannot be represented by a table, so a grade containing one is
+  reported rather than exported with those parts silently missing.
+- An imported lookup table is stored the way media is: the file stays where it
+  is and the project records where to find it and a checksum, so projects do
+  not grow by the size of every LUT used. If the file moves, Relink finds it
+  again.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.
@@ -539,8 +557,25 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-13:** Spill Suppression in the photo editor — removes the green or
+  blue a screen throws onto its subject, after keying.
+
+- **2026-08-13:** Reviewed; no user-visible change. Keyframes can now carry a
+  hand-drawn easing curve. Nothing in the interface draws one yet, so the five
+  named easings are still what you choose from.
+
+- **2026-08-13:** Import and export `.cube` colour lookup tables, in the
+  Inspector.
 - **2026-08-13:** Camera raw import. Uncompressed DNG files are developed and
   opened; other raw formats are named and refused rather than failing quietly.
+
+- **2026-08-13:** Reviewed; no user-visible change. Groundwork for colour
+  lookup tables: the project can now record a LUT and an effect that uses one.
+  Nothing in the interface imports one yet.
+
+- **2026-08-13:** Reviewed; no user-visible change. The editor can now read and
+  write `.cube` colour lookup tables internally. Nothing in the interface offers
+  it yet, so using the editor is unchanged.
 
 - **2026-08-13:** Track a feature, in the Inspector for video clips — follows a
   point and holds it still in frame.
