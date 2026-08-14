@@ -115,6 +115,7 @@ when the system asks for reduced motion.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
+- A keyframe can carry a hand-drawn easing curve as well as one of the named easings. Nothing in the interface draws one yet; when it does, the curve will shape the move leaving that keyframe and can overshoot its target and settle, which the named easings cannot.
 - Camera raw files are recognised by their contents rather than their
   extension, so a renamed file still opens. A DNG is developed on import —
   black level, colour filter array, white balance and the camera's own colour
@@ -551,6 +552,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-13:** Reviewed; no user-visible change. Keyframes can now carry a
+  hand-drawn easing curve. Nothing in the interface draws one yet, so the five
+  named easings are still what you choose from.
 
 - **2026-08-13:** Import and export `.cube` colour lookup tables, in the
   Inspector.

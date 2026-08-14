@@ -30,12 +30,48 @@ const finiteNumberSchema = z
   .number()
   .refine(Number.isFinite, "value must be a finite number");
 
+/**
+ * A custom easing curve for one keyframe, as four control-point coordinates.
+ *
+ * `x` is bounded to 0–1 and `y` is not, which is the CSS rule and is not
+ * arbitrary: `x` is time, and a control point outside that range would let the
+ * curve double back so one instant had two values. `y` is the animated value,
+ * and letting it leave the range is what makes overshoot possible — a move that
+ * goes slightly past its target and settles is the whole reason to draw a curve
+ * by hand rather than pick a named easing.
+ */
+export const cubicBezierSchema = z
+  .object({
+    x1: finiteNumberSchema.refine(
+      (n) => n >= 0 && n <= 1,
+      "x1 must be in [0, 1]",
+    ),
+    y1: finiteNumberSchema,
+    x2: finiteNumberSchema.refine(
+      (n) => n >= 0 && n <= 1,
+      "x2 must be in [0, 1]",
+    ),
+    y2: finiteNumberSchema,
+  })
+  .strict();
+export type CubicBezier = z.infer<typeof cubicBezierSchema>;
+
 export const animationKeyframeSchema = z
   .object({
     id: z.string().min(1),
     timeUs: microsecondStringSchema,
     value: finiteNumberSchema,
     easing: animationEasingSchema,
+    /**
+     * A hand-drawn curve, which supersedes `easing` when present.
+     *
+     * Optional and absent by default, for the same reason every field added
+     * since schema v1 is: a project written before custom curves existed must
+     * parse byte-for-byte identically, and a keyframe nobody has shaped should
+     * cost no bytes and no migration. `easing` stays required so a curve can
+     * always be discarded back to something named.
+     */
+    bezier: cubicBezierSchema.optional(),
   })
   .strict();
 export type AnimationKeyframe = z.infer<typeof animationKeyframeSchema>;
