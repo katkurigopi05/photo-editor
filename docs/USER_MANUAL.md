@@ -528,6 +528,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-13:** Reviewed; no user-visible change. Keyframes can now carry a
+  hand-drawn easing curve. Nothing in the interface draws one yet, so the five
+  named easings are still what you choose from.
+
 - **2026-08-13:** Track a feature, in the Inspector for video clips — follows a
   point and holds it still in frame.
 
