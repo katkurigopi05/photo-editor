@@ -51,6 +51,14 @@ manual remains correct.
   on `test_media/photos/green-screen-900x1200.png` so the cast reading in the
   panel shows a real measurement rather than zero. Capture with
   `locator.screenshot()` on `#inspector` at a 1440x900 viewport.
+- `easing-curve.png`: the hand-drawn easing curve editor, opened on a Scale
+  keyframe of a Star cartoon clip with the loop-pulse preset, with the first
+  handle dragged into an overshoot — overshoot is what the named easings
+  cannot do, so a screenshot of an ordinary curve would not show the point.
+  Capture with `locator.screenshot()` on the animation control. Call
+  `scrollIntoViewIfNeeded()` before reading the canvas box: it sits below the
+  fold, and `page.mouse` coordinates are viewport-relative, so without it the
+  drag lands outside the window and the capture silently shows no curve.
 - `raw-import.png`: a developed DNG in the preview. Regenerate by importing
   `test_media/photos/sensor-ramp-64x48.dng`, which is produced by
   `node scripts/make_test_dng.mjs`.

@@ -297,6 +297,14 @@ import {
   LUT_SIZE,
 } from "@director/raster-tools";
 import {
+  curveForEasing,
+  drawCurve,
+  fromCanvas,
+  handleAt,
+  overshoots,
+  withHandle,
+} from "./bezier-editor.js";
+import {
   biasSubjectMask,
   bloomHighlights,
 } from "./portrait-blur.js";
@@ -315,6 +323,7 @@ import type {
   AnimationEasing,
   AnimationProperty,
   ClipMask,
+  CubicBezier,
   MarkerKind,
   MaskContribution,
   EffectInstance,
@@ -5000,6 +5009,9 @@ function upsertAnimationKeyframe(
   localTimeUs: string,
   value: number,
   easing: AnimationEasing,
+  // Absent discards any curve the keyframe had, which is the only way back to a
+  // named easing: an update states the whole keyframe rather than patching it.
+  bezier?: CubicBezier | undefined,
 ): void {
   const track = clip.animations?.find((item) => item.property === property);
   const exact = exactKeyframeAtTime(clip, property, localTimeUs);
@@ -5013,6 +5025,7 @@ function upsertAnimationKeyframe(
         timeUs: localTimeUs,
         value,
         easing,
+        ...(bezier === undefined ? {} : { bezier }),
       }),
     );
     return;
@@ -5029,6 +5042,7 @@ function upsertAnimationKeyframe(
         timeUs: localTimeUs,
         value,
         easing,
+        ...(bezier === undefined ? {} : { bezier }),
       },
     }),
   );
@@ -5116,6 +5130,9 @@ function animationPropertyControl(
       localTimeUs,
       Number(input.value),
       exact?.easing ?? "ease-in-out",
+      // Carried through: changing a value must not silently throw away a curve
+      // the user drew, and an update states the whole keyframe.
+      exact?.bezier,
     ),
   );
 
@@ -5132,9 +5149,11 @@ function animationPropertyControl(
     option.selected = optionValue === (exact?.easing ?? "ease-in-out");
     easing.appendChild(option);
   }
-  easing.title = exact
-    ? "Easing from this keyframe to the next"
-    : "Move onto or add a keyframe to edit easing";
+  easing.title = exact?.bezier
+    ? "Choosing a named easing discards this keyframe's drawn curve"
+    : exact
+      ? "Easing from this keyframe to the next"
+      : "Move onto or add a keyframe to edit easing";
   easing.addEventListener("change", () => {
     if (!exact) return;
     upsertAnimationKeyframe(
@@ -5145,9 +5164,151 @@ function animationPropertyControl(
       easing.value as AnimationEasing,
     );
   });
-  footer.append(count, easing);
+  const curveBtn = document.createElement("button");
+  curveBtn.className = "mini animation-curve-toggle";
+  curveBtn.textContent = exact?.bezier ? "Curve ✓" : "Curve";
+  curveBtn.setAttribute("aria-label", `${spec.label} keyframe curve`);
+  // A hold is a step, not a curve: the value does not move until the next
+  // keyframe arrives, and no cubic Bézier expresses that. Offering the editor
+  // would mean opening it silently turned the hold into a very steep ease.
+  const isHold = exact?.easing === "hold" && !exact.bezier;
+  curveBtn.disabled = exact === undefined || isHold;
+  curveBtn.title = isHold
+    ? "A hold is a step, not a curve — no drawn curve can express it"
+    : exact
+      ? "Draw this keyframe's easing by hand"
+      : "Move onto or add a keyframe to draw a curve";
+  curveBtn.addEventListener("click", () => {
+    openCurveEditor =
+      openCurveEditor === spec.property ? null : spec.property;
+    renderInspector();
+  });
+
+  footer.append(count, easing, curveBtn);
   wrap.append(header, input, footer);
+  if (exact && openCurveEditor === spec.property && !isHold) {
+    wrap.appendChild(curveEditorPanel(clip, spec, localTimeUs, exact));
+  }
   return wrap;
+}
+
+/** Which property's curve editor is open, if any. Local UI state, deliberately
+ * outside the command engine — like which panel is expanded, it is not part of
+ * the project and must not land in the undo history. */
+let openCurveEditor: AnimationProperty | null = null;
+
+/**
+ * The curve editor for one keyframe.
+ *
+ * The drag is committed once, on release, so hauling a handle across the box is
+ * a single Undo rather than one per pixel of travel. While the pointer is down
+ * the canvas is repainted directly from a draft — re-rendering the inspector
+ * mid-drag would rebuild this element and drop the pointer capture with it.
+ */
+function curveEditorPanel(
+  clip: TimelineClip,
+  spec: AnimationControlSpec,
+  localTimeUs: string,
+  // `| undefined` because the project compiles with exactOptionalPropertyTypes,
+  // which keeps "absent" and "present but undefined" distinct — the same
+  // distinction the keyframe schema and canonical JSON depend on.
+  exact: {
+    value: number;
+    easing: AnimationEasing;
+    bezier?: CubicBezier | undefined;
+  },
+): HTMLElement {
+  const panel = document.createElement("div");
+  panel.className = "bezier-editor";
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 220;
+  canvas.height = 220;
+  canvas.className = "bezier-canvas";
+  canvas.setAttribute("aria-label", `${spec.label} easing curve`);
+  const context = canvas.getContext("2d")!;
+
+  let draft: CubicBezier = exact.bezier ?? curveForEasing(exact.easing);
+  let dragging: 1 | 2 | null = null;
+
+  const readout = document.createElement("p");
+  readout.className = "animation-help bezier-readout";
+  const paint = (): void => {
+    drawCurve(context, draft, canvas);
+    readout.textContent =
+      `cubic-bezier(${draft.x1.toFixed(2)}, ${draft.y1.toFixed(2)}, ` +
+      `${draft.x2.toFixed(2)}, ${draft.y2.toFixed(2)})` +
+      (overshoots(draft) ? " — overshoots, then settles" : "");
+  };
+  paint();
+
+  /** Pointer position in canvas pixels. The canvas is laid out by CSS, so its
+   * displayed size need not equal its backing-store size; using the raw offset
+   * would put the handle where the pointer is not. */
+  const at = (event: PointerEvent): { x: number; y: number } => {
+    const box = canvas.getBoundingClientRect();
+    return {
+      x: ((event.clientX - box.left) / box.width) * canvas.width,
+      y: ((event.clientY - box.top) / box.height) * canvas.height,
+    };
+  };
+
+  canvas.addEventListener("pointerdown", (event) => {
+    const grabbed = handleAt(at(event), draft, canvas);
+    if (grabbed === null) return;
+    dragging = grabbed;
+    canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (dragging === null) return;
+    draft = withHandle(draft, dragging, fromCanvas(at(event), canvas));
+    paint();
+  });
+  const release = (event: PointerEvent): void => {
+    if (dragging === null) return;
+    dragging = null;
+    canvas.releasePointerCapture(event.pointerId);
+    upsertAnimationKeyframe(
+      clip,
+      spec.property,
+      localTimeUs,
+      exact.value,
+      exact.easing,
+      draft,
+    );
+  };
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
+
+  const actions = document.createElement("div");
+  actions.className = "animation-control-footer";
+  const discard = document.createElement("button");
+  discard.className = "mini";
+  discard.textContent = "Use named easing";
+  discard.disabled = exact.bezier === undefined;
+  discard.title = "Discard the drawn curve and go back to " + exact.easing;
+  discard.addEventListener("click", () => {
+    // No curve in the payload is how a curve is removed.
+    upsertAnimationKeyframe(
+      clip,
+      spec.property,
+      localTimeUs,
+      exact.value,
+      exact.easing,
+    );
+  });
+  actions.appendChild(discard);
+
+  const hint = document.createElement("p");
+  hint.className = "animation-help";
+  hint.textContent =
+    "Drag either handle. Sideways is time and stays inside the box; up and " +
+    "down is the value and may leave it, which is what makes a move overshoot " +
+    "its target and settle.";
+
+  panel.append(canvas, readout, actions, hint);
+  return panel;
 }
 
 /**
