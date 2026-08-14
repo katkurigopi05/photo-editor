@@ -115,6 +115,17 @@ when the system asks for reduced motion.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
+![A developed DNG in the preview](assets/user-manual/raw-import.png)
+
+- Camera raw files (DNG, and the vendor formats) are recognised by their
+  contents rather than their extension, so a renamed file still opens. A DNG is
+  developed on import — black level, colour filter array, white balance and the
+  camera's own colour matrix — and lands in the bin as an ordinary picture you
+  can grade, animate and export like any other.
+- Only uncompressed DNGs open at present. A compressed DNG, or a vendor format
+  such as Canon CR3 or Nikon NEF, is refused with a message naming the camera
+  and format and saying the extended decoder is not loaded — rather than
+  failing silently or blaming the file.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.
@@ -527,6 +538,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-13:** Camera raw import. Uncompressed DNG files are developed and
+  opened; other raw formats are named and refused rather than failing quietly.
 
 - **2026-08-13:** Track a feature, in the Inspector for video clips — follows a
   point and holds it still in frame.
