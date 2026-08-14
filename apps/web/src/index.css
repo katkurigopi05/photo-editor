@@ -1398,6 +1398,22 @@ body {
 .seek {
   flex: 1;
 }
+/* Scoped rather than relying on a generic .hidden: this stylesheet has no
+   global one, only per-component rules like .theme-panel.hidden. */
+.shuttle-indicator.hidden {
+  display: none;
+}
+.shuttle-indicator {
+  min-width: 46px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent, #2bb3a3);
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
 .duration {
   color: var(--muted);
   font-variant-numeric: tabular-nums;

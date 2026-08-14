@@ -60,6 +60,7 @@ import {
   audioEnvelopeCurve,
   type PlaybackState,
   resolveAtTimeDeep,
+  setDirection,
   setRate,
 } from "@director/playback-controller";
 import {
@@ -295,6 +296,16 @@ import {
   identityCubeImage,
   LUT_SIZE,
 } from "@director/raster-tools";
+import {
+  nextEditPoint,
+  shuttleAfter,
+  shuttleLabel,
+  shuttleRate,
+  steppedTime,
+  STOPPED,
+  trimToPlayhead,
+  type Shuttle,
+} from "./keyboard-editing.js";
 import {
   curveForEasing,
   drawCurve,
@@ -8778,6 +8789,7 @@ function syncPlaybackDuration(): void {
 }
 
 function syncTransport(): void {
+  syncShuttleIndicator();
   timecodeEl.textContent = formatTime(playback.currentTimeUs);
   playBtn.textContent = playback.playing ? "⏸" : "▶";
   const dur = Number(playback.durationUs);
@@ -11085,9 +11097,44 @@ function bindEvents(): void {
     } else if (e.code === "Space") {
       e.preventDefault();
       if (!playback.playing) ensureAudioContextResumed();
+      // Space and the shuttle share a transport, so stopping with Space has to
+      // put the shuttle back to a stop too or the next L resumes at 8×.
+      shuttle = STOPPED;
+      playback = setDirection(playback, 1);
       playback = playback.playing ? pause(playback) : play(playback);
       syncTransport();
       syncAudioMonitors();
+    } else if (
+      (e.code === "KeyJ" || e.code === "KeyK" || e.code === "KeyL") &&
+      !e.metaKey &&
+      !e.ctrlKey
+    ) {
+      e.preventDefault();
+      applyShuttle(e.code === "KeyJ" ? "J" : e.code === "KeyK" ? "K" : "L");
+    } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+      e.preventDefault();
+      const frames = e.code === "ArrowLeft" ? -1 : 1;
+      // Shift steps a second, for crossing a clip rather than inspecting one.
+      const seq = activeSequence();
+      const fps = seq
+        ? Math.round(seq.frameRate.numerator / seq.frameRate.denominator)
+        : 1;
+      stepFrames(e.shiftKey ? frames * Math.max(1, fps) : frames);
+    } else if (e.code === "ArrowUp" || e.code === "ArrowDown") {
+      e.preventDefault();
+      jumpEditPoint(e.code === "ArrowUp" ? -1 : 1);
+    } else if (e.code === "Home" || e.code === "End") {
+      e.preventDefault();
+      playback = seek(
+        playback,
+        e.code === "Home" ? "0" : playback.durationUs,
+      );
+      syncTransport();
+      drawPreview();
+      renderTimeline();
+    } else if (e.code === "BracketLeft" || e.code === "BracketRight") {
+      e.preventDefault();
+      trimSelectedToPlayhead(e.code === "BracketLeft" ? "head" : "tail");
     }
   });
 
@@ -11118,6 +11165,146 @@ function bindEvents(): void {
       void importFiles(e.dataTransfer.files);
     }
   });
+}
+
+/**
+ * Keyboard-first navigation and trimming.
+ *
+ * The shuttle is session state, like everything else about playback: it is not
+ * part of the project and must not reach the command engine or the undo stack.
+ */
+let shuttle: Shuttle = STOPPED;
+
+/** One frame of the active sequence, in microseconds. */
+function frameDurationUs(): bigint {
+  const seq = activeSequence();
+  if (!seq) return 0n;
+  const { numerator, denominator } = seq.frameRate;
+  if (numerator <= 0 || denominator <= 0) return 0n;
+  // Exact: the frame rate is a rational for the same reason times are strings.
+  return (1_000_000n * BigInt(denominator)) / BigInt(numerator);
+}
+
+/** Every clip boundary in the active sequence, as edit points to step through. */
+function editPoints(): bigint[] {
+  const seq = activeSequence();
+  if (!seq) return [];
+  const out = new Set<bigint>([0n]);
+  for (const track of seq.tracks) {
+    for (const clip of track.clips) {
+      const start = BigInt(clip.timelineStartUs);
+      out.add(start);
+      out.add(start + BigInt(clip.timelineDurationUs));
+    }
+  }
+  return [...out];
+}
+
+/** Apply a J/K/L press to the transport. */
+function applyShuttle(key: "J" | "K" | "L"): void {
+  shuttle = shuttleAfter(shuttle, key);
+  playback = setDirection(
+    setRate(playback, shuttleRate(shuttle)),
+    shuttle.direction,
+  );
+  if (shuttle.playing) {
+    ensureAudioContextResumed();
+    playback = play(playback);
+  } else {
+    playback = pause(playback);
+    // Back to the rate the monitor control shows, so pressing K does not leave
+    // an 8× rate behind for the next ordinary Play.
+    playback = setRate(playback, monitorRate());
+  }
+  syncTransport();
+  syncAudioMonitors();
+}
+
+/** Show what the shuttle is doing, or nothing when it is stopped. */
+function syncShuttleIndicator(): void {
+  const el = $<HTMLSpanElement>("shuttle-indicator");
+  const label = shuttleLabel(shuttle);
+  el.textContent = label;
+  el.classList.toggle("hidden", label === "");
+}
+
+/** Move the playhead by whole frames. */
+function stepFrames(frames: number): void {
+  const at = steppedTime(
+    BigInt(playback.currentTimeUs),
+    frameDurationUs(),
+    frames,
+    BigInt(playback.durationUs),
+  );
+  playback = seek(playback, at.toString());
+  syncTransport();
+  drawPreview();
+  renderTimeline();
+}
+
+/** Jump to the next or previous cut. */
+function jumpEditPoint(direction: 1 | -1): void {
+  const at = nextEditPoint(
+    editPoints(),
+    BigInt(playback.currentTimeUs),
+    direction,
+  );
+  if (at === null) return;
+  playback = seek(playback, at.toString());
+  syncTransport();
+  drawPreview();
+  renderTimeline();
+}
+
+/**
+ * Trim the selected clip's head or tail to the playhead.
+ *
+ * Trimming the head moves the clip as well as its source in-point, so the frame
+ * under the playhead stays where it is — the same two commands the trim handles
+ * issue, in one gesture so it is one Undo.
+ */
+function trimSelectedToPlayhead(edge: "head" | "tail"): void {
+  const loc = locateClip(selectedClipId);
+  if (!loc) {
+    toast("Select a clip to trim.", true);
+    return;
+  }
+  const { clip } = loc;
+  const out = trimToPlayhead(
+    {
+      sourceInUs: BigInt(clip.sourceInUs),
+      timelineStartUs: BigInt(clip.timelineStartUs),
+      timelineDurationUs: BigInt(clip.timelineDurationUs),
+    },
+    BigInt(playback.currentTimeUs),
+    edge,
+  );
+  if (out === null) {
+    toast("Move the playhead inside the clip to trim to it.", true);
+    return;
+  }
+
+  session.beginGesture();
+  const committed = commit(
+    buildTrimClip(nextCtx(), {
+      sequenceId: activeSequenceId,
+      clipId: clip.id,
+      sourceInUs: out.sourceInUs.toString(),
+      sourceOutUs: (out.sourceInUs + out.timelineDurationUs).toString(),
+    }),
+  );
+  if (committed && edge === "head") {
+    commit(
+      buildMoveClip(nextCtx(), {
+        sequenceId: activeSequenceId,
+        clipId: clip.id,
+        targetTrackId: loc.track.id,
+        timelineStartUs: out.timelineStartUs.toString(),
+      }),
+    );
+  }
+  session.endGesture();
+  updateUI();
 }
 
 function splitSelectedClip(): void {

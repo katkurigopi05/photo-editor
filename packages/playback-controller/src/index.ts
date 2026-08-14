@@ -15,6 +15,7 @@ export {
   play,
   pause,
   seek,
+  setDirection,
   setRate,
   setLoopRegion,
   tick,

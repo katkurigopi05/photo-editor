@@ -5,6 +5,7 @@ import {
   play,
   seek,
   setLoopRegion,
+  setDirection,
   setRate,
   tick,
 } from "../src/index.js";
@@ -96,5 +97,77 @@ describe("loop region", () => {
     let s = createPlaybackState(DURATION);
     s = setLoopRegion(s, { startUs: "0", endUs: "1000000" });
     expect(setLoopRegion(s, null).loopRegion).toBeNull();
+  });
+});
+
+describe("direction", () => {
+  /**
+   * Reverse playback, as J/K/L shuttling needs it.
+   *
+   * Direction is separate from rate rather than a negative rate. `rate` is a
+   * Rational the exact tick arithmetic divides by, and it is asserted positive
+   * on the way in; making it signed would put a sign into every multiplication
+   * and division that reads it. A magnitude and a direction keep that
+   * arithmetic exactly as it was.
+   */
+
+  it("starts forward", () => {
+    expect(createPlaybackState(DURATION).direction).toBe(1);
+  });
+
+  it("runs time backwards when reversed", () => {
+    const s = setDirection(
+      play(seek(createPlaybackState(DURATION), "1000000")),
+      -1,
+    );
+    expect(tick(s, "250000").currentTimeUs).toBe("750000");
+  });
+
+  it("applies the rate to a reversed tick as well", () => {
+    // A 2× reverse shuttle must cover twice the ground, not half.
+    const s = setRate(
+      setDirection(play(seek(createPlaybackState(DURATION), "1000000")), -1),
+      { numerator: 2, denominator: 1 },
+    );
+    expect(tick(s, "250000").currentTimeUs).toBe("500000");
+  });
+
+  it("stops at zero rather than going negative", () => {
+    // Time before the start of the sequence does not exist, and a negative
+    // microsecond string would reach every consumer of currentTimeUs.
+    const s = setDirection(
+      play(seek(createPlaybackState(DURATION), "100000")),
+      -1,
+    );
+    const out = tick(s, "500000");
+    expect(out.currentTimeUs).toBe("0");
+    expect(out.playing).toBe(false);
+  });
+
+  it("wraps to the end of a loop region when running backwards", () => {
+    // Forward playback wraps start→end; reverse has to wrap end→start or a
+    // loop becomes a one-way trip the moment you shuttle back through it.
+    const s = setDirection(
+      play(
+        setLoopRegion(seek(createPlaybackState(DURATION), "1100000"), {
+          startUs: "1000000",
+          endUs: "1500000",
+        }),
+      ),
+      -1,
+    );
+    expect(tick(s, "200000").currentTimeUs).toBe("1400000");
+  });
+
+  it("refuses a direction that is neither forward nor back", () => {
+    expect(() =>
+      setDirection(createPlaybackState(DURATION), 0 as 1 | -1),
+    ).toThrow(RangeError);
+  });
+
+  it("does not mutate the state it is given", () => {
+    const s = createPlaybackState(DURATION);
+    setDirection(s, -1);
+    expect(s.direction).toBe(1);
   });
 });
