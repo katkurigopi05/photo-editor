@@ -7,6 +7,8 @@ import {
   unpackRows,
 } from "../src/unpack.js";
 import type { DngImageLayout } from "../src/dng.js";
+import { DNG_COMPRESSION } from "../src/dng.js";
+import { encodeLosslessJpeg } from "./ljpeg-encoder.js";
 
 /**
  * Unpacking sample bytes.
@@ -303,5 +305,190 @@ describe("unpackImage", () => {
 
   it("refuses an image with no strip or tile layout", () => {
     expect(unpackImage(new Uint8Array(16), layout())).toBeNull();
+  });
+});
+
+describe("unpackImage, losslessly compressed", () => {
+  /** One lossless-JPEG block holding `rows` of samples, as a DNG stores it. */
+  const block = (rows: number[][], components = 2): Uint8Array =>
+    encodeLosslessJpeg({
+      // A DNG splits a Bayer row across components so alternating colours are
+      // predicted separately, so the frame is narrower than the block.
+      width: (rows[0]?.length ?? 0) / components,
+      height: rows.length,
+      components,
+      precision: 16,
+      selector: 1,
+      samples: rows.flat(),
+    });
+
+  it("decodes a compressed strip", () => {
+    const rows = [
+      [10, 20, 30, 40],
+      [50, 60, 70, 80],
+    ];
+    const bytes = block(rows);
+    const out = unpackImage(
+      bytes,
+      layout({
+        compression: DNG_COMPRESSION.jpeg,
+        bitsPerSample: 16,
+        strips: { offsets: [0], byteCounts: [bytes.length], rowsPerStrip: 2 },
+      }),
+    );
+    expect([...out!]).toEqual(rows.flat());
+  });
+
+  it("assembles compressed tiles into one image", () => {
+    // The case a real camera produces. A tile placed at the wrong offset still
+    // yields a full-looking picture, just scrambled, so the values are chosen
+    // to make position obvious.
+    const topLeft = block([
+      [1, 2],
+      [5, 6],
+    ]);
+    const topRight = block([
+      [3, 4],
+      [7, 8],
+    ]);
+    const bottomLeft = block([
+      [9, 10],
+      [13, 14],
+    ]);
+    const bottomRight = block([
+      [11, 12],
+      [15, 16],
+    ]);
+
+    const bytes = new Uint8Array(
+      topLeft.length + topRight.length + bottomLeft.length + bottomRight.length,
+    );
+    const offsets: number[] = [];
+    const byteCounts: number[] = [];
+    let at = 0;
+    for (const tile of [topLeft, topRight, bottomLeft, bottomRight]) {
+      offsets.push(at);
+      byteCounts.push(tile.length);
+      bytes.set(tile, at);
+      at += tile.length;
+    }
+
+    const out = unpackImage(
+      bytes,
+      layout({
+        width: 4,
+        height: 4,
+        compression: DNG_COMPRESSION.jpeg,
+        bitsPerSample: 16,
+        tiles: { offsets, byteCounts, width: 2, height: 2 },
+      }),
+    );
+    expect([...out!]).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    ]);
+  });
+
+  it("leaves one unreadable tile black rather than losing the image", () => {
+    // A corrupt tile must cost that tile. Refusing the whole file would throw
+    // away a photograph over one damaged square.
+    const good = block([
+      [1, 2],
+      [3, 4],
+    ]);
+    const rubbish = Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7]);
+    const bytes = new Uint8Array(good.length + rubbish.length);
+    bytes.set(good, 0);
+    bytes.set(rubbish, good.length);
+
+    const out = unpackImage(
+      bytes,
+      layout({
+        width: 4,
+        height: 2,
+        compression: DNG_COMPRESSION.jpeg,
+        bitsPerSample: 16,
+        tiles: {
+          offsets: [0, good.length],
+          byteCounts: [good.length, rubbish.length],
+          width: 2,
+          height: 2,
+        },
+      }),
+    );
+    expect(out).not.toBe(null);
+    expect([...out!]).toEqual([1, 2, 0, 0, 3, 4, 0, 0]);
+  });
+
+  it("reads a block only from its own bytes", () => {
+    // A tile whose entropy data is cut short keeps asking for bits. What it
+    // gets must come from padding, not from whatever follows in the file.
+    //
+    // The trailing bytes here are 0xAA rather than another tile: a tile that
+    // follows starts with FF D8, which the bit reader already treats as a
+    // marker and stops at, so a neighbouring *JPEG* hides the bug. Trailing
+    // bytes with no 0xFF in them — padding, or a following TIFF structure —
+    // are read straight through unless the stored byte count stops it, and
+    // they decode into a full square of plausible values.
+    const damaged = block([
+      [100, 200],
+      [300, 400],
+    ]).subarray(0, -6);
+
+    const exact = unpackImage(
+      damaged,
+      layout({
+        width: 2,
+        height: 2,
+        compression: DNG_COMPRESSION.jpeg,
+        bitsPerSample: 16,
+        tiles: {
+          offsets: [0],
+          byteCounts: [damaged.length],
+          width: 2,
+          height: 2,
+        },
+      }),
+    );
+
+    const padded = new Uint8Array(damaged.length + 32).fill(0xaa);
+    padded.set(damaged, 0);
+    const withTrailing = unpackImage(
+      padded,
+      layout({
+        width: 2,
+        height: 2,
+        compression: DNG_COMPRESSION.jpeg,
+        bitsPerSample: 16,
+        tiles: {
+          offsets: [0],
+          byteCounts: [damaged.length],
+          width: 2,
+          height: 2,
+        },
+      }),
+    );
+
+    expect([...withTrailing!]).toEqual([...exact!]);
+  });
+
+  it("refuses a block whose frame is the wrong width for its tile", () => {
+    // A frame that decodes but describes a different geometry would be laid
+    // out row by row into the wrong places, producing a sheared picture.
+    const bytes = block([
+      [1, 2],
+      [3, 4],
+    ]);
+    const out = unpackImage(
+      bytes,
+      layout({
+        width: 4,
+        height: 2,
+        compression: DNG_COMPRESSION.jpeg,
+        bitsPerSample: 16,
+        strips: { offsets: [0], byteCounts: [bytes.length], rowsPerStrip: 2 },
+      }),
+    );
+    // Nothing placed, rather than placed wrongly.
+    expect([...out!]).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
   });
 });

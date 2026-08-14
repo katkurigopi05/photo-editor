@@ -27,6 +27,8 @@ export {
   type DngMetadata,
 } from "./dng.js";
 
+export { decodeLosslessJpeg, type LosslessJpeg } from "./ljpeg.js";
+
 export {
   createLibRawDecoder,
   LIBRAW_UNAVAILABLE,
