@@ -49,12 +49,50 @@ const DOCS = path.join(
 const DOCX = path.join(DOCS, "Project_Director_User_Manual.docx");
 const MARKDOWN = path.join(DOCS, "USER_MANUAL.md");
 
+/**
+ * Where the text being replaced ends, as an index into the Markdown.
+ *
+ * Returns `lineStart` when not replacing, so the caller inserts rather than
+ * overwrites. When replacing, a bullet may be wrapped over several lines, so
+ * the item ends at the next line that begins a new bullet, a heading, or a
+ * blank line — not at the first newline, which would leave the tail of the old
+ * sentence stranded under the new one.
+ */
+export function markdownItemEnd(text, lineStart, replace) {
+  if (!replace) return lineStart;
+  const rest = text.slice(lineStart);
+  const boundary = rest.search(/\n(?=\s*\n|- |#)/);
+  return lineStart + (boundary === -1 ? rest.length : boundary + 1);
+}
+
+/**
+ * Where the anchor's paragraph ends in the docx body, as an index.
+ *
+ * Returns `paragraphStart` when not replacing. Throws rather than guessing if
+ * the paragraph has no close tag: replacing on a bad index deletes whatever
+ * happens to follow, and a manual that silently loses a section is worse than
+ * one that fails to update.
+ */
+export function docxParagraphEnd(xml, at, paragraphStart, replace) {
+  if (!replace) return paragraphStart;
+  const close = xml.indexOf("</w:p>", at);
+  if (close === -1) {
+    throw new Error("could not find the end of the anchor's paragraph");
+  }
+  const end = close + "</w:p>".length;
+  if (end <= paragraphStart) {
+    throw new Error("the anchor's paragraph ends before it starts");
+  }
+  return end;
+}
+
 function parseArgs(argv) {
-  const out = { anchor: "", bullets: [], docxOnly: false };
+  const out = { anchor: "", bullets: [], docxOnly: false, replace: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--anchor") out.anchor = argv[++i] ?? "";
     else if (argv[i] === "--bullet") out.bullets.push(argv[++i] ?? "");
     else if (argv[i] === "--docx-only") out.docxOnly = true;
+    else if (argv[i] === "--replace") out.replace = true;
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
   if (!out.anchor) throw new Error("--anchor is required");
@@ -62,6 +100,9 @@ function parseArgs(argv) {
     throw new Error("at least one --bullet is required");
   return out;
 }
+
+/** Whether the document body still contains a run of plain text. */
+const installedContains = (xml, text) => xml.includes(escapeXml(text));
 
 const escapeXml = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -102,14 +143,17 @@ function checkMarkdown(anchor) {
   }
 }
 
-function patchMarkdown(anchor, bullets) {
+function patchMarkdown(anchor, bullets, replace) {
   const before = readFileSync(MARKDOWN, "utf8");
   const at = before.indexOf(anchor);
   const lineStart = before.lastIndexOf("\n", at) + 1;
+  // A bullet can be wrapped over several lines, so the item ends at the next
+  // line that starts a new one (or a blank line), not at the next newline.
+  const itemEnd = markdownItemEnd(before, lineStart, replace);
   const after =
     before.slice(0, lineStart) +
     bullets.map((b) => `- ${b}\n`).join("") +
-    before.slice(lineStart);
+    before.slice(itemEnd);
 
   if (after === before)
     throw new Error("the Markdown replacement changed nothing");
@@ -125,7 +169,9 @@ function patchMarkdown(anchor, bullets) {
 }
 
 function main() {
-  const { anchor, bullets, docxOnly } = parseArgs(process.argv.slice(2));
+  const { anchor, bullets, docxOnly, replace } = parseArgs(
+    process.argv.slice(2),
+  );
   // Both anchors are checked before either file is written, so a failure
   // leaves the manuals as they were rather than half-updated.
   if (!docxOnly) checkMarkdown(anchor);
@@ -157,10 +203,20 @@ function main() {
     if (paragraphStart < 0)
       throw new Error("could not find the anchor's paragraph");
 
+    // When replacing, the anchor's own paragraph is dropped rather than kept
+    // above the new text — otherwise a superseded sentence stays in the manual
+    // directly above the sentence that supersedes it.
+    const paragraphEnd = docxParagraphEnd(before, at, paragraphStart, replace);
     const after =
       before.slice(0, paragraphStart) +
       bullets.map(bulletXml).join("") +
-      before.slice(paragraphStart);
+      before.slice(paragraphEnd);
+
+    if (replace && installedContains(after, anchor)) {
+      throw new Error(
+        "replacement left the anchor text in the document; it would now appear twice",
+      );
+    }
 
     if (after === before) throw new Error("the replacement produced no change");
     writeFileSync(documentPath, after, "utf8");
@@ -199,7 +255,7 @@ function main() {
       );
     }
 
-    if (!docxOnly) patchMarkdown(anchor, bullets);
+    if (!docxOnly) patchMarkdown(anchor, bullets, replace);
 
     console.log(
       `Added ${bullets.length} bullet(s) to ${docxOnly ? "the Word manual" : "both manuals"}, ` +
@@ -210,8 +266,14 @@ function main() {
   }
 }
 
+// Guarded so the module can be imported by its tests without patching the real
+// manuals as a side effect of the import.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
 try {
-  main();
+  if (invokedDirectly) main();
 } catch (error) {
   console.error(
     `patch-manual-docx: ${error instanceof Error ? error.message : error}`,
