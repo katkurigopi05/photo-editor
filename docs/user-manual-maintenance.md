@@ -7,7 +7,19 @@ import behavior, or export option changes:
 
 1. Update `docs/USER_MANUAL.md`, the editable source of truth.
 2. Update `docs/Project_Director_User_Manual.docx` so users receive the same
-   instructions in Word format.
+   instructions in Word format. Use the script rather than editing the zip by
+   hand — it verifies the text is in the written file and fails loudly if not:
+
+   ```bash
+   node scripts/patch-manual-docx.mjs \
+     --anchor "a phrase that appears exactly once, just after the insert point" \
+     --bullet "The new sentence." --bullet "Another."
+   ```
+
+   Hand-editing went wrong four times in one session and once reached `main`,
+   with the Markdown claiming a feature the Word manual never mentioned.
+   `pnpm manual:check` cannot catch that: it checks the file *changed*, not
+   that it says anything in particular.
 3. If `apps/web/index.html`, `apps/web/src/index.css`, or
    `apps/web/src/main.ts` changed, run the editor and replace every affected
    image under `docs/assets/user-manual/`.
