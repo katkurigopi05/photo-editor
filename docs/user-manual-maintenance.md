@@ -47,6 +47,10 @@ manual remains correct.
 - `lut-panel.png`: the Lookup table panel in the Inspector. Capture with
   `locator.screenshot()` on the section — it sits below the fold, so a
   viewport clip region fails with "clipped area is outside the image".
+- `spill-panel.png`: the Spill Suppression panel in the photo editor, opened
+  on `test_media/photos/green-screen-900x1200.png` so the cast reading in the
+  panel shows a real measurement rather than zero. Capture with
+  `locator.screenshot()` on `#inspector` at a 1440x900 viewport.
 - `track-feature.png`: the Stabilise and Track panels in the Inspector, with a
   feature marked on the picker. Not a mode view — these sit below the fold, so
   the mode screenshots cannot show them.

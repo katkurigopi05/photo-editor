@@ -18,6 +18,8 @@ export {
   isPointwise,
 } from "./lut3d.js";
 
+export { suppressSpill, spillFraction, type SpillChannel } from "./spill.js";
+
 export {
   parseCube,
   writeCube,

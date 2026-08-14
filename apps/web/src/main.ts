@@ -240,6 +240,9 @@ import {
   unsharpMask,
   diffusionFill,
   colorKeyAlpha,
+  suppressSpill,
+  spillFraction,
+  type SpillChannel,
   cornerKeyColor,
   cropImage,
   resizeImage,
@@ -1359,6 +1362,7 @@ type RasterTool =
   | "sharpen"
   | "smartfill"
   | "bgremove"
+  | "spill"
   | "aibgremove";
 let rasterSession: RasterSession | null = null;
 let rasterEditingClipId: string | null = null;
@@ -1395,6 +1399,9 @@ const rasterOptions = {
   bgKeyColor: "#00ff00",
   bgThreshold: 0.12,
   bgSoftness: 0.1,
+  spillChannel: "green" as SpillChannel,
+  spillAmount: 1,
+  spillPreserveLuminance: true,
   aiModel: "fast" as "fast" | "accurate",
 };
 
@@ -9367,6 +9374,7 @@ const RASTER_TOOLS: Array<{ id: RasterTool; icon: string; label: string }> = [
   { id: "sharpen", icon: "◆", label: "Sharpen" },
   { id: "smartfill", icon: "🩹", label: "Smart Fill" },
   { id: "bgremove", icon: "🪄", label: "Remove Background" },
+  { id: "spill", icon: "💧", label: "Spill Suppression" },
   { id: "aibgremove", icon: "🧠", label: "AI Remove Background" },
 ];
 
@@ -10296,6 +10304,84 @@ function renderRasterPanel(): void {
         renderRasterPanel();
       });
       s.appendChild(apply);
+      body.appendChild(s);
+      break;
+    }
+    case "spill": {
+      const s = section("Spill Suppression");
+      const hint = document.createElement("p");
+      hint.className = "raster-hint";
+      hint.textContent =
+        "Removes the colour a green or blue screen throws onto its subject. Keying cuts the background " +
+        "out; it does nothing about the light the background reflected, which survives the key and makes " +
+        "the subject look pasted on. Run this after keying.";
+      s.appendChild(hint);
+
+      const measured = spillFraction(rasterSession.image, rasterOptions.spillChannel);
+      const reading = document.createElement("p");
+      reading.className = "raster-hint";
+      reading.textContent =
+        measured < 0.001
+          ? "No measurable spill in this photo — applying this will change very little."
+          : `About ${(measured * 100).toFixed(1)}% of pixels carry a ${rasterOptions.spillChannel} cast.`;
+      s.appendChild(reading);
+
+      const channelField = document.createElement("div");
+      channelField.className = "control";
+      const channelLabel = document.createElement("label");
+      channelLabel.textContent = "Screen colour";
+      const channelSelect = document.createElement("select");
+      channelSelect.className = "theme-name-input";
+      for (const c of ["green", "blue", "red"] as const) {
+        const option = document.createElement("option");
+        option.value = c;
+        option.textContent = c[0]!.toUpperCase() + c.slice(1);
+        option.selected = rasterOptions.spillChannel === c;
+        channelSelect.appendChild(option);
+      }
+      channelSelect.addEventListener("change", () => {
+        rasterOptions.spillChannel = channelSelect.value as SpillChannel;
+        // Re-rendered so the reading above reflects the channel just chosen.
+        renderRasterPanel();
+      });
+      channelField.append(channelLabel, channelSelect);
+      s.appendChild(channelField);
+
+      s.appendChild(
+        sliderControl("Amount", 0, 1, 0.05, rasterOptions.spillAmount, (v) => (rasterOptions.spillAmount = v)),
+      );
+
+      const lumaRow = document.createElement("label");
+      lumaRow.className = "control";
+      const lumaCb = document.createElement("input");
+      lumaCb.type = "checkbox";
+      lumaCb.checked = rasterOptions.spillPreserveLuminance;
+      lumaCb.addEventListener("change", () => {
+        rasterOptions.spillPreserveLuminance = lumaCb.checked;
+      });
+      lumaRow.append(lumaCb, document.createTextNode(" Keep brightness"));
+      s.appendChild(lumaRow);
+
+      const applySpill = document.createElement("button");
+      applySpill.className = "tool primary";
+      applySpill.textContent = "Apply";
+      // The checkbox row above is inline, so without this the button rides up
+      // alongside its label and overlaps the text.
+      applySpill.style.display = "block";
+      applySpill.style.marginTop = "12px";
+      applySpill.addEventListener("click", () => {
+        if (!rasterSession) return;
+        rasterSession.snapshot();
+        rasterSession.image = suppressSpill(
+          rasterSession.image,
+          rasterOptions.spillChannel,
+          rasterOptions.spillAmount,
+          rasterOptions.spillPreserveLuminance,
+        );
+        redrawRasterCanvas();
+        renderRasterPanel();
+      });
+      s.appendChild(applySpill);
       body.appendChild(s);
       break;
     }

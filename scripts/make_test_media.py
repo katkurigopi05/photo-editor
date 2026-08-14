@@ -150,6 +150,65 @@ def portrait_subject(path: Path) -> None:
     _save_png(image, path)
 
 
+def green_screen_subject(path: Path) -> None:
+    """A subject shot against a green screen, carrying real spill.
+
+    Spill suppression cannot be judged against a subject pasted onto green: the
+    whole point is the light the screen *reflected* onto the subject, which a
+    clean composite does not have. So the green is mixed back into the subject
+    near its edges, strongest at the silhouette and falling off inward — which
+    is how it behaves on a real set, and why hair suffers worst.
+
+    Without this the tool has nothing to remove, `spillFraction` reads zero on a
+    picture that looks green-screened, and a test built on it would pass whether
+    the suppression worked or not.
+    """
+    width, height = 900, 1200
+    screen = (28, 196, 62)
+    image = Image.new("RGB", (width, height), screen)
+    draw = ImageDraw.Draw(image)
+
+    # Screens are lit unevenly; a perfectly flat one would make keying trivial.
+    ramp = _linear_ramp(width, height, 20.0)[..., None]
+    image = Image.fromarray(
+        (np.asarray(image, dtype=np.float64) * (0.9 + 0.16 * ramp))
+        .clip(0, 255)
+        .round()
+        .astype(np.uint8),
+        "RGB",
+    )
+    draw = ImageDraw.Draw(image)
+
+    skin = (226, 178, 146)
+    shirt = (168, 148, 138)  # pale: pale wardrobe picks up the most spill
+    hair = (58, 44, 40)
+
+    # A mask of the subject, so spill can be applied by distance from its edge.
+    subject = Image.new("L", (width, height), 0)
+    sd = ImageDraw.Draw(subject)
+    for target, colour in ((draw, None), (sd, 255)):
+        target.ellipse([300, 690, 600, 1200], fill=colour or shirt)
+        target.rectangle([405, 600, 495, 730], fill=colour or skin)
+        target.ellipse([330, 300, 570, 640], fill=colour or skin)
+        target.chord([330, 270, 570, 560], 180, 360, fill=colour or hair)
+
+    # Distance from the edge, cheaply: blurring the mask gives a band that is
+    # strongest at the silhouette and fades inward, which is the falloff wanted.
+    inner = subject.filter(ImageFilter.GaussianBlur(18))
+    edge = np.asarray(inner, dtype=np.float64) / 255.0
+    mask = np.asarray(subject, dtype=np.float64) / 255.0
+    # Inside the subject, and near its boundary.
+    spill = (mask * (1.0 - edge) * 2.2).clip(0, 0.55)[..., None]
+
+    pixels = np.asarray(image, dtype=np.float64)
+    green_light = np.array(screen, dtype=np.float64)
+    lit = pixels * (1.0 - spill) + green_light * spill
+    image = Image.fromarray(lit.clip(0, 255).round().astype(np.uint8), "RGB")
+
+    image = image.filter(ImageFilter.GaussianBlur(0.6))
+    _save_png(image, path)
+
+
 def detail_texture(path: Path) -> None:
     """Multi-octave noise, saved as JPEG.
 
@@ -467,6 +526,7 @@ def main() -> None:
     gradient_landscape(photos / "gradient-landscape-1600x900.png")
     colour_chart(photos / "colour-chart-1024x1024.png")
     portrait_subject(photos / "portrait-subject-900x1200.png")
+    green_screen_subject(photos / "green-screen-900x1200.png")
     detail_texture(photos / "detail-texture-1280x960.jpg")
     alpha_badge(photos / "alpha-badge-512x512.png")
     tiny_swatch(photos / "tiny-swatch-64x64.png")
