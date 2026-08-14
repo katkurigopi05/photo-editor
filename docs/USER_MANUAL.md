@@ -127,10 +127,6 @@ when the system asks for reduced motion.
   black level, colour filter array, white balance and the camera's own colour
   matrix — and lands in the bin as an ordinary picture you can grade, animate
   and export like any other.
-- Only uncompressed DNGs open at present. A compressed DNG, or a vendor format
-  such as Canon CR3 or Nikon NEF, is refused with a message naming the camera
-  and format and saying the extended decoder is not loaded, rather than failing
-  silently or blaming the file.
 ![The Lookup table panel](assets/user-manual/lut-panel.png)
 
 - Import a lookup table with ⬆ Import .cube under Lookup table in the
