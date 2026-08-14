@@ -8,6 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "dev": "pnpm --filter @director/web dev",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "manual:check": "node scripts/check-user-manual-sync.mjs",

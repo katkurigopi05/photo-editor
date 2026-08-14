@@ -528,6 +528,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
+- **2026-08-13:** Reviewed; no user-visible change. The editor can now read and
+  write `.cube` colour lookup tables internally. Nothing in the interface offers
+  it yet, so using the editor is unchanged.
+
 - **2026-08-13:** Track a feature, in the Inspector for video clips — follows a
   point and holds it still in frame.
 
