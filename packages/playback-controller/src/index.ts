@@ -26,6 +26,8 @@ export { planPrefetch, type FrameRequest } from "./prefetch.js";
 
 export {
   applyAnimationEasing,
+  applyBezierEasing,
+  easeKeyframe,
   sampleAnimationTrack,
   sampleClipAnimations,
   type SampledClipAnimations,

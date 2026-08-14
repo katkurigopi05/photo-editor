@@ -115,6 +115,7 @@ when the system asks for reduced motion.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
+- A keyframe can carry a hand-drawn easing curve as well as one of the named easings. Nothing in the interface draws one yet; when it does, the curve will shape the move leaving that keyframe and can overshoot its target and settle, which the named easings cannot.
 - Spill Suppression, in the photo editor's tool rail, removes the colour a green or blue screen throws onto its subject. Keying cuts the background out; it does nothing about the light the background reflected, which survives the key and makes the subject look pasted on. Run it after keying.
 - The panel reports how much of the picture carries a cast before you apply anything, so you can tell whether it is worth using. Amount dials the strength down for a subject that really is green, and Keep brightness puts back the brightness the suppression removes — without it, edges darken into what looks like a bad matte.
 - Camera raw files are recognised by their contents rather than their
@@ -556,6 +557,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 - **2026-08-13:** Spill Suppression in the photo editor — removes the green or
   blue a screen throws onto its subject, after keying.
+
+- **2026-08-13:** Reviewed; no user-visible change. Keyframes can now carry a
+  hand-drawn easing curve. Nothing in the interface draws one yet, so the five
+  named easings are still what you choose from.
 
 - **2026-08-13:** Import and export `.cube` colour lookup tables, in the
   Inspector.
