@@ -1,4 +1,8 @@
 # Project Director User Manual
+- Both uncompressed and losslessly compressed DNGs open — the second being what cameras actually write; uncompressed ones are mostly conversions. A vendor format such as Canon CR3 or Nikon NEF is still refused with a message naming the camera and format and saying the extended decoder is not loaded, rather than failing silently or blaming the file.
+- A DNG using lossy JPEG, or one holding an already-demosaiced image, is named rather than refused blankly. A single damaged tile costs that tile and leaves it black; the rest of the photograph still opens.
+- **2026-08-13:** Losslessly compressed DNGs now open — the compression cameras
+  actually write. This supersedes the note below saying only uncompressed ones did.
 
 Photo · Video · Animation · GIF  
 Project version 0.1.0 · Updated August 8, 2026
@@ -116,13 +120,18 @@ when the system asks for reduced motion.
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
 - A keyframe can carry a hand-drawn easing curve as well as one of the named easings. Nothing in the interface draws one yet; when it does, the curve will shape the move leaving that keyframe and can overshoot its target and settle, which the named easings cannot.
+- Spill Suppression, in the photo editor's tool rail, removes the colour a green or blue screen throws onto its subject. Keying cuts the background out; it does nothing about the light the background reflected, which survives the key and makes the subject look pasted on. Run it after keying.
+- The panel reports how much of the picture carries a cast before you apply anything, so you can tell whether it is worth using. Amount dials the strength down for a subject that really is green, and Keep brightness puts back the brightness the suppression removes — without it, edges darken into what looks like a bad matte.
 - Camera raw files are recognised by their contents rather than their
   extension, so a renamed file still opens. A DNG is developed on import —
   black level, colour filter array, white balance and the camera's own colour
   matrix — and lands in the bin as an ordinary picture you can grade, animate
   and export like any other.
-- Both uncompressed and losslessly compressed DNGs open — the second being what cameras actually write; uncompressed ones are mostly conversions. A vendor format such as Canon CR3 or Nikon NEF is still refused with a message naming the camera and format and saying the extended decoder is not loaded, rather than failing silently or blaming the file.
-- A DNG using lossy JPEG, or one holding an already-demosaiced image, is named rather than refused blankly. A single damaged tile costs that tile and leaves it black; the rest of the photograph still opens.
+- Only uncompressed DNGs open at present. A compressed DNG, or a vendor format
+  such as Canon CR3 or Nikon NEF, is refused with a message naming the camera
+  and format and saying the extended decoder is not loaded, rather than failing
+  silently or blaming the file.
+![The Lookup table panel](assets/user-manual/lut-panel.png)
 
 - Import a lookup table with ⬆ Import .cube under Lookup table in the
   Inspector. A `.cube` from Resolve, Premiere or a LUT pack becomes an ordinary
@@ -550,8 +559,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## Revision notes
 
-- **2026-08-13:** Losslessly compressed DNGs now open — the compression cameras
-  actually write. This supersedes the note below saying only uncompressed ones did.
+- **2026-08-13:** Spill Suppression in the photo editor — removes the green or
+  blue a screen throws onto its subject, after keying.
 
 - **2026-08-13:** Reviewed; no user-visible change. Keyframes can now carry a
   hand-drawn easing curve. Nothing in the interface draws one yet, so the five
