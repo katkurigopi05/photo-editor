@@ -119,7 +119,8 @@ when the system asks for reduced motion.
 - Large files import without being loaded into memory: the file is read in
   chunks while a progress line shows how far along it is. Multi-gigabyte video
   imports as normal.
-- A keyframe can carry a hand-drawn easing curve as well as one of the named easings. Nothing in the interface draws one yet; when it does, the curve will shape the move leaving that keyframe and can overshoot its target and settle, which the named easings cannot.
+- Curve, beside the easing menu on an animation control, draws that keyframe's easing by hand. Drag either handle: sideways is time and stays inside the box, up and down is the value and may leave it — which is how a move overshoots its target and settles, the one thing the named easings cannot do.
+- A drawn curve supersedes the named easing, so choosing a name from the menu (or pressing Use named easing) discards it. Changing the keyframe's value keeps it. A hold cannot be drawn, because a hold is a step rather than a curve.
 - Spill Suppression, in the photo editor's tool rail, removes the colour a green or blue screen throws onto its subject. Keying cuts the background out; it does nothing about the light the background reflected, which survives the key and makes the subject look pasted on. Run it after keying.
 - The panel reports how much of the picture carries a cast before you apply anything, so you can tell whether it is worth using. Amount dials the strength down for a subject that really is green, and Keep brightness puts back the brightness the suppression removes — without it, edges darken into what looks like a bad matte.
 - Camera raw files are recognised by their contents rather than their
@@ -554,6 +555,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-13:** Curve, on animation controls — draws a keyframe's easing by
+  hand, including overshoot. This supersedes the note below saying nothing in
+  the interface drew one.
 
 - **2026-08-13:** Spill Suppression in the photo editor — removes the green or
   blue a screen throws onto its subject, after keying.

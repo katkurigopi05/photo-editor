@@ -51,6 +51,14 @@ manual remains correct.
   on `test_media/photos/green-screen-900x1200.png` so the cast reading in the
   panel shows a real measurement rather than zero. Capture with
   `locator.screenshot()` on `#inspector` at a 1440x900 viewport.
+- `easing-curve.png`: the hand-drawn easing curve editor, opened on a Scale
+  keyframe of a Star cartoon clip with the loop-pulse preset, with the first
+  handle dragged into an overshoot — overshoot is what the named easings
+  cannot do, so a screenshot of an ordinary curve would not show the point.
+  Capture with `locator.screenshot()` on the animation control. Call
+  `scrollIntoViewIfNeeded()` before reading the canvas box: it sits below the
+  fold, and `page.mouse` coordinates are viewport-relative, so without it the
+  drag lands outside the window and the capture silently shows no curve.
 - `track-feature.png`: the Stabilise and Track panels in the Inspector, with a
   feature marked on the picker. Not a mode view — these sit below the fold, so
   the mode screenshots cannot show them.
