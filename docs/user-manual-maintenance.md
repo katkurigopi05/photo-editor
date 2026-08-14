@@ -59,6 +59,9 @@ manual remains correct.
   `scrollIntoViewIfNeeded()` before reading the canvas box: it sits below the
   fold, and `page.mouse` coordinates are viewport-relative, so without it the
   drag lands outside the window and the capture silently shows no curve.
+- `raw-import.png`: a developed DNG in the preview. Regenerate by importing
+  `test_media/photos/sensor-ramp-64x48.dng`, which is produced by
+  `node scripts/make_test_dng.mjs`.
 - `track-feature.png`: the Stabilise and Track panels in the Inspector, with a
   feature marked on the picker. Not a mode view — these sit below the fold, so
   the mode screenshots cannot show them.

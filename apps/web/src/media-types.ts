@@ -31,6 +31,19 @@ export const EXTENSION_KINDS: Record<string, MediaKind> = {
   tiff: "image",
   heic: "image",
   heif: "image",
+  // Camera raw. Listed as images so the import path accepts them; what they
+  // actually are is decided from their bytes, because these extensions are
+  // routinely wrong and several of these formats are TIFF underneath.
+  dng: "image",
+  cr2: "image",
+  cr3: "image",
+  nef: "image",
+  arw: "image",
+  orf: "image",
+  rw2: "image",
+  raf: "image",
+  pef: "image",
+  srw: "image",
   // video
   mp4: "video",
   m4v: "video",

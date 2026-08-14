@@ -209,6 +209,7 @@ import {
   type SpeedRamp,
 } from "@director/project-schema";
 import { detectKind, isMediaFile } from "./media-types.js";
+import { developRaw } from "./raw-import.js";
 import {
   createGpuLutRenderer,
   type GpuLutRenderer,
@@ -2130,7 +2131,16 @@ async function importFiles(files: FileList | File[]): Promise<void> {
   const media = Array.from(files).filter(isMediaFile);
   const skipped = Array.from(files).length - media.length;
   for (const file of media) {
-    await importFile(file);
+    // Camera raw is developed into an image first, so everything downstream —
+    // the bin, the timeline, effects, export — works without knowing raw
+    // exists. `not-raw` is the ordinary case and must not be reported: every
+    // JPEG passes through here.
+    const raw = await developRaw(file);
+    if (raw.kind === "refused") {
+      toast(raw.reason, true);
+      continue;
+    }
+    await importFile(raw.kind === "developed" ? raw.file : file);
   }
   if (skipped > 0) {
     toast(

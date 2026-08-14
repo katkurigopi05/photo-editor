@@ -83,6 +83,9 @@ importers:
       '@director/raster-tools':
         specifier: workspace:*
         version: link:../../packages/raster-tools
+      '@director/raw-decode':
+        specifier: workspace:*
+        version: link:../../packages/raw-decode
       '@director/ui-kit':
         specifier: workspace:*
         version: link:../../packages/ui-kit

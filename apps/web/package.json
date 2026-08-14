@@ -25,6 +25,7 @@
     "@director/export-engine": "workspace:*",
     "@director/motion-tracking": "workspace:*",
     "@director/playback-controller": "workspace:*",
+    "@director/raw-decode": "workspace:*",
     "@director/project-schema": "workspace:*",
     "@director/raster-tools": "workspace:*",
     "@director/ui-kit": "workspace:*",
