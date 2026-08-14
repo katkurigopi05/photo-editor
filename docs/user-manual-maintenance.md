@@ -6,9 +6,10 @@ When a mode, visible control, editing tool, effect, animation, transition,
 import behavior, or export option changes:
 
 1. Update `docs/USER_MANUAL.md`, the editable source of truth.
-2. Update `docs/Project_Director_User_Manual.docx` so users receive the same
-   instructions in Word format. Use the script rather than editing the zip by
-   hand — it verifies the text is in the written file and fails loudly if not:
+2. Add the same text to `docs/Project_Director_User_Manual.docx`. The script
+   below updates **both** manuals from one command and verifies each afterwards,
+   so they cannot drift apart. It checks both anchors before writing either, so
+   a bad anchor leaves the manuals untouched rather than half-updated:
 
    ```bash
    node scripts/patch-manual-docx.mjs \
@@ -16,10 +17,11 @@ import behavior, or export option changes:
      --bullet "The new sentence." --bullet "Another."
    ```
 
-   Hand-editing went wrong four times in one session and once reached `main`,
-   with the Markdown claiming a feature the Word manual never mentioned.
-   `pnpm manual:check` cannot catch that: it checks the file *changed*, not
-   that it says anything in particular.
+   Hand-editing went wrong repeatedly in one session and once reached `main`
+   with *neither* manual carrying text both commits claimed was added.
+   `pnpm manual:check` cannot catch that: it checks the files *changed*, not
+   that they say anything in particular. Pass `--docx-only` when the two
+   formats genuinely need different wording; it still verifies.
 3. If `apps/web/index.html`, `apps/web/src/index.css`, or
    `apps/web/src/main.ts` changed, run the editor and replace every affected
    image under `docs/assets/user-manual/`.
