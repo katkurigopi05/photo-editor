@@ -42,6 +42,9 @@ manual remains correct.
 - `video-mode.png`: selected video, transport, and timeline.
 - `animation-mode.png`: generated shape, animation controls, and timeline.
 - `gif-mode.png`: populated timeline and GIF export controls.
+- `lut-panel.png`: the Lookup table panel in the Inspector. Capture with
+  `locator.screenshot()` on the section — it sits below the fold, so a
+  viewport clip region fails with "clipped area is outside the image".
 - `track-feature.png`: the Stabilise and Track panels in the Inspector, with a
   feature marked on the picker. Not a mode view — these sit below the fold, so
   the mode screenshots cannot show them.
