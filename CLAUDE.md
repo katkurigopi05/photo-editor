@@ -21,6 +21,12 @@ Raster pixel editing (brush/crop/clone/AI bg-remove) is a SEPARATE local session
 ## Testing standard
 Verify UI fixes LIVE via Playwright against running dev server, not just unit tests or code review. User has repeatedly caught claimed-but-unverified fixes.
 
+## Before every push
+`pnpm sync` — merges main and re-applies this branch's manual bullets. Both manuals
+are touched by every branch and the docx is binary, so concurrent branches conflict
+by construction, not by chance. After pushing, confirm the PR reports `MERGEABLE`
+(`gh pr view N --json mergeable`) — a clean local merge is a different claim.
+
 ## Full gate before commit
 TS: lint, typecheck, test, build, format:check. Rust: fmt --check, clippy -D warnings, test.
 
