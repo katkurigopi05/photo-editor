@@ -28,7 +28,11 @@ export const mediaHintSchema = z
     name: z.string().min(1),
     checksum: z.string().regex(/^[0-9a-f]{64}$/),
     fileSizeBytes: z.string().regex(/^(0|[1-9][0-9]*)$/),
-    kind: z.enum(["image", "video", "audio", "generated"]),
+    // "lut" is here because an imported lookup table is a real file on disk:
+    // it can go missing and it can be relinked by checksum, which is exactly
+    // what a hint is for. Adjustment layers and compound clips are not listed,
+    // because they have no file to find.
+    kind: z.enum(["image", "video", "audio", "generated", "lut"]),
   })
   .strict();
 
