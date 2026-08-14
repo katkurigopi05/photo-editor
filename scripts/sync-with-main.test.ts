@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addedBlocks, paragraphTexts } from "./sync-with-main.mjs";
+import { addedBlocks, paragraphTexts, removeBlock } from "./sync-with-main.mjs";
 
 /**
  * Finding what a branch added to a manual, and what it sat above.
@@ -87,5 +87,49 @@ describe("paragraphTexts", () => {
 
   it("returns an empty string for a paragraph with no text", () => {
     expect(paragraphTexts("<w:p><w:pPr/></w:p>")).toEqual([""]);
+  });
+});
+
+describe("addedBlocks, read backwards, finds what a branch removed", () => {
+  it("reports a deleted bullet when the arguments are swapped", () => {
+    // A branch that replaces text deletes as well as adds. Carrying only the
+    // additions puts main's sentence back beside its replacement, so the manual
+    // states a thing and its opposite a paragraph apart.
+    const before = ["- one", "- stale", "- two"];
+    const after = ["- one", "- fresh", "- two"];
+    expect(addedBlocks(after, before)).toEqual([
+      { lines: ["- stale"], follows: "- two" },
+    ]);
+  });
+});
+
+describe("removeBlock", () => {
+  const lines = ["- one", "- stale text", "  wrapped on", "- two"];
+
+  it("takes out the whole block, wrapped lines included", () => {
+    const block = { lines: ["- stale text", "  wrapped on"], follows: "- two" };
+    expect(removeBlock(lines, block, "a bullet")).toEqual(["- one", "- two"]);
+  });
+
+  it("does nothing when main already removed it", () => {
+    // Both sides deleting the same sentence is agreement, not a conflict.
+    const block = { lines: ["- gone already"], follows: "- two" };
+    expect(removeBlock(lines, block, "a bullet")).toEqual(lines);
+  });
+
+  it("refuses when main has rewritten the passage around it", () => {
+    // The first line is still there but the block no longer matches, so
+    // deleting by partial match would take out somebody else's sentence.
+    const block = {
+      lines: ["- stale text", "  a different continuation"],
+      follows: "- two",
+    };
+    expect(() => removeBlock(lines, block, "a bullet")).toThrow(/rewritten/);
+  });
+
+  it("leaves an empty block alone", () => {
+    expect(removeBlock(lines, { lines: [], follows: null }, "x")).toEqual(
+      lines,
+    );
   });
 });
