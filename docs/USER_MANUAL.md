@@ -121,11 +121,8 @@ when the system asks for reduced motion.
   black level, colour filter array, white balance and the camera's own colour
   matrix — and lands in the bin as an ordinary picture you can grade, animate
   and export like any other.
-- Only uncompressed DNGs open at present. A compressed DNG, or a vendor format
-  such as Canon CR3 or Nikon NEF, is refused with a message naming the camera
-  and format and saying the extended decoder is not loaded, rather than failing
-  silently or blaming the file.
-![The Lookup table panel](assets/user-manual/lut-panel.png)
+- Both uncompressed and losslessly compressed DNGs open — the second being what cameras actually write; uncompressed ones are mostly conversions. A vendor format such as Canon CR3 or Nikon NEF is still refused with a message naming the camera and format and saying the extended decoder is not loaded, rather than failing silently or blaming the file.
+- A DNG using lossy JPEG, or one holding an already-demosaiced image, is named rather than refused blankly. A single damaged tile costs that tile and leaves it black; the rest of the photograph still opens.
 
 - Import a lookup table with ⬆ Import .cube under Lookup table in the
   Inspector. A `.cube` from Resolve, Premiere or a LUT pack becomes an ordinary
@@ -552,6 +549,9 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-13:** Losslessly compressed DNGs now open — the compression cameras
+  actually write. This supersedes the note below saying only uncompressed ones did.
 
 - **2026-08-13:** Reviewed; no user-visible change. Keyframes can now carry a
   hand-drawn easing curve. Nothing in the interface draws one yet, so the five

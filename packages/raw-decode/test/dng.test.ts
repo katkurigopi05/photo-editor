@@ -274,9 +274,9 @@ describe("readDng", () => {
     expect(dng!.model).toBe("R5 II");
   });
 
-  it("reports a compressed DNG as not decodable, naming the compression", () => {
-    // Most DNGs in the wild are losslessly compressed. Saying so is what lets
-    // the app explain itself instead of refusing an unnamed file.
+  it("accepts a losslessly compressed DNG, which is most of them", () => {
+    // Lossless JPEG is what cameras actually write; uncompressed DNGs are
+    // mostly conversions. This used to be refused.
     const dng = readDng(
       buildDng([
         dngVersion(),
@@ -285,8 +285,24 @@ describe("readDng", () => {
         ),
       ]),
     );
+    expect(dng!.decodable).toBe(true);
+    expect(dng!.reason).toBeUndefined();
+    expect(dng!.raw.width).toBe(100);
+  });
+
+  it("still names a compression it cannot read", () => {
+    // The reporting path has to keep working, or an unreadable file goes back
+    // to being refused without explanation.
+    const dng = readDng(
+      buildDng([
+        dngVersion(),
+        ...cfaIfd(100, 80).map((t) =>
+          t.tag === 0x0103 ? { ...t, value: DNG_COMPRESSION.lossyJpeg } : t,
+        ),
+      ]),
+    );
     expect(dng!.decodable).toBe(false);
-    expect(dng!.reason).toContain("lossless JPEG");
+    expect(dng!.reason).toContain("lossy JPEG");
     // Still reports the size: knowing what it is remains useful.
     expect(dng!.raw.width).toBe(100);
   });

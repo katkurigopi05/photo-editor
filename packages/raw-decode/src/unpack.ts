@@ -1,4 +1,6 @@
 import type { CfaColour, DngImageLayout } from "./dng.js";
+import { DNG_COMPRESSION } from "./dng.js";
+import { decodeLosslessJpeg } from "./ljpeg.js";
 
 /**
  * Turning a DNG's sample bytes into sensor values, and those into normalised
@@ -150,11 +152,57 @@ export function normaliseSamples(
 }
 
 /**
- * Read every sample of an uncompressed CFA image.
+ * Turn one stored block — a strip or a tile — into samples.
+ *
+ * Uncompressed blocks are bit-unpacked; lossless-JPEG blocks are decoded. Both
+ * produce `width * rows` samples, so the assembly below does not care which the
+ * file used, which is the same reason strips and tiles are unified there.
+ *
+ * A block that fails to decode returns null rather than throwing. One
+ * unreadable tile in a photograph should cost that tile — the caller leaves it
+ * black — not the whole import.
+ */
+function decodeBlock(
+  bytes: Uint8Array,
+  offset: number,
+  byteCount: number,
+  width: number,
+  rows: number,
+  layout: DngImageLayout,
+): Uint16Array | null {
+  if (layout.compression === DNG_COMPRESSION.none) {
+    return unpackRows(bytes, offset, width, rows, layout.bitsPerSample);
+  }
+
+  // Bounded by the stored byte count, so a decoder that loses synchronisation
+  // cannot wander into the next tile and produce plausible nonsense.
+  const end =
+    byteCount > 0 ? Math.min(bytes.length, offset + byteCount) : bytes.length;
+  const frame = decodeLosslessJpeg(bytes.subarray(offset, end));
+  if (frame === null) return null;
+
+  const decoded = frame.width * frame.components;
+  if (decoded !== width) return null;
+  const wanted = width * rows;
+  if (frame.samples.length < wanted) {
+    // A frame shorter than the block it describes: keep what arrived rather
+    // than discarding a mostly-good tile.
+    const padded = new Uint16Array(wanted);
+    padded.set(
+      frame.samples.subarray(0, Math.min(frame.samples.length, wanted)),
+    );
+    return padded;
+  }
+  return frame.samples.subarray(0, wanted);
+}
+
+/**
+ * Read every sample of a CFA image.
  *
  * Strips and tiles are alternative layouts and DNG uses one or the other. Both
  * are assembled into a single row-major buffer here, so nothing downstream has
- * to know which the file used.
+ * to know which the file used — nor whether the blocks were stored plain or
+ * losslessly compressed.
  */
 export function unpackImage(
   bytes: Uint8Array,
@@ -169,7 +217,7 @@ export function unpackImage(
   const out = new Uint16Array(width * height);
 
   if (layout.tiles) {
-    const { offsets, width: tw, height: th } = layout.tiles;
+    const { offsets, byteCounts, width: tw, height: th } = layout.tiles;
     if (tw <= 0 || th <= 0) return null;
     const across = Math.ceil(width / tw);
 
@@ -179,7 +227,17 @@ export function unpackImage(
       // Tiles are whole even at the edges: a tile past the image boundary is
       // padded by the encoder, so the full tile is read and the surplus
       // discarded when copying.
-      const tile = unpackRows(bytes, offset, tw, th, bitsPerSample);
+      const tile = decodeBlock(
+        bytes,
+        offset,
+        byteCounts[index] ?? 0,
+        tw,
+        th,
+        layout,
+      );
+      // One unreadable tile leaves a black square; the rest of the photograph
+      // still arrives.
+      if (tile === null) return;
       for (let y = 0; y < th; y += 1) {
         const destY = tileY + y;
         if (destY >= height) break;
@@ -203,8 +261,16 @@ export function unpackImage(
     // The last strip is usually short; reading a full one would run past the
     // image and, on a tight buffer, past the file.
     const rowsHere = Math.min(perStrip, height - firstRow);
-    const strip = unpackRows(bytes, offset, width, rowsHere, bitsPerSample);
-    out.set(strip, firstRow * width);
+    const strip = decodeBlock(
+      bytes,
+      offset,
+      strips.byteCounts[index] ?? 0,
+      width,
+      rowsHere,
+      layout,
+    );
+    if (strip === null) return;
+    out.set(strip.subarray(0, rowsHere * width), firstRow * width);
   });
 
   return out;

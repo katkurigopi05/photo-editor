@@ -201,6 +201,9 @@ function allIfds(r: TiffReader): IfdEntry[][] {
 /** Which compressions this build can currently turn into pixels. */
 const SUPPORTED_COMPRESSION: ReadonlySet<number> = new Set([
   DNG_COMPRESSION.none,
+  // Lossless JPEG — what nearly every camera actually writes. Uncompressed
+  // DNGs exist mostly as conversions.
+  DNG_COMPRESSION.jpeg,
 ]);
 
 /**
