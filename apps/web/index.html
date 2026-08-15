@@ -328,6 +328,12 @@
               value="0"
             />
             <span id="duration" class="duration">/ 00:00.000</span>
+            <!-- What the shuttle is doing. The playback-speed control below
+                 shows the monitor rate, which J/K/L overrides; without this the
+                 transport reads "1×" while the playhead runs at 4× backwards,
+                 which is worse than showing nothing. -->
+            <span id="shuttle-indicator" class="shuttle-indicator hidden"
+              aria-live="polite"></span>
             <!-- Watching speed, not editing speed. Deliberately here in the
                  transport rather than in the Inspector beside Clip speed: this
                  changes nothing about the project or the export. -->

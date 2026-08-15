@@ -18,8 +18,18 @@ export interface LoopRegion {
 export interface PlaybackState {
   currentTimeUs: string;
   playing: boolean;
-  /** Playback speed multiplier (1/1 = real time). Applied exactly to ticks. */
+  /** Playback speed multiplier (1/1 = real time). Applied exactly to ticks.
+   * A magnitude only — the sign lives in `direction`. */
   rate: Rational;
+  /**
+   * Which way time runs: 1 forward, -1 backwards.
+   *
+   * Separate from `rate` rather than folded into it as a sign. `rate` is a
+   * Rational that the exact tick arithmetic multiplies and divides by, and it
+   * is asserted positive on the way in; making it signed would put a sign into
+   * every one of those operations and into every consumer that reads it.
+   */
+  direction: 1 | -1;
   loopRegion: LoopRegion | null;
   /** The playable duration bound; seeking and ticking clamp to this. */
   durationUs: string;
@@ -36,6 +46,7 @@ export function createPlaybackState(
     currentTimeUs: "0",
     playing: false,
     rate: { numerator: rate.numerator, denominator: rate.denominator },
+    direction: 1,
     loopRegion: null,
     durationUs,
   };
@@ -64,6 +75,17 @@ export function pause(state: PlaybackState): PlaybackState {
 export function seek(state: PlaybackState, timeUs: string): PlaybackState {
   const clamped = clamp(BigInt(timeUs), 0n, BigInt(state.durationUs));
   return { ...state, currentTimeUs: clamped.toString() };
+}
+
+/** Set which way time runs. */
+export function setDirection(
+  state: PlaybackState,
+  direction: 1 | -1,
+): PlaybackState {
+  if (direction !== 1 && direction !== -1) {
+    throw new RangeError("direction must be 1 or -1");
+  }
+  return { ...state, direction };
 }
 
 export function setRate(state: PlaybackState, rate: Rational): PlaybackState {
@@ -104,16 +126,36 @@ export function tick(state: PlaybackState, deltaUs: string): PlaybackState {
 
   const advance =
     (delta * BigInt(state.rate.numerator)) / BigInt(state.rate.denominator);
-  const next = BigInt(state.currentTimeUs) + advance;
+  // The magnitude is computed exactly as before; only the sign is new, so
+  // forward playback is arithmetically untouched by reverse existing.
+  const signed = state.direction === -1 ? -advance : advance;
+  const next = BigInt(state.currentTimeUs) + signed;
 
   if (state.loopRegion !== null) {
     const start = BigInt(state.loopRegion.startUs);
     const end = BigInt(state.loopRegion.endUs);
+    const span = end - start;
+    if (state.direction === -1) {
+      // Wraps end→start, the mirror of forward. Without this a loop becomes a
+      // one-way trip the moment you shuttle back through its start.
+      if (next < start) {
+        const behind = (start - next) % span;
+        const wrapped = behind === 0n ? start : end - behind;
+        return { ...state, currentTimeUs: wrapped.toString() };
+      }
+      return { ...state, currentTimeUs: next.toString() };
+    }
     if (next >= end) {
-      const span = end - start;
       const wrapped = start + ((next - start) % span);
       return { ...state, currentTimeUs: wrapped.toString() };
     }
+    return { ...state, currentTimeUs: next.toString() };
+  }
+
+  if (state.direction === -1) {
+    // Time before the start of the sequence does not exist, and a negative
+    // microsecond string would reach every consumer of currentTimeUs.
+    if (next <= 0n) return { ...state, currentTimeUs: "0", playing: false };
     return { ...state, currentTimeUs: next.toString() };
   }
 

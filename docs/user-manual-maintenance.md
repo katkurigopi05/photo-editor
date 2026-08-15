@@ -62,12 +62,35 @@ manual remains correct.
 - `raw-import.png`: a developed DNG in the preview. Regenerate by importing
   `test_media/photos/sensor-ramp-64x48.dng`, which is produced by
   `node scripts/make_test_dng.mjs`.
+- `shuttle.png`: the transport while J/K/L shuttling, showing the speed badge.
+  Press L twice so a speed rather than plain playback is showing, then capture
+  `locator.screenshot()` on `.transport`. Note the playback-speed dropdown
+  beside it still reads 1×: that control is the monitor rate, which shuttling
+  overrides, and the badge exists because of exactly that difference.
 - `track-feature.png`: the Stabilise and Track panels in the Inspector, with a
   feature marked on the picker. Not a mode view — these sit below the fold, so
   the mode screenshots cannot show them.
 
 Capture screenshots at a consistent desktop viewport and verify that no local
 paths, secrets, or personal media are visible.
+
+## Adding a picture to the Word manual
+
+An image is three things in a `.docx`: the file under `word/media/`, a
+relationship in `word/_rels/document.xml.rels`, and a drawing in the document
+that names that relationship. All three have to be added together.
+
+**Two branches embedding a picture at the same time will collide.** Both pick the
+next free `imageN.png` and the next free `rIdN`, so both end up using the same
+two names for different pictures. Git cannot merge the docx — it is a zip — so it
+takes one side wholesale, and the survivor's relationship now points at the other
+branch's file. Nothing errors: you get the wrong picture under the caption.
+
+`pnpm sync` does not rescue this. It carries text paragraphs, and a caption whose
+drawing names `rId16` is text; the media and the relationship are not. So after
+syncing a branch that embeds a picture, **re-run the embed** rather than trusting
+the re-applied paragraph, and check the picture under the caption is the intended
+one.
 
 ## Before every push
 

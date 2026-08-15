@@ -518,11 +518,19 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 
 ## 8. Shortcuts
 
+![The transport while shuttling](assets/user-manual/shuttle.png)
+
 | Input | Action |
 | --- | --- |
 | Cmd/Ctrl + Z | Undo. |
 | Cmd/Ctrl + Shift + Z | Redo. |
 | Space | Play or pause when page body has focus. |
+| J / K / L | Shuttle: L plays forward and presses faster on each press, J the same backwards, K stops. |
+| ← / → | Step one frame back or forward. |
+| Shift + ← / → | Step one second. |
+| ↑ / ↓ | Jump to the previous or next edit point. |
+| Home / End | Go to the start or end of the sequence. |
+| [ / ] | Trim the selected clip's head or tail to the playhead. |
 | Delete / Backspace | Delete the selected clips when page body has focus. |
 | Shift + Delete | Ripple delete: remove the selection and close the gap. |
 | Cmd/Ctrl + S | Save the project, to the file it was last saved to. |
@@ -557,6 +565,10 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
   intentionally do not fire while a form control has focus.
 
 ## Revision notes
+
+- **2026-08-14:** Keyboard-first editing — J/K/L shuttling including reverse,
+  frame and second stepping, jumping between edit points, and trimming the
+  selected clip to the playhead.
 
 - **2026-08-13:** Curve, on animation controls — draws a keyframe's easing by
   hand, including overshoot. This supersedes the note below saying nothing in
