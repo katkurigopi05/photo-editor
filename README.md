@@ -129,3 +129,33 @@ pnpm dev            # runs @director/web
 CI runs two jobs on Node 22 — the TypeScript workspace and a separate
 end-to-end browser job that uploads its artifacts, so a failed run leaves
 something to look at.
+
+## Libraries & Methods
+
+Scanned every `.ts`/`.tsx`/`.js`/`.py` file (333 files, 70,420 lines) — this
+is a full pnpm monorepo with a Python side alongside it, not a single script.
+
+**Video/image processing (Python)** — `moviepy` for video assembly/editing,
+`PIL` for image manipulation, `tkinter` for a local GUI tool, `argparse` for
+its CLI entry points.
+
+**Own workspace packages** (the `@director/*` scope, 12+ internal packages
+imported across the codebase) — `project-schema`, `command-schema`,
+`canonical-json`, `raster-tools`, `playback-controller`, `editor-state`. The
+architecture is genuinely modular: schema, commands, canonical
+serialization, and playback each live in their own package rather than one
+monolith.
+
+**Protocol** — `@modelcontextprotocol/sdk` — the editor exposes itself as an
+MCP server, the same protocol this Job_Runner project's own `apps/mcp/`
+uses.
+
+**Validation** — `zod` for runtime schema validation on the TypeScript side.
+
+**Testing** — `vitest` (122 references — the primary unit-test runner) and
+`@playwright/test` (84 references) for end-to-end browser tests, matching
+what CI actually runs.
+
+**Build/tooling** — Node built-ins (`node:fs`, `node:path`, `node:url`,
+`node:os`) rather than a wrapper library, `sys`/`os`/`json` on the Python
+side.
