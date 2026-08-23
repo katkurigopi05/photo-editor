@@ -106,3 +106,26 @@ deactivate                      # leave the environment when done
 Tkinter GUI itself isn't exercised — its logic lives in `core/media.py`, which
 is tested. Tests for optional modules (`cv_tools`, `video_tools`) skip
 automatically if their dependencies aren't installed.
+
+## Usage
+
+pnpm workspace.
+
+```bash
+pnpm install
+pnpm dev            # runs @director/web
+```
+
+| command | what it does |
+|---|---|
+| `pnpm dev` | Development server |
+| `pnpm build` | Build every package in the workspace |
+| `pnpm test` | Vitest |
+| `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm lint` | ESLint |
+| `pnpm format` / `pnpm format:check` | Prettier |
+| `pnpm manual:check` | Verifies the user manual is in sync with the code |
+
+CI runs two jobs on Node 22 — the TypeScript workspace and a separate
+end-to-end browser job that uploads its artifacts, so a failed run leaves
+something to look at.
