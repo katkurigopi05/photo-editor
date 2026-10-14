@@ -55,6 +55,11 @@ describe("isMediaFile", () => {
 
   test("accepts by extension when the type is absent", () => {
     expect(isMediaFile({ name: "take-1.mp3", type: "" })).toBe(true);
+    expect(isMediaFile({ name: "logo.afdesign", type: "" })).toBe(true);
+    expect(isMediaFile({ name: "cover.afphoto", type: "" })).toBe(true);
+    expect(isMediaFile({ name: "layout.afpub", type: "" })).toBe(true);
+    expect(isMediaFile({ name: "vector.ai", type: "" })).toBe(true);
+    expect(isMediaFile({ name: "doc.pdf", type: "" })).toBe(true);
   });
 
   test("rejects non-media files", () => {

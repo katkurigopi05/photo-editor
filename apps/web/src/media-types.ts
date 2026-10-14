@@ -44,6 +44,15 @@ export const EXTENSION_KINDS: Record<string, MediaKind> = {
   raf: "image",
   pef: "image",
   srw: "image",
+  // Design & vector document formats (including Serif Affinity suite)
+  af: "image",
+  afdesign: "image",
+  afphoto: "image",
+  afpub: "image",
+  afpackage: "image",
+  psd: "image",
+  ai: "image",
+  pdf: "image",
   // video
   mp4: "video",
   m4v: "video",

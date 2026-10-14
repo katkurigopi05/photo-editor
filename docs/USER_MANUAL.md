@@ -145,6 +145,16 @@ when the system asks for reduced motion.
   is and the project records where to find it and a checksum, so projects do
   not grow by the size of every LUT used. If the file moves, Relink finds it
   again.
+- Screen and camera recording studio: capture display, webcam, or combined picture-in-picture talking head narration with countdown timers, audio metering, and automatic project bin placement.
+- System Eyedropper and color sampler: sample colors directly from any on-screen pixel with high-precision RGB and HSL conversion, alpha transparency handling, and palette history.
+- Multi-tab project workspace: manage multiple open projects simultaneously with dirty-state indicators, tab grouping, thumbnail previews, and directional close controls.
+- Export and download manager: background export queue tracking progress, cancellation, retry, and disk persistence without blocking active editing.
+- Affinity suite and vector format recognition: native document association and validation for Serif Affinity (.af, .afdesign, .afphoto, .afpub), Photoshop (.psd), Illustrator (.ai), and vector files.
+- Memory pressure monitor: proactive memory telemetry and coordinated priority cache eviction to keep high-resolution media workflows responsive under tight system limits.
+- Magic aspect ratio and social format adapter: adapt designs and video compositions across Instagram, TikTok, YouTube, LinkedIn, and print formats with intelligent contain, cover, and mobile UI safe-margin reflow.
+- Brand kit and color harmony engine: store organizational palettes, typography pairings, and logos with automated WCAG 2.2 contrast compliance checks and harmonic palette generation.
+- Presenter mode and speaker notes: control full-screen slide presentations with cue navigation, presenter stopwatch, speaker notes, interactive laser pointer trails, and spotlight apertures.
+- Offline project cache and sync: work seamlessly without a network connection with local project caching, offline mutation queuing, and deterministic reconnection replay.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.
