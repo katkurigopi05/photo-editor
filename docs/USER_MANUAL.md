@@ -161,6 +161,12 @@ when the system asks for reduced motion.
 - Vocal isolation and acoustic noise reduction: separate human speech from background music, remove vocals for instrumental tracks, and filter ambient background noise.
 - Video deflicker and exposure smoothing: stabilize frame-to-frame exposure fluctuations caused by artificial lighting PWM, time-lapse shutter variance, and strobing.
 - AI smart silence and dead air cutter: scan dialogue for speech pauses and dead air gaps, automatically generating ripple jump-cut plans with safety margins to tighten pacing.
+- Point Color precision grading: sample targeted colors with 3D color cube dropper, customize tolerance falloff, shift Hue, Saturation, and Luminance with smooth feathering, and toggle range desaturation masks.
+- Defringe and chromatic aberration correction: detect high-contrast edge gradients to identify and suppress purple and green color fringing with adjustable threshold and defringe amounts.
+- Lens optics and vignetting correction: model and rectify radial barrel and pincushion optical distortion using polynomial mapping and compensate optical lens falloff with adjustable vignette amount and midpoint.
+- Perspective Upright and keystone geometry: align architectural lines using full 3x3 projective homography transforms with horizontal and vertical keystone tilt, rotation, aspect squeeze, and scale.
+- XMP Develop Preset interchange: import and export native Adobe Camera Raw and Lightroom Develop Presets (.xmp) with bidirectional attribute mapping for exposure, contrast, highlights, shadows, vibrance, saturation, and tone curve.
+- Lens Blur and optical bokeh simulation: depth-aware focal plane slicing with customizable aperture shapes (circle, 5-blade, 7-blade, 9-blade, cat-eye), optical blur radius, and specular highlight boost.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.

@@ -34,3 +34,11 @@ export * from "./vocal-isolation.js";
 export * from "./deflicker.js";
 export * from "./smart-cut.js";
 
+// Re-export Adobe Lightroom-inspired photo editing & develop capabilities
+export * from "./point-color.js";
+export * from "./defringe.js";
+export * from "./lens-correction.js";
+export * from "./perspective-upright.js";
+export * from "./xmp-preset.js";
+export * from "./lens-blur.js";
+
