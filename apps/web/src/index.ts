@@ -25,3 +25,12 @@ export * from "./aspect-ratio.js";
 export * from "./brand-kit.js";
 export * from "./presentation.js";
 export * from "./offline-sync.js";
+
+// Re-export CapCut Pro-inspired audio and video capabilities
+export * from "./beat-sync.js";
+export * from "./color-match.js";
+export * from "./auto-captions.js";
+export * from "./vocal-isolation.js";
+export * from "./deflicker.js";
+export * from "./smart-cut.js";
+

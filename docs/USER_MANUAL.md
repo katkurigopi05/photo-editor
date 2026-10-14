@@ -155,6 +155,12 @@ when the system asks for reduced motion.
 - Brand kit and color harmony engine: store organizational palettes, typography pairings, and logos with automated WCAG 2.2 contrast compliance checks and harmonic palette generation.
 - Presenter mode and speaker notes: control full-screen slide presentations with cue navigation, presenter stopwatch, speaker notes, interactive laser pointer trails, and spotlight apertures.
 - Offline project cache and sync: work seamlessly without a network connection with local project caching, offline mutation queuing, and deterministic reconnection replay.
+- AI Beat Sync and rhythm snapping: analyze music waveforms for onset peaks and tempo, automatically generating rhythmic beat markers and snapping clip cuts to musical downbeats.
+- AI Color Match: harmonize different camera angles and lighting setups with one-click perceptual color and luminance transfer from reference clips.
+- Auto-captions and animated subtitles: parse and export SRT and WebVTT timed subtitles with word-level accuracy and dynamic animation styling (karaoke, typewriter, pop).
+- Vocal isolation and acoustic noise reduction: separate human speech from background music, remove vocals for instrumental tracks, and filter ambient background noise.
+- Video deflicker and exposure smoothing: stabilize frame-to-frame exposure fluctuations caused by artificial lighting PWM, time-lapse shutter variance, and strobing.
+- AI smart silence and dead air cutter: scan dialogue for speech pauses and dead air gaps, automatically generating ripple jump-cut plans with safety margins to tighten pacing.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.
