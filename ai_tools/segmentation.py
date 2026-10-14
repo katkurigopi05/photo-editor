@@ -20,7 +20,9 @@ def _load_pipeline(model_name: str = "briaai/RMBG-1.4"):
         ) from e
 
     if model_name not in _pipeline_cache:
-        _pipeline_cache[model_name] = pipeline("image-segmentation", model=model_name)
+        _pipeline_cache[model_name] = pipeline(
+            "image-segmentation", model=model_name, trust_remote_code=True
+        )
     return _pipeline_cache[model_name]
 
 
