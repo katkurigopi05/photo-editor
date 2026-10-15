@@ -169,6 +169,7 @@ when the system asks for reduced motion.
 - Lens Blur and optical bokeh simulation: depth-aware focal plane slicing with customizable aperture shapes (circle, 5-blade, 7-blade, 9-blade, cat-eye), optical blur radius, and specular highlight boost.
 - High-performance GPU 3D LUT grading with Tetrahedral Interpolation: Hardware-accelerated color transforms partitioned into six tetrahedral simplices for zero diagonal distortion, precise chromatic gamut boundary mapping, and neutral gray tracking on WebGL2 and fallback CPU rendering.
 - Background Web Worker raster processing: heavy CPU image filtering (Clarity, Dehaze, Noise Reduction, Oil Painting, Halftone) executes asynchronously in dedicated Web Workers with zero-copy ArrayBuffer transfers, keeping interactive UI navigation and scrub smooth at 60 fps.
+- Browser-native alpha matting and boundary refinement: Guided Filter edge refinement (He et al., TPAMI 2013) transfers high-frequency hair, fur, and boundary textures from high-resolution RGB source images into coarse segmentation masks, with morphological edge expansion, choke (-1px), and 3-state Trimap generation.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.
