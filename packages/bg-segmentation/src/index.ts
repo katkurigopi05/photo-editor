@@ -8,3 +8,11 @@ export {
   type SegmentationModel,
   type SegmentationProgress,
 } from "./inference.js";
+export {
+  guidedFilterMatte,
+  morphologyMask,
+  refineMatteEdges,
+  trimapFromMask,
+  type GuidedFilterOptions,
+  type MatteRefinementOptions,
+} from "./matting.js";
