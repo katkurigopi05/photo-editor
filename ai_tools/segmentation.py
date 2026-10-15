@@ -12,7 +12,11 @@ _pipeline_cache = {}
 
 def _load_pipeline(model_name: str = "briaai/RMBG-1.4"):
     try:
-        from transformers import pipeline
+        from transformers import pipeline, PreTrainedModel
+        if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
+            PreTrainedModel.all_tied_weights_keys = property(
+                lambda self: getattr(self, "_all_tied_weights_keys", {})
+            )
     except ImportError as e:
         raise ImportError(
             "Background removal requires the optional 'transformers' and "
