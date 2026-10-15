@@ -6,8 +6,15 @@ import json
 META_FILE = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/test_panels_100/all_100_panels_metadata.json"
 REPORT_PATH = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/comprehensive_100_images_all_modes_report.md"
 
-with open(META_FILE) as f:
-    items = json.load(f)
+import sys
+
+def main():
+    if not os.path.exists(META_FILE):
+        print(f"Meta file {META_FILE} does not exist. Skipping.")
+        return 0
+
+    with open(META_FILE) as f:
+        items = json.load(f)
 
 # Split into 8 logical galleries
 sections = [
@@ -118,8 +125,12 @@ doc.append("- **Dynamic Range Clamping:** All RGB/RGBA channels strictly bounded
 doc.append("- **Original Media Preserved:** Source images were never modified in place (pure functional non-destructive pipeline).")
 doc.append("- **Deterministic Replay:** Identical parameter recipes replay to byte-equivalent pixel buffers.\n")
 
-full_content = "\n".join(doc)
-with open(REPORT_PATH, "w") as f:
-    f.write(full_content)
+    full_content = "\n".join(doc)
+    with open(REPORT_PATH, "w") as f:
+        f.write(full_content)
 
-print(f"Successfully wrote full 100-image report to {REPORT_PATH} ({len(full_content)} bytes)!")
+    print(f"Successfully wrote full 100-image report to {REPORT_PATH} ({len(full_content)} bytes)!")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

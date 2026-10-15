@@ -27,9 +27,12 @@ try:
 except Exception as e:
     ai_ops = None
 
-IMAGE_DIR = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/scratch/100_images"
-OUTPUT_DIR = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/scratch/100_runs"
-PANEL_DIR = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/test_panels_100"
+import tempfile
+
+DEFAULT_BASE = os.path.join(tempfile.gettempdir(), "test_runs_100")
+IMAGE_DIR = os.environ.get("IMAGE_DIR", os.path.join(DEFAULT_BASE, "100_images"))
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(DEFAULT_BASE, "100_runs"))
+PANEL_DIR = os.environ.get("PANEL_DIR", os.path.join(DEFAULT_BASE, "test_panels_100"))
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PANEL_DIR, exist_ok=True)
 

@@ -17,8 +17,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import core.operations as core_ops
 import cv_tools.operations as cv_ops
 
-IMAGE_DIR = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/scratch/100_images"
-PANEL_DIR = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/test_panels_100"
+import tempfile
+
+DEFAULT_BASE = os.path.join(tempfile.gettempdir(), "test_runs_100")
+IMAGE_DIR = os.environ.get("IMAGE_DIR", os.path.join(DEFAULT_BASE, "100_images"))
+PANEL_DIR = os.environ.get("PANEL_DIR", os.path.join(DEFAULT_BASE, "test_panels_100"))
 os.makedirs(PANEL_DIR, exist_ok=True)
 
 def apply_full_pipeline(orig_img: Image.Image, weather: str, tod: str, mode: str, idx: int) -> Image.Image:

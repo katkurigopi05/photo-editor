@@ -8,9 +8,10 @@ import os
 import time
 import json
 import urllib.request
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-IMAGE_DIR = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/scratch/100_images"
+IMAGE_DIR = os.environ.get("IMAGE_DIR", os.path.join(tempfile.gettempdir(), "100_images"))
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
 # 100 distinct subjects across all requested categories

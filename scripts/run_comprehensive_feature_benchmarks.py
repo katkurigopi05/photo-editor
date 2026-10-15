@@ -31,7 +31,10 @@ TEST_IMAGES = {
     "detail_texture": "test_media/photos/detail-texture-1280x960.jpg",
 }
 
-OUTPUT_DIR = "/Users/gopikrishnareddykatkuri/.gemini/antigravity/brain/824e444c-18fb-40ce-b839-b986e65686b2/scratch/test_runs"
+import tempfile
+
+DEFAULT_OUTPUT = os.path.join(tempfile.gettempdir(), "test_runs")
+OUTPUT_DIR = os.environ.get("TEST_OUTPUT_DIR", DEFAULT_OUTPUT)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "panels"), exist_ok=True)
 
