@@ -44,3 +44,8 @@ export * from "./lens-blur.js";
 
 // Re-export browser-native edge matting and boundary refinement
 export * from "./edge-matting.js";
+
+// Re-export background raster worker execution
+export * from "./raster-worker.js";
+export * from "./raster-worker-client.js";
+
