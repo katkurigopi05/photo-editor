@@ -15,6 +15,7 @@ export {
   identityCubeImage,
   cubeImageToLut,
   applyLut3d,
+  applyLut3dTetrahedral,
   isPointwise,
 } from "./lut3d.js";
 

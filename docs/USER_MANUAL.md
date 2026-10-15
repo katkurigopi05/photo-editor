@@ -167,6 +167,7 @@ when the system asks for reduced motion.
 - Perspective Upright and keystone geometry: align architectural lines using full 3x3 projective homography transforms with horizontal and vertical keystone tilt, rotation, aspect squeeze, and scale.
 - XMP Develop Preset interchange: import and export native Adobe Camera Raw and Lightroom Develop Presets (.xmp) with bidirectional attribute mapping for exposure, contrast, highlights, shadows, vibrance, saturation, and tone curve.
 - Lens Blur and optical bokeh simulation: depth-aware focal plane slicing with customizable aperture shapes (circle, 5-blade, 7-blade, 9-blade, cat-eye), optical blur radius, and specular highlight boost.
+- High-performance GPU 3D LUT grading with Tetrahedral Interpolation: Hardware-accelerated color transforms partitioned into six tetrahedral simplices for zero diagonal distortion, precise chromatic gamut boundary mapping, and neutral gray tracking on WebGL2 and fallback CPU rendering.
 - Background Web Worker raster processing: heavy CPU image filtering (Clarity, Dehaze, Noise Reduction, Oil Painting, Halftone) executes asynchronously in dedicated Web Workers with zero-copy ArrayBuffer transfers, keeping interactive UI navigation and scrub smooth at 60 fps.
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
