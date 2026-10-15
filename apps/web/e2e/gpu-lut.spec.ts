@@ -102,6 +102,64 @@ async function comparePaths(page: Page, recipe: string): Promise<Comparison> {
   }, recipe);
 }
 
+async function comparePathsTetrahedral(
+  page: Page,
+  recipe: string,
+): Promise<Comparison> {
+  return page.evaluate(async (name) => {
+    const api = (window as unknown as { __gpuLutTest?: Record<string, never> })
+      .__gpuLutTest as
+      | {
+          buildLut: (recipe: string) => Uint8ClampedArray;
+          applyCpuTetrahedral: (
+            i: ImageData,
+            l: Uint8ClampedArray,
+          ) => Uint8ClampedArray;
+          applyGpuTetrahedral: (
+            i: ImageData,
+            l: Uint8ClampedArray,
+          ) => Uint8ClampedArray | null;
+        }
+      | undefined;
+    if (!api)
+      return { reason: "harness missing", maxDelta: -1, meanDelta: -1, effect: -1 };
+
+    const w = 128;
+    const h = 128;
+    const image = new ImageData(w, h);
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const i = (y * w + x) * 4;
+        image.data[i] = Math.round((x / (w - 1)) * 255);
+        image.data[i + 1] = Math.round((y / (h - 1)) * 255);
+        image.data[i + 2] = Math.round(((x + y) / (w + h - 2)) * 255);
+        image.data[i + 3] = 255;
+      }
+    }
+
+    const lut = api.buildLut(name);
+    const cpu = api.applyCpuTetrahedral(image, lut);
+    const gpu = api.applyGpuTetrahedral(image, lut);
+    if (gpu === null)
+      return { reason: "no WebGL2 renderer", maxDelta: -1, meanDelta: -1, effect: -1 };
+
+    let maxDelta = 0;
+    let total = 0;
+    let count = 0;
+    let effect = 0;
+    for (let i = 0; i < cpu.length; i += 4) {
+      for (let c = 0; c < 3; c += 1) {
+        const d = Math.abs(cpu[i + c]! - gpu[i + c]!);
+        if (d > maxDelta) maxDelta = d;
+        total += d;
+        count += 1;
+        effect += Math.abs(cpu[i + c]! - image.data[i + c]!);
+      }
+    }
+    return { maxDelta, meanDelta: total / count, effect: effect / count };
+  }, recipe);
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto(HARNESS, { waitUntil: "networkidle" });
 });
@@ -394,3 +452,22 @@ test("a chain of identity tables changes nothing, however long", async ({
   expect(r.reason).toBeUndefined();
   expect(r.maxDelta).toBeLessThanOrEqual(FILTERING_TOLERANCE);
 });
+
+test("tetrahedral interpolation agrees between GPU and CPU on a levels grade", async ({
+  page,
+}) => {
+  const r = await comparePathsTetrahedral(page, "levels");
+  expect(r.reason).toBeUndefined();
+  expect(r.effect).toBeGreaterThan(5);
+  expect(r.maxDelta).toBeLessThanOrEqual(FILTERING_TOLERANCE);
+});
+
+test("tetrahedral interpolation agrees between GPU and CPU on a stacked grade", async ({
+  page,
+}) => {
+  const r = await comparePathsTetrahedral(page, "stack");
+  expect(r.reason).toBeUndefined();
+  expect(r.effect).toBeGreaterThan(5);
+  expect(r.maxDelta).toBeLessThanOrEqual(FILTERING_TOLERANCE);
+});
+

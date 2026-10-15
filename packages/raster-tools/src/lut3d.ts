@@ -141,6 +141,129 @@ export function applyLut3d(
 }
 
 /**
+ * Apply a table to an image, interpolating tetrahedrally between samples.
+ *
+ * Tetrahedral interpolation partitions each cubic grid cell into six
+ * tetrahedra that meet along the cell's neutral diagonal (0,0,0) -> (1,1,1).
+ * For any given pixel, exactly one tetrahedron encloses the point, requiring
+ * only 4 vertex lookups and barycentric weighting instead of trilinear's 8.
+ *
+ * This eliminates the diagonal cross-product distortion of trilinear
+ * interpolation, preserves chromatic boundaries and high-saturation gamuts,
+ * and maintains continuous, non-discontinuous piecewise linear transitions.
+ */
+export function applyLut3dTetrahedral(
+  image: RasterImage,
+  lut: Lut3d,
+  size: number = LUT_SIZE,
+): RasterImage {
+  const data = new Uint8ClampedArray(image.data);
+  const last = size - 1;
+  const scale = last / 255;
+
+  const idx = (r: number, g: number, b: number) =>
+    ((b * size + g) * size + r) * 3;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const rf = data[i]! * scale;
+    const gf = data[i + 1]! * scale;
+    const bf = data[i + 2]! * scale;
+
+    const r0 = Math.floor(rf);
+    const g0 = Math.floor(gf);
+    const b0 = Math.floor(bf);
+    const r1 = r0 < last ? r0 + 1 : r0;
+    const g1 = g0 < last ? g0 + 1 : g0;
+    const b1 = b0 < last ? b0 + 1 : b0;
+
+    const dr = rf - r0;
+    const dg = gf - g0;
+    const db = bf - b0;
+
+    const i0 = idx(r0, g0, b0);
+    const i3 = idx(r1, g1, b1);
+    let i1: number;
+    let i2: number;
+    let w0: number;
+    let w1: number;
+    let w2: number;
+    let w3: number;
+
+    if (dr >= dg) {
+      if (dg >= db) {
+        // dr >= dg >= db
+        i1 = idx(r1, g0, b0);
+        i2 = idx(r1, g1, b0);
+        w0 = 1 - dr;
+        w1 = dr - dg;
+        w2 = dg - db;
+        w3 = db;
+      } else if (dr >= db) {
+        // dr >= db > dg
+        i1 = idx(r1, g0, b0);
+        i2 = idx(r1, g0, b1);
+        w0 = 1 - dr;
+        w1 = dr - db;
+        w2 = db - dg;
+        w3 = dg;
+      } else {
+        // db > dr >= dg
+        i1 = idx(r0, g0, b1);
+        i2 = idx(r1, g0, b1);
+        w0 = 1 - db;
+        w1 = db - dr;
+        w2 = dr - dg;
+        w3 = dg;
+      }
+    } else {
+      if (db <= dr) {
+        // dg > dr >= db
+        i1 = idx(r0, g1, b0);
+        i2 = idx(r1, g1, b0);
+        w0 = 1 - dg;
+        w1 = dg - dr;
+        w2 = dr - db;
+        w3 = db;
+      } else if (db <= dg) {
+        // dg >= db > dr
+        i1 = idx(r0, g1, b0);
+        i2 = idx(r0, g1, b1);
+        w0 = 1 - dg;
+        w1 = dg - db;
+        w2 = db - dr;
+        w3 = dr;
+      } else {
+        // db > dg > dr
+        i1 = idx(r0, g0, b1);
+        i2 = idx(r0, g1, b1);
+        w0 = 1 - db;
+        w1 = db - dg;
+        w2 = dg - dr;
+        w3 = dr;
+      }
+    }
+
+    const outR = lut[i0]! * w0 + lut[i1]! * w1 + lut[i2]! * w2 + lut[i3]! * w3;
+    const outG =
+      lut[i0 + 1]! * w0 +
+      lut[i1 + 1]! * w1 +
+      lut[i2 + 1]! * w2 +
+      lut[i3 + 1]! * w3;
+    const outB =
+      lut[i0 + 2]! * w0 +
+      lut[i1 + 2]! * w1 +
+      lut[i2 + 2]! * w2 +
+      lut[i3 + 2]! * w3;
+
+    data[i] = Math.round(outR);
+    data[i + 1] = Math.round(outG);
+    data[i + 2] = Math.round(outB);
+  }
+
+  return { width: image.width, height: image.height, data };
+}
+
+/**
  * Is a grading function pointwise?
  *
  * Answered by experiment rather than by trusting a list: the same colours are

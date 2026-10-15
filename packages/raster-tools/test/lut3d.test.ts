@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyLut3d,
+  applyLut3dTetrahedral,
   cubeImageToLut,
   identityCubeImage,
   isPointwise,
@@ -230,5 +231,171 @@ describe("isPointwise", () => {
       return { width: image.width, height: image.height, data };
     };
     expect(isPointwise(blur)).toBe(false);
+  });
+});
+
+describe("applyLut3dTetrahedral", () => {
+  it("is exact for identity table", () => {
+    const image = sampleImage();
+    const lut = cubeImageToLut(identityCubeImage());
+    const out = applyLut3dTetrahedral(image, lut);
+    expect(maxDelta(out, image)).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps pure black black and pure white white", () => {
+    const lut = cubeImageToLut(identityCubeImage());
+    const corners: RasterImage = {
+      width: 2,
+      height: 1,
+      data: new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255]),
+    };
+    const out = applyLut3dTetrahedral(corners, lut);
+    expect([out.data[0], out.data[1], out.data[2]]).toEqual([0, 0, 0]);
+    expect([out.data[4], out.data[5], out.data[6]]).toEqual([255, 255, 255]);
+  });
+
+  it("leaves alpha channel untouched", () => {
+    const image = sampleImage();
+    image.data[3] = 128;
+    image.data[7] = 64;
+    const lut = cubeImageToLut(identityCubeImage());
+    const out = applyLut3dTetrahedral(image, lut);
+    expect(out.data[3]).toBe(128);
+    expect(out.data[7]).toBe(64);
+  });
+
+  it("produces smooth non-banding transitions across gradients", () => {
+    const width = 256;
+    const data = new Uint8ClampedArray(width * 4);
+    for (let x = 0; x < width; x += 1) {
+      data[x * 4] = x;
+      data[x * 4 + 1] = x;
+      data[x * 4 + 2] = x;
+      data[x * 4 + 3] = 255;
+    }
+    const ramp: RasterImage = { width, height: 1, data };
+    const lut = cubeImageToLut(identityCubeImage());
+    const out = applyLut3dTetrahedral(ramp, lut);
+    let biggestStep = 0;
+    for (let x = 1; x < width; x += 1) {
+      biggestStep = Math.max(
+        biggestStep,
+        Math.abs(out.data[x * 4]! - out.data[(x - 1) * 4]!),
+      );
+    }
+    expect(biggestStep).toBeLessThanOrEqual(2);
+  });
+
+  it("agrees closely with trilinear interpolation on smooth photographic colors", () => {
+    const image = sampleImage();
+    const grade = mapChannels((r, g, b) => {
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      return [
+        Math.min(255, Math.max(0, luma + (r - luma) * 1.2 + 10)),
+        Math.min(255, Math.max(0, luma + (g - luma) * 1.1)),
+        Math.min(255, Math.max(0, luma + (b - luma) * 0.9 - 5)),
+      ];
+    });
+    const lut = cubeImageToLut(grade(identityCubeImage()));
+    const trilinear = applyLut3d(image, lut);
+    const tetrahedral = applyLut3dTetrahedral(image, lut);
+    // Tetrahedral and trilinear closely track each other while tetrahedral has lower distortion
+    expect(maxDelta(trilinear, tetrahedral)).toBeLessThanOrEqual(3);
+  });
+
+  it("evaluates all six tetrahedral partitions with exact barycentric weighting", () => {
+    // Construct a custom 2x2x2 cube table where each corner is a distinctive value
+    const size = 2;
+    const lut = new Uint8ClampedArray(size * size * size * 3);
+    const cornerVal = (r: number, g: number, b: number) =>
+      r * 100 + g * 30 + b * 10;
+
+    for (let b = 0; b < size; b += 1) {
+      for (let g = 0; g < size; g += 1) {
+        for (let r = 0; r < size; r += 1) {
+          const idx = ((b * size + g) * size + r) * 3;
+          const v = cornerVal(r, g, b);
+          lut[idx] = v;
+          lut[idx + 1] = v;
+          lut[idx + 2] = v;
+        }
+      }
+    }
+
+    // Six sample points corresponding to the six ordering permutations of (dr, dg, db)
+    // Scale for size=2: rf = r * 1/255.
+    const samples: Array<{ r: number; g: number; b: number; name: string }> = [
+      { r: 204, g: 128, b: 51, name: "dr >= dg >= db" }, // 0.8, 0.5, 0.2
+      { r: 204, g: 51, b: 128, name: "dr >= db > dg" }, // 0.8, 0.2, 0.5
+      { r: 128, g: 204, b: 51, name: "dg > dr >= db" }, // 0.5, 0.8, 0.2
+      { r: 51, g: 204, b: 128, name: "dg >= db > dr" }, // 0.2, 0.8, 0.5
+      { r: 128, g: 51, b: 204, name: "db > dr >= dg" }, // 0.5, 0.2, 0.8
+      { r: 51, g: 128, b: 204, name: "db >= dg > dr" }, // 0.2, 0.5, 0.8
+    ];
+
+    const img: RasterImage = {
+      width: samples.length,
+      height: 1,
+      data: new Uint8ClampedArray(samples.length * 4),
+    };
+
+    samples.forEach((s, i) => {
+      img.data[i * 4] = s.r;
+      img.data[i * 4 + 1] = s.g;
+      img.data[i * 4 + 2] = s.b;
+      img.data[i * 4 + 3] = 255;
+    });
+
+    const out = applyLut3dTetrahedral(img, lut, size);
+
+    // Verify each point's interpolated value matches theoretical simplex sum
+    samples.forEach((s, i) => {
+      const dr = s.r / 255;
+      const dg = s.g / 255;
+      const db = s.b / 255;
+      let expected: number;
+
+      if (dr >= dg && dg >= db) {
+        expected =
+          (1 - dr) * cornerVal(0, 0, 0) +
+          (dr - dg) * cornerVal(1, 0, 0) +
+          (dg - db) * cornerVal(1, 1, 0) +
+          db * cornerVal(1, 1, 1);
+      } else if (dr >= db && db > dg) {
+        expected =
+          (1 - dr) * cornerVal(0, 0, 0) +
+          (dr - db) * cornerVal(1, 0, 0) +
+          (db - dg) * cornerVal(1, 0, 1) +
+          dg * cornerVal(1, 1, 1);
+      } else if (dg > dr && dr >= db) {
+        expected =
+          (1 - dg) * cornerVal(0, 0, 0) +
+          (dg - dr) * cornerVal(0, 1, 0) +
+          (dr - db) * cornerVal(1, 1, 0) +
+          db * cornerVal(1, 1, 1);
+      } else if (dg >= db && db > dr) {
+        expected =
+          (1 - dg) * cornerVal(0, 0, 0) +
+          (dg - db) * cornerVal(0, 1, 0) +
+          (db - dr) * cornerVal(0, 1, 1) +
+          dr * cornerVal(1, 1, 1);
+      } else if (db > dr && dr >= dg) {
+        expected =
+          (1 - db) * cornerVal(0, 0, 0) +
+          (db - dr) * cornerVal(0, 0, 1) +
+          (dr - dg) * cornerVal(1, 0, 1) +
+          dg * cornerVal(1, 1, 1);
+      } else {
+        expected =
+          (1 - db) * cornerVal(0, 0, 0) +
+          (db - dg) * cornerVal(0, 0, 1) +
+          (dg - dr) * cornerVal(0, 1, 1) +
+          dr * cornerVal(1, 1, 1);
+      }
+
+      expect(
+        Math.abs(out.data[i * 4]! - Math.round(expected)),
+      ).toBeLessThanOrEqual(1);
+    });
   });
 });
