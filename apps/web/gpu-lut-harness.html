@@ -26,6 +26,7 @@
         identityCubeImage,
         cubeImageToLut,
         applyLut3d,
+        applyLut3dTetrahedral,
         whiteBalance,
         levels,
         vibrance,
@@ -73,6 +74,15 @@
 
       const applyGpu = (image, lut) => applyGpuChain(image, [{ lut }]);
 
+      const applyCpuTetrahedral = (image, lut) =>
+        applyLut3dTetrahedral(
+          { width: image.width, height: image.height, data: image.data },
+          lut,
+        ).data;
+
+      const applyGpuTetrahedral = (image, lut) =>
+        applyGpuChain(image, [{ lut, interpolation: "tetrahedral" }]);
+
       /**
        * The CPU semantics a masked chain must match: each effect is applied to
        * the whole frame and then blended back through its own coverage, before
@@ -83,7 +93,11 @@
       const applyCpuChain = (image, passes) => {
         let data = new Uint8ClampedArray(image.data);
         for (const pass of passes) {
-          const graded = applyLut3d(
+          const graded = (
+            pass.interpolation === "tetrahedral"
+              ? applyLut3dTetrahedral
+              : applyLut3d
+          )(
             { width: image.width, height: image.height, data },
             pass.lut,
           ).data;
@@ -121,6 +135,8 @@
         identityLut,
         applyCpu,
         applyGpu,
+        applyCpuTetrahedral,
+        applyGpuTetrahedral,
         applyCpuChain,
         applyGpuChain,
         rampCoverage,

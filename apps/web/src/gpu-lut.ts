@@ -55,8 +55,79 @@ uniform bool uMasked;
 // a framebuffer this shader already wrote, which is in GL's orientation, and
 // flipping again would stand the picture back on its head.
 uniform bool uFlipY;
+// Interpolation mode: 0 for hardware trilinear filtering, 1 for tetrahedral simplex interpolation.
+uniform int uInterpolation;
 
 out vec4 outColour;
+
+vec3 sampleLutTetrahedral(sampler3D lut, vec3 rgb, float size) {
+  float last = size - 1.0;
+  vec3 scale = rgb * last;
+  vec3 base = floor(scale);
+  ivec3 i0 = clamp(ivec3(base), ivec3(0), ivec3(int(last)));
+  ivec3 i1 = clamp(i0 + ivec3(1), ivec3(0), ivec3(int(last)));
+  vec3 d = clamp(scale - vec3(i0), 0.0, 1.0);
+
+  vec3 c000 = texelFetch(lut, i0, 0).rgb;
+  vec3 c111 = texelFetch(lut, i1, 0).rgb;
+
+  vec3 c1;
+  vec3 c2;
+  float w0;
+  float w1;
+  float w2;
+  float w3;
+
+  if (d.r >= d.g) {
+    if (d.g >= d.b) {
+      c1 = texelFetch(lut, ivec3(i1.r, i0.g, i0.b), 0).rgb;
+      c2 = texelFetch(lut, ivec3(i1.r, i1.g, i0.b), 0).rgb;
+      w0 = 1.0 - d.r;
+      w1 = d.r - d.g;
+      w2 = d.g - d.b;
+      w3 = d.b;
+    } else if (d.r >= d.b) {
+      c1 = texelFetch(lut, ivec3(i1.r, i0.g, i0.b), 0).rgb;
+      c2 = texelFetch(lut, ivec3(i1.r, i0.g, i1.b), 0).rgb;
+      w0 = 1.0 - d.r;
+      w1 = d.r - d.b;
+      w2 = d.b - d.g;
+      w3 = d.g;
+    } else {
+      c1 = texelFetch(lut, ivec3(i0.r, i0.g, i1.b), 0).rgb;
+      c2 = texelFetch(lut, ivec3(i1.r, i0.g, i1.b), 0).rgb;
+      w0 = 1.0 - d.b;
+      w1 = d.b - d.r;
+      w2 = d.r - d.g;
+      w3 = d.g;
+    }
+  } else {
+    if (d.b <= d.r) {
+      c1 = texelFetch(lut, ivec3(i0.r, i1.g, i0.b), 0).rgb;
+      c2 = texelFetch(lut, ivec3(i1.r, i1.g, i0.b), 0).rgb;
+      w0 = 1.0 - d.g;
+      w1 = d.g - d.r;
+      w2 = d.r - d.b;
+      w3 = d.b;
+    } else if (d.b <= d.g) {
+      c1 = texelFetch(lut, ivec3(i0.r, i1.g, i0.b), 0).rgb;
+      c2 = texelFetch(lut, ivec3(i0.r, i1.g, i1.b), 0).rgb;
+      w0 = 1.0 - d.g;
+      w1 = d.g - d.b;
+      w2 = d.b - d.r;
+      w3 = d.r;
+    } else {
+      c1 = texelFetch(lut, ivec3(i0.r, i0.g, i1.b), 0).rgb;
+      c2 = texelFetch(lut, ivec3(i0.r, i1.g, i1.b), 0).rgb;
+      w0 = 1.0 - d.b;
+      w1 = d.b - d.g;
+      w2 = d.g - d.r;
+      w3 = d.r;
+    }
+  }
+
+  return c000 * w0 + c1 * w1 + c2 * w2 + c111 * w3;
+}
 
 void main() {
   vec2 xy = uFlipY
@@ -65,15 +136,18 @@ void main() {
   vec2 uv = xy / uResolution;
   vec4 src = texture(uImage, uv);
 
-  // The same mapping applyLut3d does: a channel in 0..1 lands on sample
-  // c * (size - 1). The half-texel offset converts a sample *index* into the
-  // texture coordinate that reads that sample's centre — without it every
-  // lookup is skewed by half a cell and the whole grade shifts. That error is
-  // about the size of one cell's rounding, which is why the parity test's
-  // tolerance had to be measured rather than argued.
-  vec3 index = src.rgb * (uSize - 1.0);
-  vec3 coord = (index + 0.5) / uSize;
-  vec3 graded = texture(uLut, coord).rgb;
+  vec3 graded;
+  if (uInterpolation == 1) {
+    graded = sampleLutTetrahedral(uLut, src.rgb, uSize);
+  } else {
+    // The same mapping applyLut3d does: a channel in 0..1 lands on sample
+    // c * (size - 1). The half-texel offset converts a sample *index* into the
+    // texture coordinate that reads that sample's centre — without it every
+    // lookup is skewed by half a cell and the whole grade shifts.
+    vec3 index = src.rgb * (uSize - 1.0);
+    vec3 coord = (index + 0.5) / uSize;
+    graded = texture(uLut, coord).rgb;
+  }
 
   // Coverage is sampled in the *source's* orientation, because it is rasterised
   // by the CPU against the same rows an ImageData has.
@@ -102,12 +176,21 @@ function compile(
   return shader;
 }
 
+/** Interpolation method for 3D LUT sampling. */
+export type LutInterpolation = "trilinear" | "tetrahedral";
+
 /** One effect: its colour table, and the region it applies to. */
 export interface LutPass {
   lut: Lut3d;
   /** Single-channel coverage, `width * height`, 0–255 — the same buffer
    * `rasterizeClipMask` produces. Absent means the whole frame. */
   coverage?: Uint8ClampedArray;
+  /**
+   * Interpolation method: "trilinear" (hardware sampler3D linear filter) or
+   * "tetrahedral" (4-point simplex decomposition for superior gamut boundaries
+   * and neutral grey tracking). Default: "trilinear".
+   */
+  interpolation?: LutInterpolation;
 }
 
 export interface GpuLutRenderer {
@@ -134,6 +217,7 @@ export interface GpuLutRenderer {
  * as null here rather than as a broken frame later.
  */
 export function createGpuLutRenderer(): GpuLutRenderer | null {
+  if (typeof document === "undefined") return null;
   const canvas = document.createElement("canvas");
   const gl = canvas.getContext("webgl2", {
     premultipliedAlpha: false,
@@ -162,6 +246,7 @@ export function createGpuLutRenderer(): GpuLutRenderer | null {
   const uSize = gl.getUniformLocation(program, "uSize");
   const uMasked = gl.getUniformLocation(program, "uMasked");
   const uFlipY = gl.getUniformLocation(program, "uFlipY");
+  const uInterpolation = gl.getUniformLocation(program, "uInterpolation");
 
   const imageTex = gl.createTexture();
   const lutTex = gl.createTexture();
@@ -343,6 +428,7 @@ export function createGpuLutRenderer(): GpuLutRenderer | null {
       gl.uniform1i(uFlipY, i === 0 ? 1 : 0);
 
       uploadLut(pass.lut);
+      gl.uniform1i(uInterpolation, pass.interpolation === "tetrahedral" ? 1 : 0);
 
       gl.uniform1i(uMasked, pass.coverage === undefined ? 0 : 1);
       if (pass.coverage !== undefined) {
