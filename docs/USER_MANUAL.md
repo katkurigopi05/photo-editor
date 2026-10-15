@@ -36,7 +36,7 @@ Open the local URL printed by Vite, normally `http://localhost:5173/`.
 
 Basic workflow:
 
-1. Select Photo, Video, Animation, or GIF on the mode wheel.
+1. Select Photo, Video, Animation, or GIF on the rotary mode dial.
 2. Import an image, video, or audio file, or add a Cartoon Clip.
 3. Select the clip in the preview, media bin, or timeline.
 4. Apply a Look, effect, animation, transition, or mode-specific tool.
@@ -49,7 +49,7 @@ Basic workflow:
 
 | Area | Purpose |
 | --- | --- |
-| Mode wheel | Switches among Photo, Video, Animation, and GIF. Click, scroll, drag vertically, or use Arrow keys. |
+| Mode dial | Switches among Photo, Video, Animation, and GIF with a camera-style rotary dial. Click, scroll, drag circularly, or use Arrow/Home/End keys. |
 | Media panel | Imports files, lists assets, creates cartoon clips, applies Looks and effects, and shows history. |
 | Preview | Displays the composited result. Hold Before / After to compare with the source view. |
 | Inspector | Edits animation, transitions, effects, and audio gain/pan for the selected clip. |
@@ -170,6 +170,7 @@ when the system asks for reduced motion.
 - High-performance GPU 3D LUT grading with Tetrahedral Interpolation: Hardware-accelerated color transforms partitioned into six tetrahedral simplices for zero diagonal distortion, precise chromatic gamut boundary mapping, and neutral gray tracking on WebGL2 and fallback CPU rendering.
 - Background Web Worker raster processing: heavy CPU image filtering (Clarity, Dehaze, Noise Reduction, Oil Painting, Halftone) executes asynchronously in dedicated Web Workers with zero-copy ArrayBuffer transfers, keeping interactive UI navigation and scrub smooth at 60 fps.
 - Browser-native alpha matting and boundary refinement: Guided Filter edge refinement (He et al., TPAMI 2013) transfers high-frequency hair, fur, and boundary textures from high-resolution RGB source images into coarse segmentation masks, with morphological edge expansion, choke (-1px), and 3-state Trimap generation.
+- Camera-style rotary mode dial: switches among Photo, Video, Animation, and GIF with a knurled metal dial, 12 o'clock precision index indicator, circular angular dragging, mousewheel detent rotation, direct mode clicking, and full keyboard navigation (Arrow keys, Home, End).
 - Images receive a default five-second duration.
 - One-click Looks: Vivid, B&W, Warm, Cinematic, and Fade. A Look or an effect
   applies to every selected clip at once.
@@ -565,8 +566,8 @@ presets are 12 Mbps, 8 Mbps (default), and 4 Mbps.
 | Shift or Cmd/Ctrl + click | Add a clip to the selection. |
 | Alt while dropping a clip | Ignore snapping and drop where released. |
 | Shift while trimming | Ripple trim: shift later clips by the same amount. |
-| Wheel Arrow keys | Previous or next mode. |
-| Wheel Home / End | Photo / GIF. |
+| Dial Arrow keys | Previous or next mode on the rotary dial. |
+| Dial Home / End | First (Photo) or last (GIF) mode on the rotary dial. |
 | Hold Before / After | Compare edited and source views. |
 
 ## 9. Troubleshooting
