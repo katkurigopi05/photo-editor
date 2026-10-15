@@ -880,10 +880,10 @@ const MODE_ORDER: readonly EditorMode[] = [
   "animation",
   "gif",
 ];
-/** Wheel geometry and gesture thresholds — see the .mode-wheel CSS block. */
-const MODE_WHEEL_STEP_DEG = 60;
+/** Rotary dial geometry and gesture thresholds — see the .mode-wheel CSS block. */
+const MODE_WHEEL_STEP_DEG = 90;
 const MODE_WHEEL_SCROLL_PX = 40;
-const MODE_WHEEL_DRAG_PX = 22;
+const MODE_WHEEL_DRAG_PX = 20;
 let mode: EditorMode = "photo";
 let selectedClipId: string | null = null;
 /** Extra clips picked with Shift/Cmd-click. `selectedClipId` stays the clip the
@@ -9199,7 +9199,7 @@ function stepMode(delta: number): void {
 
 function bindModeWheel(): void {
   const wheel = $("mode-wheel");
-  let dragFrom: number | null = null;
+  let dragStart: { x: number; y: number; angle: number } | null = null;
   // Distance of the drag that is finishing, so the click it also produces is
   // not read as a second, contradictory step.
   let draggedDistance = 0;
@@ -9208,25 +9208,26 @@ function bindModeWheel(): void {
     $(`mode-${id}`).addEventListener("click", () => setMode(id));
   }
 
-  // A neighbour's sliver is a rotated 3D face — clicking it usually lands on
-  // the drum behind it rather than the face. Treat a click anywhere in the
-  // housing as "turn towards the half that was clicked", which is how a
-  // physical wheel behaves anyway.
+  // Treat a click anywhere on the rotary bezel outside the buttons as turning
+  // towards that side: right/bottom advances (+1), left/top steps back (-1).
   wheel.addEventListener("click", (e) => {
     if (draggedDistance > MODE_WHEEL_DRAG_PX) return;
     if ((e.target as HTMLElement).closest(".mode-wheel-item")) return;
     const box = wheel.getBoundingClientRect();
-    stepMode(e.clientY < box.top + box.height / 2 ? -1 : 1);
+    const cx = box.left + box.width / 2;
+    stepMode(e.clientX >= cx ? 1 : -1);
   });
 
-  // Trackpads emit a stream of small deltas; accumulate so one physical flick
-  // is one step rather than three.
+  // Trackpads and mouse wheels emit deltas; accumulate so one physical detent
+  // flick is one discrete step.
   let scrolled = 0;
   wheel.addEventListener(
     "wheel",
     (e) => {
       e.preventDefault();
-      scrolled += e.deltaY;
+      const delta =
+        Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      scrolled += delta;
       while (Math.abs(scrolled) >= MODE_WHEEL_SCROLL_PX) {
         stepMode(Math.sign(scrolled));
         scrolled -= Math.sign(scrolled) * MODE_WHEEL_SCROLL_PX;
@@ -9236,22 +9237,53 @@ function bindModeWheel(): void {
   );
 
   wheel.addEventListener("pointerdown", (e) => {
-    dragFrom = e.clientY;
+    const box = wheel.getBoundingClientRect();
+    const cx = box.left + box.width / 2;
+    const cy = box.top + box.height / 2;
+    const angle =
+      Math.atan2(e.clientY - cy, e.clientX - cx) * (180 / Math.PI);
+    dragStart = { x: e.clientX, y: e.clientY, angle };
     draggedDistance = 0;
     wheel.setPointerCapture(e.pointerId);
   });
+
   wheel.addEventListener("pointermove", (e) => {
-    if (dragFrom === null) return;
-    const travelled = e.clientY - dragFrom;
-    draggedDistance = Math.max(draggedDistance, Math.abs(travelled));
-    if (Math.abs(travelled) < MODE_WHEEL_DRAG_PX) return;
-    // Dragging down brings the previous mode into view, like a physical drum.
-    stepMode(-Math.sign(travelled));
-    dragFrom = e.clientY;
+    if (!dragStart) return;
+    const box = wheel.getBoundingClientRect();
+    const cx = box.left + box.width / 2;
+    const cy = box.top + box.height / 2;
+    const currentAngle =
+      Math.atan2(e.clientY - cy, e.clientX - cx) * (180 / Math.PI);
+    let angleDelta = currentAngle - dragStart.angle;
+    while (angleDelta > 180) angleDelta -= 360;
+    while (angleDelta < -180) angleDelta += 360;
+
+    const linearDelta =
+      Math.abs(e.clientY - dragStart.y) + Math.abs(e.clientX - dragStart.x);
+    draggedDistance = Math.max(
+      draggedDistance,
+      Math.abs(angleDelta),
+      linearDelta,
+    );
+
+    // Rotary angular drag threshold (~28 degrees) or vertical drag
+    if (Math.abs(angleDelta) >= 28) {
+      stepMode(angleDelta > 0 ? 1 : -1);
+      dragStart.angle = currentAngle;
+      dragStart.x = e.clientX;
+      dragStart.y = e.clientY;
+    } else if (linearDelta >= MODE_WHEEL_DRAG_PX * 1.5) {
+      const dy = e.clientY - dragStart.y;
+      stepMode(-Math.sign(dy));
+      dragStart.angle = currentAngle;
+      dragStart.x = e.clientX;
+      dragStart.y = e.clientY;
+    }
   });
+
   const endDrag = (e: PointerEvent): void => {
-    if (dragFrom === null) return;
-    dragFrom = null;
+    if (!dragStart) return;
+    dragStart = null;
     if (wheel.hasPointerCapture(e.pointerId)) {
       wheel.releasePointerCapture(e.pointerId);
     }
